@@ -63,7 +63,7 @@ final class AppLogger {
     return message.replaceAllMapped(
       RegExp(
         r'(password|passwd|token|secret|authorization|credential)'
-        r'(\s*[:=]\s*)(?:"([^"]*)"|((?:bearer\s+)?\S+))',
+        r'(\s*[:=]\s*)(?:"([^"]*)"|((?:bearer\s+|basic\s+)?\S+))',
         caseSensitive: false,
       ),
       (m) => '${m[1]}${m[2]}***',

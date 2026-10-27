@@ -29,6 +29,8 @@ import '../../core/app_logger.dart';
 import '../../data/db/app_database.dart' show Book;
 import '../../data/db/daos/books_dao.dart';
 import '../../data/db/daos/progress_dao.dart';
+import '../../features/sync/sync_facade.dart';
+import '../../features/sync/sync_triggers.dart';
 import 'contract/book_file.dart';
 import 'contract/book_renderer.dart';
 import 'contract/progress_anchor.dart';
@@ -109,9 +111,15 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   late final ProgressDao _progressDao;
   late final BooksDao _booksDao;
   late final ReaderSettingsRepository _settingsRepo;
+
+  /// M2 同步触发器（进度防抖推送的挂点；取引用避免 dispose 期再用 ref）。
+  late final SyncTriggers _syncTriggers;
   StreamSubscription<ReaderSettings>? _settingsSub;
 
   _PageState _state = const _OpeningState();
+
+  /// 页面是否已进入 dispose（dispose 期的兜底落库不再触发同步防抖）。
+  bool _disposed = false;
 
   // —— 进度管线（FR-207）——
   Timer? _progressDebounce;
@@ -142,6 +150,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     _progressDao = ref.read(progressDaoProvider);
     _booksDao = ref.read(booksDaoProvider);
     _settingsRepo = ref.read(readerSettingsRepositoryProvider);
+    _syncTriggers = ref.read(syncTriggersProvider);
     // 设置热应用（FR-206）：仓库广播 → 当前渲染器 applySettings。
     _settingsSub = _settingsRepo.changes.listen(_applySettings);
     _open();
@@ -149,11 +158,15 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
 
   @override
   void dispose() {
+    _disposed = true;
     // 先同步取走最终进度，再销毁渲染器；DB 写入异步自然完成（FR-207 退出兜底）。
     _progressDebounce?.cancel();
     _progressDebounce = null;
     _readingClock?.cancel();
     _readingClock = null;
+    // 同步防抖与页面同生命周期：先取消挂起的推送防抖（下面退出推送走
+    // flushProgress 立即路径），保证卸载后无悬挂 Timer。
+    _syncTriggers.cancelProgressDebounce(widget.bookId);
     final session = _session;
     if (session != null && _progressDirty) {
       _progressDirty = false;
@@ -163,6 +176,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
           session.renderer.controller.percent,
         ),
       );
+      // 退出阅读页：立即推送该书待传进度（docs/04 §3 触发时机 3）。
+      unawaited(_syncTriggers.flushProgress(widget.bookId));
     }
     unawaited(_flushReadingTime());
     session?.renderer.dispose();
@@ -332,6 +347,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
         widget.bookId,
         lastReadAt: DateTime.now(),
       );
+      // M2 挂点：进度变更 → 同步触发器防抖 10s 单书推送（docs/04 §3）。
+      // dispose 期的兜底落库不重挂防抖（退出推送由 flushProgress 立即承担）。
+      if (!_disposed) _syncTriggers.onProgressChanged(widget.bookId);
     } catch (e, s) {
       _log.warn('进度落库失败（本地阅读不受影响）');
       _log.error('进度落库异常详情', e, s);

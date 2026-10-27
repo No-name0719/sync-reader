@@ -11,3 +11,4 @@ export 'db/daos/reader_settings_dao.dart';
 export 'db/daos/sync_queue_dao.dart';
 export 'db/tables.dart';
 export 'files/book_file_store.dart';
+export 'secure/secure_credential_store.dart';

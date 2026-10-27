@@ -10,6 +10,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/db/app_database.dart';
 import '../../data/db/daos/books_dao.dart';
+import '../sync/sync_status.dart';
+import '../sync/widgets/sync_status_banner.dart';
 import 'import/book_import_service.dart';
 import 'library_providers.dart';
 import 'widgets/book_cards.dart';
@@ -100,6 +102,7 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
     final sort = ref.watch(bookSortProvider);
     final booksAsync = ref.watch(booksStreamProvider);
     final progressMap = ref.watch(progressMapProvider).value;
+    final syncStatusMap = ref.watch(bookSyncStatusMapProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -143,6 +146,8 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
       ),
       body: Column(
         children: [
+          // 全局同步状态横幅（FR-406；点击进同步设置页）。
+          const SyncStatusBanner(),
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
             child: TextField(
@@ -175,10 +180,12 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
                       LibraryViewMode.grid => _BookGrid(
                         books: books,
                         progressMap: progressMap,
+                        syncStatusMap: syncStatusMap,
                       ),
                       LibraryViewMode.list => _BookList(
                         books: books,
                         progressMap: progressMap,
+                        syncStatusMap: syncStatusMap,
                       ),
                     },
             ),
@@ -229,10 +236,15 @@ class _EmptyView extends StatelessWidget {
 }
 
 class _BookGrid extends StatelessWidget {
-  const _BookGrid({required this.books, required this.progressMap});
+  const _BookGrid({
+    required this.books,
+    required this.progressMap,
+    required this.syncStatusMap,
+  });
 
   final List<Book> books;
   final Map<String, BookProgress>? progressMap;
+  final Map<String, BookSyncStatus> syncStatusMap;
 
   @override
   Widget build(BuildContext context) {
@@ -250,6 +262,7 @@ class _BookGrid extends StatelessWidget {
         return BookGridCard(
           book: book,
           percent: progressMap?[book.bookId]?.percent,
+          syncStatus: syncStatusMap[book.bookId],
         );
       },
     );
@@ -257,10 +270,15 @@ class _BookGrid extends StatelessWidget {
 }
 
 class _BookList extends StatelessWidget {
-  const _BookList({required this.books, required this.progressMap});
+  const _BookList({
+    required this.books,
+    required this.progressMap,
+    required this.syncStatusMap,
+  });
 
   final List<Book> books;
   final Map<String, BookProgress>? progressMap;
+  final Map<String, BookSyncStatus> syncStatusMap;
 
   @override
   Widget build(BuildContext context) {
@@ -272,6 +290,7 @@ class _BookList extends StatelessWidget {
         return BookListTile(
           book: book,
           percent: progressMap?[book.bookId]?.percent,
+          syncStatus: syncStatusMap[book.bookId],
         );
       },
     );

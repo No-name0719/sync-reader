@@ -21,6 +21,10 @@ dependencies:
   sync_core:
     path: ../../packages/sync_core
 
+  # M2 同步接入：凭据安全存储（FR-504）与网络可达性监听（docs/03 §5）。
+  flutter_secure_storage: ^10.0.0
+  connectivity_plus: ^6.1.5
+
   # M1 本地阅读闭环基建（drift 表结构见 docs/05 §5）。
   drift: ^2.35.3
   drift_flutter: ^0.3.1
@@ -44,6 +48,7 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  fake_async: ^1.3.1
 
   flutter_lints: ^6.0.0
   drift_dev: ^2.35.2

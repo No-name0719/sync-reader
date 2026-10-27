@@ -56,14 +56,14 @@ void main() {
     });
   });
 
-  group('SyncError（docs/03 §6.1 六类）', () {
+  group('SyncError（docs/03 §6.1 六类，sync_core 权威定义）', () {
     test('分类齐全且 userMessage 为中文分类文案', () {
       final errors = <SyncError>[
         NetworkUnreachable('超时'),
-        AuthFailed('401'),
+        AuthFailedSyncError('401'),
         QuotaExceeded('流量超限'),
         ConflictUnresolvable('无法合并'),
-        ServerError('500', statusCode: 500),
+        ServerError('500', null, 500),
         Corruption('校验失败'),
       ];
       expect(errors, hasLength(6));
