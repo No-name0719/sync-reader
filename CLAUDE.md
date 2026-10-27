@@ -1,6 +1,6 @@
 # CLAUDE.md — SyncReader 项目上下文
 
-> 面向后续 AI 编码会话的项目说明。**当前阶段：规划完成，尚未编写任何业务代码、未初始化工程。** 开工前请先通读本文与 `docs/` 设计基线。
+> 面向后续 AI 编码会话的项目说明。**当前阶段：M2 同步上线开发完成（坚果云真实联调待用户），下一站 M3。** 开工前请先通读本文与 `docs/` 设计基线。
 
 ## 1. 项目一句话
 
@@ -65,9 +65,10 @@ sync-reader/
 | 开发环境（Flutter 3.47.8 / Go 1.27.3 / JDK17 / Android SDK 36，全落 D 盘） | ✅ 完成（2026-10-26，见 docs/08） |
 | M0 工程奠基（Flutter 工程 + sync_core + Go 骨架 + CI） | ✅ 完成（2026-10-26；analyze/test 全绿，APK 空壳构建通过；Windows 本机构建依赖 VS Build Tools，见 docs/08 §4） |
 | M1 本地阅读闭环（书库 FR-1xx + txt/md/pdf 阅读器 + 本地进度/时长/设置 + TOC 抽屉） | ✅ 完成（2026-10-26；app 293 测试全绿；Windows debug 构建通过并冒烟验证；Android debug APK 构建通过（含四 ABI libpdfium）；epub 渲染器按路线图随 M2/M3 交付；pdfrx 收编副本与机器环境补丁见 docs/07-R15、docs/08 §6.3） |
-| M2 同步上线 → M4 打磨分发 | ⬜ 见 `docs/00-总览.md` §4 |
+| M2 同步上线（sync_core 引擎 + WebDAV 适配器 + App 接入） | ✅ 开发完成（2026-10-27）：sync_core 165 + app 359 测试全绿；契约套件同用例双跑（内存参考实现 + 标准/降级内存 WebDAV 服务器）；rclone 真实 HTTP 联调通过；双端收敛 FR-404 自动化预演通过；Windows debug 构建通过。**待联调收口**：坚果云真实环境实测（docs/07-R3，需用户提供账号+应用密码）+ 两真机 FR-404 验收；flutter_secure_storage_windows 收编见 docs/07-R16 |
+| M3 REST 适配器 + 自建服务端 → M4 打磨分发 | ⬜ 见 `docs/00-总览.md` §4 |
 
-下一步：M2 同步上线——sync_core 同步状态机 + diff + LWW 冲突合并（docs/04 §4-§6，单测覆盖规则表）→ WebDAV 适配器 + 契约测试双跑 → 坚果云联调专项（R3）。
+下一步：M3——自建服务端（Go，docs/06）+ REST 适配器（契约套件第三跑，NFR-08）+ epub 渲染器；收尾项：坚果云 R3 联调（凭据就绪后 `packages/sync_core/tool/rclone_probe.dart` 模式可直接换成坚果云端点实测）。
 
 ## 8. 文档索引
 
