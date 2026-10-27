@@ -109,9 +109,10 @@ final class ConnectionTester {
     }
 
     try {
-      // 1. 列根目录（PROPFIND Depth:1；404 视为"目录不存在，将由 ensureLayout 创建"）。
+      // 1. 列根目录（PROPFIND Depth:1；404/409 视为"目录不存在，将由
+      //    ensureLayout 创建"——坚果云对不存在目录实测返回 409，docs/07 R3）。
       final rootUri = _uri(baseUrl, rootPath);
-      final listStatus = await _timed(steps, '列目录', () async {
+      final (listStatus, listRow) = await _timed(steps, '列目录', () async {
         final req = await _client.openUrl('PROPFIND', rootUri);
         _setAuth(req, username, password);
         req.headers.set('Depth', '1');
@@ -121,19 +122,20 @@ final class ConnectionTester {
         await res.drain<void>();
         return status;
       });
-      if (!_okOrNotFound(listStatus, steps, '列目录')) {
+      if (!_okOrNotFound(listStatus, listRow, steps, '列目录')) {
         return _failure(steps, _classifyStatus(listStatus));
       }
 
       // 2. MKCOL 探针目录。
-      final mkcolStatus = await _timed(steps, '建探针目录', () {
-        return request('MKCOL', _uri(baseUrl, probeDir));
+      final probeDirUri = _uri(baseUrl, probeDir);
+      final (mkcolStatus, mkcolRow) = await _timed(steps, '建探针目录', () {
+        return request('MKCOL', probeDirUri);
       });
       if (!_expect(
         mkcolStatus,
+        mkcolRow,
         const {201, 405},
         steps,
-        '建探针目录',
         detail405: '目录已存在',
       )) {
         return _failure(steps, _classifyStatus(mkcolStatus));
@@ -141,16 +143,16 @@ final class ConnectionTester {
 
       // 3. PUT 探针文件。
       final probeFile = joinPath(probeDir, 'probe.txt');
-      final putStatus = await _timed(steps, '写探针文件', () {
+      final (putStatus, putRow) = await _timed(steps, '写探针文件', () {
         return request('PUT', _uri(baseUrl, probeFile), body: 'sync-reader');
       });
-      if (!_expect(putStatus, const {200, 201, 204}, steps, '写探针文件')) {
+      if (!_expect(putStatus, putRow, const {200, 201, 204}, steps)) {
         return _failure(steps, _classifyStatus(putStatus));
       }
 
       // 4. GET 读回（记录 ETag → 能力探测）。
       String? etag;
-      final getStatus = await _timed(steps, '读探针文件', () async {
+      final (getStatus, getRow) = await _timed(steps, '读探针文件', () async {
         final req = await _client.openUrl('GET', _uri(baseUrl, probeFile));
         _setAuth(req, username, password);
         final res = await req.close().timeout(timeout);
@@ -158,13 +160,13 @@ final class ConnectionTester {
         etag = res.headers.value('etag');
         return res.statusCode;
       });
-      if (!_expect(getStatus, const {200}, steps, '读探针文件')) {
+      if (!_expect(getStatus, getRow, const {200}, steps)) {
         return _failure(steps, _classifyStatus(getStatus));
       }
       etagSeen = etag != null;
 
       // 5. Range 探测（请求前 4 字节，206 = 支持；部分服务忽略 Range 回 200）。
-      final rangeStatus = await _timed(steps, 'Range 探测', () async {
+      final (rangeStatus, _) = await _timed(steps, 'Range 探测', () async {
         final req = await _client.openUrl('GET', _uri(baseUrl, probeFile));
         _setAuth(req, username, password);
         req.headers.set('Range', 'bytes=0-3');
@@ -176,17 +178,17 @@ final class ConnectionTester {
       rangeSupported = rangeStatus == 206;
 
       // 6. DELETE 探针文件 + MOVE 探针（先 PUT 一个待移动文件）。
-      final deleteStatus = await _timed(steps, '删探针文件', () {
+      final (deleteStatus, deleteRow) = await _timed(steps, '删探针文件', () {
         return request('DELETE', _uri(baseUrl, probeFile));
       });
-      if (!_expect(deleteStatus, const {200, 202, 204, 404}, steps, '删探针文件')) {
+      if (!_expect(deleteStatus, deleteRow, const {200, 202, 204, 404}, steps)) {
         return _failure(steps, _classifyStatus(deleteStatus));
       }
 
       final moveSource = joinPath(probeDir, 'move-src.txt');
       final moveTarget = joinPath(probeDir, 'move-dst.txt');
       await request('PUT', _uri(baseUrl, moveSource), body: 'move-me');
-      final moveStatus = await _timed(steps, 'MOVE 探测', () async {
+      final (moveStatus, moveRow) = await _timed(steps, 'MOVE 探测', () async {
         final req = await _client.openUrl('MOVE', _uri(baseUrl, moveSource));
         _setAuth(req, username, password);
         req.headers.set('Destination', _uri(baseUrl, moveTarget).toString());
@@ -199,9 +201,9 @@ final class ConnectionTester {
       moveSupported = const {200, 201, 204}.contains(moveStatus);
       if (!_expect(
         moveStatus,
+        moveRow,
         const {200, 201, 204, 403, 405, 501},
         steps,
-        'MOVE 探测',
         detail403: '服务端禁止 MOVE（将回退非原子提交）',
       )) {
         return _failure(steps, _classifyStatus(moveStatus));
@@ -242,8 +244,10 @@ final class ConnectionTester {
     req.headers.set('Authorization', 'Basic $token');
   }
 
-  /// 带延迟记录的步骤执行：返回动作结果；同时写入步骤行。
-  Future<int> _timed(
+  /// 带延迟记录的步骤执行：返回 (状态码, 行索引)。HTTP 错误状态不抛异常，
+  /// 由调用方 [_expect]/[_okOrNotFound] 通过 [_failRow]/[_noteRow] 原位更新
+  /// 该行（避免同名两行、前✓后✗的迷惑显示）。
+  Future<(int, int)> _timed(
     List<ConnectionTestStep> steps,
     String name,
     Future<int> Function() action,
@@ -267,45 +271,62 @@ final class ConnectionTester {
         ),
       );
     }
-    return status;
+    return (status, steps.length - 1);
+  }
+
+  /// 将 rowIndex 行原位标记为失败（保留延迟显示，不追加新行）。
+  void _failRow(List<ConnectionTestStep> steps, int rowIndex, String detail) {
+    steps[rowIndex] = ConnectionTestStep(
+      name: steps[rowIndex].name,
+      ok: false,
+      latencyMs: steps[rowIndex].latencyMs,
+      detail: detail,
+    );
+  }
+
+  /// 将 rowIndex 行原位附注说明（保持通过状态，不追加新行）。
+  void _noteRow(List<ConnectionTestStep> steps, int rowIndex, String detail) {
+    steps[rowIndex] = ConnectionTestStep(
+      name: steps[rowIndex].name,
+      ok: true,
+      latencyMs: steps[rowIndex].latencyMs,
+      detail: detail,
+    );
   }
 
   bool _expect(
-    int? status,
+    int status,
+    int rowIndex,
     Set<int> okCodes,
-    List<ConnectionTestStep> steps,
-    String name, {
+    List<ConnectionTestStep> steps, {
     String? detail405,
     String? detail403,
   }) {
-    if (status != null && okCodes.contains(status)) {
+    if (okCodes.contains(status)) {
       if (status == 405 && detail405 != null) {
-        steps.add(ConnectionTestStep(name: name, ok: true, detail: detail405));
+        _noteRow(steps, rowIndex, detail405);
       }
       if (status == 403 && detail403 != null) {
-        steps.add(ConnectionTestStep(name: name, ok: true, detail: detail403));
+        _noteRow(steps, rowIndex, detail403);
       }
       return true;
     }
-    steps.add(
-      ConnectionTestStep(
-        name: name,
-        ok: false,
-        detail: 'HTTP ${status ?? '?'}',
-      ),
-    );
+    _failRow(steps, rowIndex, 'HTTP $status');
     return false;
   }
 
-  /// PROPFIND 允许 207/200；404 = 根目录尚不存在（视为可继续）。
-  bool _okOrNotFound(int status, List<ConnectionTestStep> steps, String name) {
-    if (status == 404) {
-      steps.add(
-        ConnectionTestStep(name: name, ok: true, detail: '目录不存在（首次连接时将自动创建）'),
-      );
+  /// PROPFIND 允许 207/200；404/409 = 根目录尚不存在（视为可继续）。
+  bool _okOrNotFound(
+    int status,
+    int rowIndex,
+    List<ConnectionTestStep> steps,
+    String name,
+  ) {
+    if (status == 404 || status == 409) {
+      _noteRow(steps, rowIndex, '目录不存在（首次连接时将自动创建）');
       return true;
     }
-    return _expect(status, const {200, 207}, steps, name);
+    return _expect(status, rowIndex, const {200, 207}, steps);
   }
 
   ConnectionTestResult _failure(List<ConnectionTestStep> steps, String text) =>
@@ -313,7 +334,10 @@ final class ConnectionTester {
 
   /// 状态码 → 分类文案（FR-505：DNS/超时/401/403/5xx）。
   static String classifyStatus(int? status) {
-    if (status == 401) return '密码错误或账号无效（HTTP 401）';
+    if (status == 401) {
+      return '密码错误或账号无效（HTTP 401）：请核对后重新输入，应用密码为全小写且'
+          '首尾不含空格；若曾在坚果云后台重置过应用密码，请使用新生成的密码';
+    }
     if (status == 403) return '权限不足，请检查应用密码与应用授权（HTTP 403）';
     if (status != null && status >= 500 && status < 600) {
       return '服务异常（HTTP $status），请稍后重试';

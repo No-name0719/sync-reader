@@ -191,7 +191,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('连接成功'), findsNothing);
-    expect(find.textContaining('HTTP 401'), findsOneWidget);
+    // 行内 detail（HTTP 401）与分类文案（密码错误…HTTP 401：请核对后重新输入…）各一处。
+    expect(find.text('HTTP 401'), findsOneWidget);
+    expect(find.textContaining('密码错误或账号无效'), findsOneWidget);
     expect(
       tester.widget<FilledButton>(controlButton('重新测试', 2)).onPressed,
       isNotNull,
@@ -202,6 +204,7 @@ void main() {
     await tester.tap(controlText('上一步', 2));
     await tester.pumpAndSettle();
     expect(find.textContaining('HTTP 401'), findsNothing, reason: '回退清空结果');
+    expect(find.textContaining('密码错误或账号无效'), findsNothing);
     await tester.tap(find.text('自动连接测试'));
     await tester.pumpAndSettle();
     expect(controlText('开始连接测试', 2), findsOneWidget);

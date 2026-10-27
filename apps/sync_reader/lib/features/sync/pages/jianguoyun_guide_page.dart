@@ -69,7 +69,7 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
     final result = await tester.test(
       baseUrl: _baseUrlController.text.trim(),
       username: _accountController.text.trim(),
-      password: _passwordController.text,
+      password: _passwordController.text.trim(),
       rootPath: _rootPathController.text.trim().isEmpty
           ? ConnectionTester.defaultRootPath
           : _rootPathController.text.trim(),
@@ -93,7 +93,10 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
       SecureKeys.webdavAccount,
       _accountController.text.trim(),
     );
-    await credentials.save(SecureKeys.webdavPassword, _passwordController.text);
+    await credentials.save(
+      SecureKeys.webdavPassword,
+      _passwordController.text.trim(),
+    );
     await credentials.save(
       SecureKeys.webdavBaseUrl,
       _baseUrlController.text.trim(),
@@ -281,6 +284,10 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
           TextField(
             controller: _passwordController,
             obscureText: true,
+            // 应用密码为全小写：防键盘自动首字母大写/联想导致的 401。
+            autocorrect: false,
+            enableSuggestions: false,
+            textCapitalization: TextCapitalization.none,
             decoration: const InputDecoration(
               labelText: '应用密码',
               border: OutlineInputBorder(),
@@ -322,28 +329,49 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
                 for (final step in result.steps)
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Row(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(
-                          step.ok ? Icons.check_circle : Icons.cancel,
-                          size: 16,
-                          color: step.ok
-                              ? Colors.green.shade600
-                              : Theme.of(context).colorScheme.error,
+                        Row(
+                          children: [
+                            Icon(
+                              step.ok ? Icons.check_circle : Icons.cancel,
+                              size: 16,
+                              color: step.ok
+                                  ? Colors.green.shade600
+                                  : Theme.of(context).colorScheme.error,
+                            ),
+                            const SizedBox(width: 6),
+                            // Expanded：窄窗（480px）下步骤名过长时省略，不横向溢出。
+                            Expanded(
+                              child: Text(
+                                step.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            Text(
+                              step.latencyMs == null
+                                  ? '-'
+                                  : '${step.latencyMs} ms',
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 6),
-                        // Expanded：窄窗（480px）下步骤名过长时省略，不横向溢出。
-                        Expanded(
-                          child: Text(
-                            step.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                        // 失败原因/附注（HTTP 状态码、目录不存在等）直接跟进行内。
+                        if (step.detail != null)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 22, top: 1),
+                            child: Text(
+                              step.detail!,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: step.ok
+                                    ? Theme.of(context).hintColor
+                                    : Theme.of(context).colorScheme.error,
+                              ),
+                            ),
                           ),
-                        ),
-                        Text(
-                          step.latencyMs == null ? '-' : '${step.latencyMs} ms',
-                          style: const TextStyle(fontSize: 12),
-                        ),
                       ],
                     ),
                   ),

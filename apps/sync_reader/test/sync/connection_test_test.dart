@@ -18,6 +18,9 @@ class _MiniWebDav {
   /// 注入强制状态码（模拟 401/403/500）。
   void forceStatus(int? status) => _forceStatus = status;
 
+  /// PROPFIND 不存在目录时的返回码（模拟坚果云 409，见 docs/07 R3）。
+  int? propfindMissingStatus;
+
   Future<String> start() async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     _server = server;
@@ -41,12 +44,14 @@ class _MiniWebDav {
     final path = req.uri.path;
     switch (req.method) {
       case 'PROPFIND':
+        // 仅 / 与 /Apps 视为必存在；同步根本身可能尚不存在（坚果云实测 409）。
+        final missing = _dirs.any((d) => path == d || path.startsWith('$d/'))
+            ? false
+            : !(path == '/' || path == '/Apps');
         req.response.statusCode =
-            _dirs.any((d) => path == d || path.startsWith('$d/'))
-            ? 207
-            : (path == '/' || path == '/Apps' || path == '/Apps/SyncReader'
-                  ? 207
-                  : 404);
+            missing
+            ? (propfindMissingStatus ?? 404)
+            : 207;
       case 'MKCOL':
         if (_dirs.contains(path)) {
           req.response.statusCode = 405;
@@ -132,7 +137,7 @@ void main() {
     );
   });
 
-  test('401 → 密码错误分类文案', () async {
+  test('401 → 密码错误分类文案；失败原位更新同一行（无同名重复行）', () async {
     stub.forceStatus(401);
     final result = await ConnectionTester().test(
       baseUrl: baseUrl,
@@ -141,6 +146,26 @@ void main() {
     );
     expect(result.success, isFalse);
     expect(result.failureText, contains('密码错误'));
+    // HTTP 401 不抛异常：列目录行应原位改为失败并保留延迟，而不是再追加一行。
+    final listRows = result.steps.where((s) => s.name == '列目录').toList();
+    expect(listRows, hasLength(1));
+    expect(listRows.single.ok, isFalse);
+    expect(listRows.single.latencyMs, isNotNull);
+    expect(listRows.single.detail, 'HTTP 401');
+    expect(result.steps, hasLength(1));
+  });
+
+  test('PROPFIND 409（坚果云不存在目录）→ 视为可继续，全套通过', () async {
+    stub.propfindMissingStatus = 409;
+    final result = await ConnectionTester().test(
+      baseUrl: baseUrl,
+      username: 'u',
+      password: 'p',
+    );
+    expect(result.success, isTrue, reason: result.failureText);
+    final listRow = result.steps.firstWhere((s) => s.name == '列目录');
+    expect(listRow.ok, isTrue);
+    expect(listRow.detail, contains('目录不存在'));
   });
 
   test('403 → 权限不足分类文案', () async {
