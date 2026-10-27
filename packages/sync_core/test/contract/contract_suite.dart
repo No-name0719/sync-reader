@@ -208,5 +208,66 @@ void contractSuite(AdapterFactory make, {String tag = 'adapter'}) {
         isNot(contains(bookIdOf(1))),
       );
     });
+
+    test(
+      '附加：listBookFiles 空清单 / uploadBook 后出现在清单（docs/04 §7.1 规则 4）',
+      () async {
+        await adapter.ensureLayout();
+        expect(await adapter.listBookFiles(), isEmpty);
+
+        final dir = await Directory.systemTemp.createTemp('sync_core_contract');
+        addTearDown(() => dir.delete(recursive: true));
+        final bytesA = deterministicBytes(32, 5);
+        final (fileA, hashA) = await writeTempContent(dir, 'a.txt', bytesA);
+        await adapter.uploadBook(bookIdOf(1), fileA, hashA);
+        final bytesB = deterministicBytes(24, 6);
+        final (fileB, hashB) = await writeTempContent(dir, 'b.epub', bytesB);
+        await adapter.uploadBook(bookIdOf(2), fileB, hashB);
+
+        final files = await adapter.listBookFiles();
+        expect(files, hasLength(2));
+        final byName = {for (final f in files) f.name: f};
+        expect(byName['${bookIdOf(1)}.txt']?.sizeBytes, bytesA.length);
+        expect(byName['${bookIdOf(2)}.epub']?.sizeBytes, bytesB.length);
+      },
+    );
+
+    test('附加：deleteBookFile 删除生效且重复删除幂等（docs/04 §7.1 规则 4）', () async {
+      await adapter.ensureLayout();
+      final dir = await Directory.systemTemp.createTemp('sync_core_contract');
+      addTearDown(() => dir.delete(recursive: true));
+      final (file, hash) = await writeTempContent(dir, 'a.txt', [1, 2, 3]);
+      await adapter.uploadBook(bookIdOf(1), file, hash);
+
+      await adapter.deleteBookFile('${bookIdOf(1)}.txt');
+      expect(await adapter.listBookFiles(), isEmpty, reason: '删除后清单为空');
+      // 二次删除（404）：幂等成功，不抛异常。
+      await adapter.deleteBookFile('${bookIdOf(1)}.txt');
+    });
+
+    test(
+      '附加：uploadBook overwrite=true 覆盖远端不同版本；overwrite=false 保留既有报错语义（FR-410）',
+      () async {
+        await adapter.ensureLayout();
+        final dir = await Directory.systemTemp.createTemp('sync_core_contract');
+        addTearDown(() => dir.delete(recursive: true));
+        final bytesA = deterministicBytes(32, 7);
+        final (fileA, hashA) = await writeTempContent(dir, 'a.txt', bytesA);
+        await adapter.uploadBook(bookIdOf(1), fileA, hashA);
+
+        // overwrite=false（默认）：远端已有不同版本 → ContentHashMismatch（回归）。
+        final bytesB = deterministicBytes(40, 8);
+        final (fileB, hashB) = await writeTempContent(dir, 'b.txt', bytesB);
+        expect(
+          () => adapter.uploadBook(bookIdOf(1), fileB, hashB),
+          throwsA(isA<ContentHashMismatch>()),
+        );
+
+        // overwrite=true：显式替换，直接覆盖远端文件。
+        await adapter.uploadBook(bookIdOf(1), fileB, hashB, overwrite: true);
+        final got = await adapter.downloadBook(bookIdOf(1)).toList();
+        expect(got.expand((c) => c).toList(), bytesB, reason: '远端正文已变为新版本');
+      },
+    );
   });
 }

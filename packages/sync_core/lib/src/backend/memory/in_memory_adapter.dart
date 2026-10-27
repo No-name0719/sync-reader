@@ -14,6 +14,8 @@ import '../backend_adapter.dart';
 /// - etag = meta JSON 内容短摘要（写即变，If-None-Match 命中返回 304）；
 /// - putMeta 写前重读：`expectedRev` 与存储不符抛 [RevConflict]；
 /// - uploadBook：同 hash 跳过（幂等）、hash 不符抛 [ContentHashMismatch]；
+///   `overwrite=true`（FR-410 显式替换）跳过"已有不同版本"检查直接覆盖；
+/// - listBookFiles / deleteBookFile：`books/` 清单与孤儿清理（404 幂等）；
 /// - downloadBook 支持 Range（startByte）切片。
 class InMemoryAdapter implements BackendAdapter {
   @override
@@ -144,6 +146,18 @@ class InMemoryAdapter implements BackendAdapter {
   }
 
   @override
+  Future<List<CloudBookFile>> listBookFiles() async => [
+    for (final entry in books.entries)
+      CloudBookFile(name: entry.key, sizeBytes: entry.value.length),
+  ];
+
+  @override
+  Future<void> deleteBookFile(String name) async {
+    // 404（文件不存在）视为幂等成功，与 WebDAV 适配器语义一致。
+    books.remove(name);
+  }
+
+  @override
   Stream<List<int>> downloadBook(String bookId, {int? startByte}) async* {
     activeDownloads++;
     if (activeDownloads > peakDownloads) peakDownloads = activeDownloads;
@@ -164,7 +178,12 @@ class InMemoryAdapter implements BackendAdapter {
   }
 
   @override
-  Future<void> uploadBook(String bookId, File file, String contentHash) async {
+  Future<void> uploadBook(
+    String bookId,
+    File file,
+    String contentHash, {
+    bool overwrite = false,
+  }) async {
     uploadCalls++;
     final bytes = await file.readAsBytes();
     // contentHash 语义 = `sha256:<hex>`（docs/05 §3.2），适配器侧重算校验。
@@ -173,7 +192,7 @@ class InMemoryAdapter implements BackendAdapter {
         ? contentHash.substring('sha256:'.length).toLowerCase()
         : contentHash.toLowerCase();
     if (claimed != claimedNorm) {
-      // 上传内容实际哈希与声明不符：客户端缺陷，拒收。
+      // 上传内容实际哈希与声明不符：客户端缺陷，拒收（overwrite 亦不豁免）。
       throw ContentHashMismatch(
         bookId,
         '上传内容实际哈希 $claimed 与声明 $claimedNorm 不符',
@@ -181,7 +200,7 @@ class InMemoryAdapter implements BackendAdapter {
     }
     final name = _findBookEntryName(bookId) ?? '$bookId.${_extOf(file.path)}';
     final existing = books[name];
-    if (existing != null) {
+    if (existing != null && !overwrite) {
       final existingHash = _sha256Hex(existing);
       if (existingHash == claimedNorm) {
         skippedUploads++; // 幂等：同 hash 跳过（docs/04 §5.3）
@@ -192,7 +211,7 @@ class InMemoryAdapter implements BackendAdapter {
         '远端已存在不同版本的正文（$existingHash ≠ $claimedNorm）',
       );
     }
-    // tmp/ → MOVE 原子提交（docs/05 §1）。
+    // tmp/ → MOVE 原子提交（docs/05 §1）；overwrite=true 时直接覆盖同名文件。
     tmp['$name.part'] = bytes;
     books[name] = bytes;
     tmp.remove('$name.part');

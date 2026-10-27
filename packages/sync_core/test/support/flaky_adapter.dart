@@ -17,6 +17,9 @@ class FlakyAdapter implements BackendAdapter {
   /// putTombstone 故障脚本（deleteBook / 补推测试用）：bookId → 依次抛出。
   final Map<String, List<Object Function()>> putTombstoneFailures = {};
 
+  /// deleteBookFile 故障脚本（云端孤儿清理失败路径测试用）：依次抛出。
+  final List<Object Function()> deleteBookFileFailures = [];
+
   /// uploadBook 故障脚本（队列层重试测试用）。
   final List<Object Function()> uploadFailures = [];
 
@@ -49,6 +52,18 @@ class FlakyAdapter implements BackendAdapter {
 
   @override
   Future<void> deleteMeta(String bookId) => inner.deleteMeta(bookId);
+
+  @override
+  Future<List<CloudBookFile>> listBookFiles() => inner.listBookFiles();
+
+  @override
+  Future<void> deleteBookFile(String name) async {
+    final script = deleteBookFileFailures;
+    if (script.isNotEmpty) {
+      throw script.removeAt(0)();
+    }
+    return inner.deleteBookFile(name);
+  }
 
   @override
   Future<MetaListing> listMetas({String? cursor}) {
@@ -117,12 +132,17 @@ class FlakyAdapter implements BackendAdapter {
   }
 
   @override
-  Future<void> uploadBook(String bookId, File file, String contentHash) async {
+  Future<void> uploadBook(
+    String bookId,
+    File file,
+    String contentHash, {
+    bool overwrite = false,
+  }) async {
     uploadAttempts++;
     if (uploadFailures.isNotEmpty) {
       throw uploadFailures.removeAt(0)();
     }
-    return inner.uploadBook(bookId, file, contentHash);
+    return inner.uploadBook(bookId, file, contentHash, overwrite: overwrite);
   }
 
   @override
@@ -153,6 +173,12 @@ class AlwaysConflictAdapter implements BackendAdapter {
 
   @override
   Future<void> deleteMeta(String bookId) => inner.deleteMeta(bookId);
+
+  @override
+  Future<List<CloudBookFile>> listBookFiles() => inner.listBookFiles();
+
+  @override
+  Future<void> deleteBookFile(String name) => inner.deleteBookFile(name);
 
   @override
   Future<MetaListing> listMetas({String? cursor}) =>
@@ -187,8 +213,12 @@ class AlwaysConflictAdapter implements BackendAdapter {
       inner.downloadBook(bookId, startByte: startByte);
 
   @override
-  Future<void> uploadBook(String bookId, File file, String contentHash) =>
-      inner.uploadBook(bookId, file, contentHash);
+  Future<void> uploadBook(
+    String bookId,
+    File file,
+    String contentHash, {
+    bool overwrite = false,
+  }) => inner.uploadBook(bookId, file, contentHash, overwrite: overwrite);
 
   @override
   Future<void> dispose() => inner.dispose();

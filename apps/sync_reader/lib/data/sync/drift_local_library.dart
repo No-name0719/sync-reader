@@ -314,6 +314,45 @@ final class DriftLocalLibrary implements LocalLibrary {
     );
   }
 
+  @override
+  Future<void> updateBookFileInfo(
+    String bookId, {
+    String? fileName,
+    String? contentHash,
+    int? sizeBytes,
+    String? format,
+  }) async {
+    final row = await _booksDao.getById(bookId);
+    if (row == null) {
+      throw StateError('本地不存在该书，无法更新文件信息：$bookId');
+    }
+    // 仅更新非 null 实参对应的列（FR-410：app 已把新文件落盘并重解析）。
+    await (_db.update(_db.books)..where((b) => b.bookId.equals(bookId))).write(
+      BooksCompanion(
+        fileName: fileName == null
+            ? const Value.absent()
+            : Value<String>(fileName),
+        contentHash: contentHash == null
+            ? const Value.absent()
+            : Value<String>(contentHash),
+        sizeBytes: sizeBytes == null
+            ? const Value.absent()
+            : Value<int>(sizeBytes),
+        format: format == null ? const Value.absent() : Value<String>(format),
+      ),
+    );
+    // format 变化 → 按新扩展名重探本地正文路径（与内存参考实现一致）：
+    // 新路径文件已落盘则指过去，否则置占位（引擎 replaceBookContent 会按
+    // Corruption 报告，由上层流程保证先落盘）。
+    if (format != null && format != row.format) {
+      final store = await _fileStore;
+      final newPath = store.resolveBookPath(bookId, format);
+      final exists = await File(newPath).exists();
+      await (_db.update(_db.books)..where((b) => b.bookId.equals(bookId)))
+          .write(BooksCompanion(localPath: Value(exists ? newPath : null)));
+    }
+  }
+
   // ── 内部工具 ──────────────────────────────────────────────────────────
 
   BooksDao get _booksDao => _db.booksDao;

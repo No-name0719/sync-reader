@@ -55,4 +55,18 @@ abstract interface class LocalLibrary {
   /// （TransferQueue 已完成 `.part` → target 的原子 rename）。
   /// 实现负责登记本地路径并清除占位标记。
   Future<void> commitContentFile(String bookId, String contentFile);
+
+  /// 文件替换的本地行登记（FR-410，docs/05 §6 不变式 3 的显式出口）。
+  ///
+  /// app 层先把新文件落盘、完成重解析，再调用本方法更新 `books` 行的
+  /// 文件指征列（仅更新非 null 实参对应的列）；随后调
+  /// [SyncEngine.replaceBookContent] 推送 meta 与正文。title/toc/封面等
+  /// 重解析结果由 app 自行更新，不经本方法。书不存在抛 [StateError]。
+  Future<void> updateBookFileInfo(
+    String bookId, {
+    String? fileName,
+    String? contentHash,
+    int? sizeBytes,
+    String? format,
+  });
 }

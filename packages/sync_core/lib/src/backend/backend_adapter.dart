@@ -42,6 +42,32 @@ class MetaListing {
   final bool hasMore;
 }
 
+/// 云端正文文件条目（docs/04 §7.1 规则 4 云端孤儿清理的清单项）。
+///
+/// [name] 形如 `{bookId}.{ext}`（`books/` 下的实际文件名）；
+/// [sizeBytes] 为文件字节数（诊断/流量预估用）。
+class CloudBookFile {
+  const CloudBookFile({required this.name, required this.sizeBytes});
+
+  /// `books/` 下的文件名（不含目录前缀）。
+  final String name;
+
+  /// 文件字节数。
+  final int sizeBytes;
+
+  @override
+  bool operator ==(Object other) =>
+      other is CloudBookFile &&
+      other.name == name &&
+      other.sizeBytes == sizeBytes;
+
+  @override
+  int get hashCode => Object.hash(name, sizeBytes);
+
+  @override
+  String toString() => 'CloudBookFile($name, $sizeBytes)';
+}
+
 /// 后端连接配置。凭据（应用密码/token）由上层从安全存储读出后传入，
 /// 本包不得将其写入任何持久化介质（NFR-03）。
 class BackendConfig {
@@ -94,6 +120,14 @@ abstract interface class BackendAdapter {
   /// 元数据清单：WebDAV = PROPFIND Depth:1 on meta/；REST = GET /sync/changes?cursor。
   Future<MetaListing> listMetas({String? cursor});
 
+  /// 列 `books/` 下的正文文件（docs/04 §7.1 规则 4 云端孤儿清理）。
+  /// 只列文件不列集合；目录缺失（首次同步前）返回空表。
+  Future<List<CloudBookFile>> listBookFiles();
+
+  /// 删除云端正文文件 `books/{name}`（docs/04 §7.1 规则 4：仅限用户逐文件
+  /// 确认的孤儿清理入口，绝不自动调用）；404 视为幂等成功。
+  Future<void> deleteBookFile(String name);
+
   /// 单本 meta；`ifNoneMatch` 命中（未变更）时返回 null 并置 [MetaNotChanged] 语义
   /// ——简化为返回 null，调用方依据自身 etag 判断（docs/04 §4 阶段 3）。
   Future<BookMeta?> getMeta(String bookId, {String? ifNoneMatch});
@@ -110,7 +144,18 @@ abstract interface class BackendAdapter {
 
   /// 上传正文：`tmp/{bookId}.{ext}.part` → MOVE 原子提交；
   /// 幂等：远端已有相同 contentHash 的文件时跳过（docs/04 §5.3）。
-  Future<void> uploadBook(String bookId, File file, String contentHash);
+  ///
+  /// [overwrite]（FR-410 文件替换，docs/05 §6 不变式 3 的显式出口）：
+  /// - `false`（默认）：远端已存在**不同**内容 → [ContentHashMismatch]
+  ///   （同 hash 仍幂等跳过）；
+  /// - `true`：跳过"远端已有不同版本"检查，直接覆盖远端文件
+  ///   （仍校验本地实际哈希与声明一致；仅供 FR-410 显式替换流程使用）。
+  Future<void> uploadBook(
+    String bookId,
+    File file,
+    String contentHash, {
+    bool overwrite = false,
+  });
 
   Future<void> dispose();
 }

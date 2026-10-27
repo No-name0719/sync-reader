@@ -478,10 +478,35 @@ class WebDavAdapter implements BackendAdapter {
     _throwIfBadStatus(resp, '删除 meta $bookId');
   }
 
+  @override
+  Future<List<CloudBookFile>> listBookFiles() async {
+    // PROPFIND Depth:1：目录缺失（首次同步前）由 _propfind 回空表
+    // （坚果云对缺失目录回 409，_isMissingStatus 已兼容）。
+    final entries = await _propfind(_uri('books'), depth: 1);
+    return [
+      for (final entry in entries)
+        if (!entry.isDir && entry.name.isNotEmpty)
+          CloudBookFile(name: entry.name, sizeBytes: entry.size ?? 0),
+    ];
+  }
+
+  @override
+  Future<void> deleteBookFile(String name) async {
+    // name 为 books/ 下的文件名（{bookId}.{ext}）；_uri 逐段 percent-encode。
+    final resp = await _requestBytes('DELETE', _uri('books/$name'));
+    if (resp.statusCode == 404) return; // 幂等成功（契约语义）
+    _throwIfBadStatus(resp, '删除云端正文 $name');
+  }
+
   // ── 正文传输 ──────────────────────────────────────────────────────────
 
   @override
-  Future<void> uploadBook(String bookId, File file, String contentHash) async {
+  Future<void> uploadBook(
+    String bookId,
+    File file,
+    String contentHash, {
+    bool overwrite = false,
+  }) async {
     final ext = _extOf(file.path);
     final name = '$bookId.$ext';
     final localSize = await file.length();
@@ -494,26 +519,30 @@ class WebDavAdapter implements BackendAdapter {
     }
 
     // 查重：远端已有同内容文件 → 跳过上传（幂等，docs/04 §5.3）。
-    final prop = await _propfindOne(_uri('books/$name'));
-    if (prop != null) {
-      final remoteEtag = prop.etag == null ? null : _stripEtag(prop.etag!);
-      if (remoteEtag != null && _isMd5Hex(remoteEtag)) {
-        // 坚果云等 etag=MD5 的服务器：免下载判定。
-        final localMd5 = (await md5.bind(file.openRead()).first).toString();
-        if (remoteEtag == localMd5) return;
-        throw ContentHashMismatch(bookId, '远端已存在不同版本的正文（etag 不符）');
+    // FR-410 显式替换（overwrite=true）跳过"已有不同版本"检查，直接覆盖；
+    // 同 hash 幂等跳过的判定仍保留（替换到相同内容是无害 no-op）。
+    if (!overwrite) {
+      final prop = await _propfindOne(_uri('books/$name'));
+      if (prop != null) {
+        final remoteEtag = prop.etag == null ? null : _stripEtag(prop.etag!);
+        if (remoteEtag != null && _isMd5Hex(remoteEtag)) {
+          // 坚果云等 etag=MD5 的服务器：免下载判定。
+          final localMd5 = (await md5.bind(file.openRead()).first).toString();
+          if (remoteEtag == localMd5) return;
+          throw ContentHashMismatch(bookId, '远端已存在不同版本的正文（etag 不符）');
+        }
+        if (prop.size != null && prop.size != localSize) {
+          throw ContentHashMismatch(
+            bookId,
+            '远端已存在不同版本的正文（尺寸 ${prop.size} ≠ 本地 $localSize）',
+          );
+        }
+        // 尺寸相等（或服务器不报尺寸）且无法凭 etag 判定 → 下载比对收尾，
+        // 与内存参考实现的哈希语义对齐（仅同尺寸歧义场景付出此流量）。
+        final remoteHash = await _hashRemote(_uri('books/$name'));
+        if (remoteHash == digest) return;
+        throw ContentHashMismatch(bookId, '远端已存在不同版本的正文（哈希不符）');
       }
-      if (prop.size != null && prop.size != localSize) {
-        throw ContentHashMismatch(
-          bookId,
-          '远端已存在不同版本的正文（尺寸 ${prop.size} ≠ 本地 $localSize）',
-        );
-      }
-      // 尺寸相等（或服务器不报尺寸）且无法凭 etag 判定 → 下载比对收尾，
-      // 与内存参考实现的哈希语义对齐（仅同尺寸歧义场景付出此流量）。
-      final remoteHash = await _hashRemote(_uri('books/$name'));
-      if (remoteHash == digest) return;
-      throw ContentHashMismatch(bookId, '远端已存在不同版本的正文（哈希不符）');
     }
 
     final capabilities = await probeCapabilities();

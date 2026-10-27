@@ -295,6 +295,35 @@ class InMemoryLocalLibrary implements LocalLibrary {
     _rows[bookId] = r.withLocalPath(contentFile);
   }
 
+  @override
+  Future<void> updateBookFileInfo(
+    String bookId, {
+    String? fileName,
+    String? contentHash,
+    int? sizeBytes,
+    String? format,
+  }) async {
+    final r = _rows[bookId];
+    if (r == null) {
+      throw StateError('本地不存在该书，无法更新文件信息：$bookId');
+    }
+    // 仅更新非 null 实参对应的列（FR-410：app 已把新文件落盘并重解析）。
+    var updated = r.withFileInfo(
+      fileName: fileName,
+      contentHash: contentHash,
+      sizeBytes: sizeBytes,
+      format: format,
+    );
+    // format 变化 → 按新扩展名重探本地正文路径（约定路径随之改变；
+    // app 未落盘时为 null，引擎 replaceBookContent 会按 Corruption 报告）。
+    if (format != null && format != r.format) {
+      updated = updated.withLocalPathOrNull(
+        _existingContentPath(bookId, format),
+      );
+    }
+    _rows[bookId] = updated;
+  }
+
   /// 测试辅助：导入一本本地书（复制文件入书库 + 建行，rev=1 dirty，docs/04 §5.3）。
   Future<void> importLocalBook({
     required String bookId,
@@ -450,6 +479,53 @@ class _LocalRow {
   final bool cloudMissing;
 
   _LocalRow withLocalPath(String path) => _LocalRow(
+    bookId: bookId,
+    title: title,
+    author: author,
+    format: format,
+    fileName: fileName,
+    contentHash: contentHash,
+    sizeBytes: sizeBytes,
+    tocFingerprint: tocFingerprint,
+    addedAt: addedAt,
+    localPath: path,
+    progress: progress,
+    totalSeconds: totalSeconds,
+    lastReadAt: lastReadAt,
+    dirty: dirty,
+    hasBaseRev: hasBaseRev,
+    baseRev: baseRev,
+    cloudMissing: cloudMissing,
+  );
+
+  /// FR-410 文件替换：仅更新非 null 实参对应的文件指征列。
+  _LocalRow withFileInfo({
+    String? fileName,
+    String? contentHash,
+    int? sizeBytes,
+    String? format,
+  }) => _LocalRow(
+    bookId: bookId,
+    title: title,
+    author: author,
+    format: format ?? this.format,
+    fileName: fileName ?? this.fileName,
+    contentHash: contentHash ?? this.contentHash,
+    sizeBytes: sizeBytes ?? this.sizeBytes,
+    tocFingerprint: tocFingerprint,
+    addedAt: addedAt,
+    localPath: localPath,
+    progress: progress,
+    totalSeconds: totalSeconds,
+    lastReadAt: lastReadAt,
+    dirty: dirty,
+    hasBaseRev: hasBaseRev,
+    baseRev: baseRev,
+    cloudMissing: cloudMissing,
+  );
+
+  /// 以可空路径覆盖 localPath（format 变化后重探；null = 占位）。
+  _LocalRow withLocalPathOrNull(String? path) => _LocalRow(
     bookId: bookId,
     title: title,
     author: author,

@@ -246,10 +246,14 @@ class TransferQueue {
 
   /// 上传正文：包装 [BackendAdapter.uploadBook]，并发 1；
   /// 幂等（远端同 hash 跳过）与远端 hash 校验由适配器保证。
+  ///
+  /// [overwrite] 透传给适配器（FR-410 显式替换：跳过"远端已有不同版本"
+  /// 检查直接覆盖；默认 false 保持 §5.3 语义）。
   Future<void> uploadFile(
     String bookId, {
     required String filePath,
     required String contentHash,
+    bool overwrite = false,
   }) {
     return _uploadSlots.run(() async {
       final file = File(filePath);
@@ -257,7 +261,12 @@ class TransferQueue {
         throw Corruption('本地正文缺失，无法上传（$bookId）');
       }
       await _guard(
-        () => _adapter.uploadBook(bookId, file, contentHash),
+        () => _adapter.uploadBook(
+          bookId,
+          file,
+          contentHash,
+          overwrite: overwrite,
+        ),
         context: '上传正文 $bookId',
       );
       _countBytes(TransferDirection.upload, await file.length());

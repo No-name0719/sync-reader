@@ -82,6 +82,19 @@ class GcReport {
   bool get success => errors.isEmpty;
 }
 
+/// 云端孤儿清单结果（docs/04 §7.1 规则 4）。
+class CloudOrphanListing {
+  const CloudOrphanListing({required this.orphans, this.error});
+
+  /// 无 meta 引用的 `books/` 文件（app 逐文件展示供用户确认）。
+  final List<CloudBookFile> orphans;
+
+  /// 清单阶段失败（如网络）时非 null；此时 [orphans] 为空表。
+  final SyncError? error;
+
+  bool get success => error == null;
+}
+
 /// 同步引擎：五阶段状态机（docs/04 §4）
 /// `PullListing → Diff → PullMetas → PushMetas → Transfer → 落游标`。
 ///
@@ -259,6 +272,128 @@ class SyncEngine {
     }
     report.finishedAt = _now();
     return report;
+  }
+
+  /// 云端孤儿清单（docs/04 §7.1 规则 4）：列出 `books/` 下**无 meta 引用**
+  /// 的正文文件。判定 = 文件名主干（去掉最后一个 `.ext`）不在 meta 清单的
+  /// bookId 集合中；tombstone meta 同样算引用（FR-408：删除不删云端正文，
+  /// tombstoned 书的正文不列为孤儿）。app 层逐文件展示供用户确认，确认后
+  /// 经 [deleteCloudOrphan] 逐个删除（可暂停）。
+  Future<CloudOrphanListing> listCloudOrphans() => _withLock(() async {
+    try {
+      final files = await _adapter.listBookFiles();
+      final listing = await _adapter.listMetas();
+      final orphans = <CloudBookFile>[];
+      for (final file in files) {
+        final bookId = _bookIdOfFileName(file.name);
+        if (!listing.stubs.containsKey(bookId)) orphans.add(file);
+      }
+      return CloudOrphanListing(orphans: orphans);
+    } catch (e) {
+      return CloudOrphanListing(
+        orphans: const [],
+        error: SyncErrorMapper.fromException(e, context: '云端孤儿清单'),
+      );
+    }
+  });
+
+  /// 删除单个云端孤儿文件（docs/04 §7.1 规则 4 手动清理工具的执行入口）。
+  ///
+  /// app 层负责逐文件确认与暂停；本方法只执行删除（404 视为幂等成功），
+  /// 成功返回 null，失败返回分类错误（引擎"永不抛出"约定）。
+  Future<SyncError?> deleteCloudOrphan(String name) => _withLock(() async {
+    try {
+      await _adapter.deleteBookFile(name);
+      return null;
+    } catch (e) {
+      return SyncErrorMapper.fromException(e, context: '删除云端孤儿 $name');
+    }
+  });
+
+  /// FR-410 文件替换（docs/05 §6 不变式 3 的显式出口）：app 层已完成换文件
+  /// 落盘与本地行更新（[LocalLibrary.updateBookFileInfo]），本方法推 meta
+  /// （复用 baseRev/冲突合并重试路径）并以 overwrite 上传正文。
+  ///
+  /// - 进度字段完全不参与：percent/locator 原样保留；他端因 tocFingerprint
+  ///   变化自动降级 percent（docs/05 §3.3 规则 2，机制已存在）；
+  /// - 接收端按"meta hash ≠ 本地 hash → 正常下载覆盖"处理（非损坏）；
+  /// - 收敛行为：meta 推送成功而正文上传失败（如离线）时，错误记入报告，
+  ///   meta 已上云；重试本方法即重新推 meta（rev+1）并重传正文；meta 推送
+  ///   失败时跳过正文上传（避免云端"新正文 + 旧 meta"的哈希不一致窗口）；
+  /// - 无本地书/无正文文件（`localContentPath` 为 null）→ [Corruption]
+  ///   记入报告，不抛出。
+  Future<SyncReport> replaceBookContent(String bookId) =>
+      _withLock(() => _replaceBookContent(bookId));
+
+  Future<SyncReport> _replaceBookContent(String bookId) async {
+    final report = SyncReport(startedAt: _now());
+    final id = await _identity();
+    try {
+      final snap = await _library.book(bookId);
+      final declaredHash = snap?.meta?.book.contentHash;
+      if (snap == null || declaredHash == null) {
+        throw Corruption('本地书库不存在该书，无法替换正文（$bookId）');
+      }
+      final path = await _library.localContentPath(bookId);
+      if (path == null) {
+        throw Corruption('本地正文文件缺失，无法替换正文（$bookId）');
+      }
+      // 步骤 1：推 meta（expectedRev=baseRev；RevConflict → 合并 → 重试恰
+      // 一次）。行内已是新 hash/size（app 已更新），合并保持本端 book 信息
+      // 时即推送新文件指征。
+      final before = report.results.length;
+      await _pushMetaForBook(
+        bookId: bookId,
+        report: report,
+        decision: SyncDecision.pushLocal,
+        deviceId: id.deviceId,
+        deviceName: id.deviceName,
+      );
+      final metaPushed =
+          report.results.length > before && report.results.last.ok;
+      if (!metaPushed) {
+        // meta 推送失败（冲突不可解/网络等）→ 跳过正文上传：避免云端出现
+        // "新正文 + 旧 meta"的哈希不一致窗口（他端下载将误判损坏）。
+        // 错误已由 _pushMetaForBook 记入报告，用户恢复后重试本方法即可。
+        report.finishedAt = _now();
+        return report;
+      }
+      // 步骤 2：上传正文（overwrite：显式替换跳过"远端已有不同版本"检查）。
+      try {
+        await _transfer.uploadFile(
+          bookId,
+          filePath: path,
+          contentHash: declaredHash,
+          overwrite: true,
+        );
+      } catch (e) {
+        report.add(
+          BookSyncResult(
+            bookId: bookId,
+            decision: SyncDecision.pushLocal,
+            ok: false,
+            error: SyncErrorMapper.fromException(e, context: '替换正文上传 $bookId'),
+          ),
+        );
+      }
+    } catch (e) {
+      report.add(
+        BookSyncResult(
+          bookId: bookId,
+          decision: SyncDecision.pushLocal,
+          ok: false,
+          error: SyncErrorMapper.fromException(e, context: '替换正文 $bookId'),
+        ),
+      );
+    }
+    report.finishedAt = _now();
+    return report;
+  }
+
+  /// `books/` 文件名（`{bookId}.{ext}`）→ bookId 主干；无扩展名时原样返回。
+  static String _bookIdOfFileName(String name) {
+    final dot = name.lastIndexOf('.');
+    return dot > 0 ? name.substring(0, dot) : name;
   }
 
   /// 组 tombstone 并推送；`RevConflict` 时以"后操作优先"压过远端重试
@@ -504,10 +639,20 @@ class SyncEngine {
       // ── 阶段 3 PullMetas（并发 2；If-None-Match 304 跳过）──
       final remoteMetas = <String, BookMeta>{};
       final corruptIds = <String>{};
+      // FR-410 接收端：拉到的 meta contentHash ≠ 本地行 → 正文被他端替换，
+      // 本地旧正文需重新下载覆盖（非损坏，docs/05 §6 不变式 3 出口）。
+      final replacedContentIds = <String>{};
       await Future.wait([
         for (final e in plan.pullNeeded)
           _pullSlots.run(
-            () => _pullOne(e, states, remoteMetas, corruptIds, report),
+            () => _pullOne(
+              e,
+              states,
+              remoteMetas,
+              corruptIds,
+              report,
+              replacedContentIds,
+            ),
           ),
       ]);
       report.pullPeakConcurrency = _pullSlots.peak;
@@ -535,6 +680,7 @@ class SyncEngine {
         skipContentUpload,
         report,
         tombstoneDiscovered,
+        replacedContentIds,
       );
 
       // ── 落游标 ──
@@ -567,6 +713,7 @@ class SyncEngine {
     Map<String, BookMeta> remoteMetas,
     Set<String> corruptIds,
     SyncReport report,
+    Set<String> replacedContentIds,
   ) async {
     final bookId = entry.bookId;
     final stub = entry.remote!;
@@ -587,6 +734,20 @@ class SyncEngine {
         throw BackendRequestException('远端 meta 不存在', statusCode: 404);
       }
       remoteMetas[bookId] = meta;
+      // FR-410 接收端：远端直接应用（pullRemote）的 meta 携带的 contentHash
+      // 与本地行不一致且本地有旧正文 → 正文被他端显式替换，旧正文待下载
+      // 覆盖（正常流程，非损坏）。conflictMerge 行合并结果未定，不在拉取
+      // 阶段判定；tombstone 应用即移出书库，正文保留为游离文件，不下载。
+      final localSnap = entry.local;
+      final localHash = localSnap?.meta?.book.contentHash;
+      if (entry.decision == SyncDecision.pullRemote &&
+          !meta.isTombstone &&
+          localSnap != null &&
+          localSnap.hasLocalContent &&
+          localHash != null &&
+          localHash != meta.book.contentHash) {
+        replacedContentIds.add(bookId);
+      }
       if (entry.decision == SyncDecision.conflictMerge) {
         return; // 等合并结果出来再应用，避免覆盖本地 dirty 行
       }
@@ -995,11 +1156,15 @@ class SyncEngine {
   }
 
   /// 阶段 5：正文上传（新书上架）；下载默认按需（打开占位书触发）。
+  ///
+  /// [replacedContentIds]：FR-410 接收端检测出的"正文被他端替换"的书
+  /// （meta hash ≠ 本地旧文件 hash），随占位书一同走自动下载覆盖。
   Future<void> _transferContents(
     SyncPlan plan,
     Set<String> skipContentUpload,
     SyncReport report, [
     Set<String> skipDownload = const {},
+    Set<String> replacedContentIds = const {},
   ]) async {
     for (final need in plan.needsUpload) {
       if (skipContentUpload.contains(need.bookId)) continue;
@@ -1028,10 +1193,12 @@ class SyncEngine {
       }
     }
     if (autoDownloadContent) {
+      final downloaded = <String>{};
       for (final need in plan.needsDownload) {
         if (skipDownload.contains(need.bookId)) continue;
         try {
           await downloadContent(need.bookId);
+          downloaded.add(need.bookId);
         } catch (e) {
           report.add(
             BookSyncResult(
@@ -1041,6 +1208,28 @@ class SyncEngine {
               error: SyncErrorMapper.fromException(
                 e,
                 context: '下载正文 ${need.bookId}',
+              ),
+            ),
+          );
+        }
+      }
+      // FR-410 接收端：远端正文被替换 → 正常下载覆盖本地旧文件
+      // （校验用应用后的 meta hash，机制同 §5.4 按需下载）。
+      for (final bookId in replacedContentIds) {
+        if (skipDownload.contains(bookId) || downloaded.contains(bookId)) {
+          continue;
+        }
+        try {
+          await downloadContent(bookId);
+        } catch (e) {
+          report.add(
+            BookSyncResult(
+              bookId: bookId,
+              decision: SyncDecision.pullRemote,
+              ok: false,
+              error: SyncErrorMapper.fromException(
+                e,
+                context: '下载替换正文 $bookId',
               ),
             ),
           );
