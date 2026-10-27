@@ -111,7 +111,11 @@ class WebDavAdapter implements BackendAdapter {
     );
     switch (resp.statusCode) {
       case 404:
-        return; // 根缺失不算失败
+      case 409:
+        // 根缺失不算失败。坚果云对不存在目录的 PROPFIND 回 409（非标准
+        // 404，R3 实测 2026-10-27），语义同为"父级不存在"，留给
+        // ensureLayout 创建（不自动建目录，docs/04 §5.2）。
+        return;
       case 401:
       case 403:
         throw AuthFailed(
@@ -204,7 +208,7 @@ class WebDavAdapter implements BackendAdapter {
         },
         data: utf8.encode(buildPropfindBody()),
       );
-      if (resp.statusCode == 404) {
+      if (_isMissingStatus(resp.statusCode)) {
         await _mkcol(_uri(dir)); // 405 已存在视为成功
       } else {
         _throwIfBadStatus(resp, 'ensureLayout 探测 $dir/');
@@ -266,7 +270,7 @@ class WebDavAdapter implements BackendAdapter {
       headers: {'depth': '0', 'content-type': 'application/xml; charset=utf-8'},
       data: utf8.encode(buildPropfindBody()),
     );
-    if (resp.statusCode != 404) {
+    if (!_isMissingStatus(resp.statusCode)) {
       _throwIfBadStatus(resp, 'ensureLayout 探测根目录');
       return;
     }
@@ -276,6 +280,11 @@ class WebDavAdapter implements BackendAdapter {
       await _mkcol(_rootUri(i));
     }
   }
+
+  /// "资源不存在"的返回码集合。坚果云对不存在目录的 PROPFIND 回 409
+  /// （非标准 404，R3 实测 2026-10-27），语义同为缺失。
+  static bool _isMissingStatus(int? statusCode) =>
+      statusCode == 404 || statusCode == 409;
 
   Future<void> _mkcol(Uri uri) async {
     final resp = await _requestBytes('MKCOL', uri);
@@ -756,7 +765,7 @@ class WebDavAdapter implements BackendAdapter {
       },
       data: utf8.encode(buildPropfindBody()),
     );
-    if (resp.statusCode == 404) return const [];
+    if (_isMissingStatus(resp.statusCode)) return const [];
     _throwIfBadStatus(resp, 'PROPFIND ${_safePath(uri.toString())}');
     final body = utf8.decode(resp.data ?? const []);
     return parseMultistatus(body);

@@ -36,6 +36,7 @@ class MemoryWebDavServer {
     required this.enableMove,
     required this.enableRange,
     required this.propfindPrefix,
+    required this.propfindMissingStatus,
   });
 
   static Future<MemoryWebDavServer> start({
@@ -45,6 +46,10 @@ class MemoryWebDavServer {
     bool enableMove = true,
     bool enableRange = true,
     String propfindPrefix = 'd',
+
+    /// PROPFIND 命中缺失资源时返回的状态码（标准 404；坚果云实测 409，
+    /// R3 联调画像——用于回归"目录缺失容忍"的适配器行为）。
+    int propfindMissingStatus = 404,
   }) async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final instance = MemoryWebDavServer._(
@@ -55,6 +60,7 @@ class MemoryWebDavServer {
       enableMove: enableMove,
       enableRange: enableRange,
       propfindPrefix: propfindPrefix,
+      propfindMissingStatus: propfindMissingStatus,
     );
     server.listen(instance._enqueue);
     return instance;
@@ -68,6 +74,9 @@ class MemoryWebDavServer {
 
   /// false 时 GET 忽略 Range 头直接返回 200 全量（模拟不支持断点续传）。
   final bool enableRange;
+
+  /// PROPFIND 缺失资源的状态码（坚果云 409 画像模拟，见 start 注释）。
+  final int propfindMissingStatus;
 
   /// PROPFIND XML 前缀风格：'d' / 'D' / ''（无前缀，默认命名空间）。
   final String propfindPrefix;
@@ -235,7 +244,7 @@ class MemoryWebDavServer {
 
   Future<void> _propfind(HttpRequest request, String path) async {
     if (path != '/' && !_store.containsKey(path)) {
-      await _respond(request, 404);
+      await _respond(request, propfindMissingStatus);
       return;
     }
     final depth =

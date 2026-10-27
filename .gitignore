@@ -17,3 +17,6 @@ testdata/
 
 # 本地联调工具（rclone 等，C3/R3 用，不入库）
 .tools/
+
+# 本地凭据（坚果云联调 R3，绝不入库）
+.secrets/
