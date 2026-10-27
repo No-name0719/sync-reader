@@ -15,6 +15,8 @@ import '../sync/placeholder_download.dart';
 import '../sync/sync_status.dart';
 import '../sync/widgets/sync_status_banner.dart';
 import 'import/book_import_service.dart';
+import 'import/batch_import_controller.dart';
+import 'import/batch_import_page.dart';
 import 'library_providers.dart';
 import 'widgets/book_cards.dart';
 
@@ -98,6 +100,21 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
     }
   }
 
+  /// 批量导入入口（FR-109）：选目录 → 推送清单确认页。
+  /// 用户取消选择时静默返回；目录经 provider 注入，测试可替换假实现。
+  Future<void> _startBatchImport() async {
+    final directoryPath = await ref
+        .read(directoryPickerProvider)
+        .pickDirectory();
+    if (directoryPath == null || !mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            BatchImportConfirmationPage(directoryPath: directoryPath),
+      ),
+    );
+  }
+
   /// 点开书籍（FR-402 分流）：有正文 → 详情页（现有点开即读链路）；
   /// 占位书（localPath 为空）→ 触发云端正文下载，成功后直接进阅读页
   /// （阅读器不接收无正文的书），失败保持占位可重试。
@@ -127,6 +144,11 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
     final booksAsync = ref.watch(booksStreamProvider);
     final progressMap = ref.watch(progressMapProvider).value;
     final syncStatusMap = ref.watch(bookSyncStatusMapProvider);
+    // 批量导入进行中（FR-109 并发保护）：禁用批量入口与单本导入，
+    // 防止两条导入流水线并发写库。
+    final batchImporting = ref.watch(
+      batchImportControllerProvider.select((s) => s.importing),
+    );
 
     return Scaffold(
       appBar: AppBar(
@@ -164,7 +186,21 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
           IconButton(
             tooltip: '导入书籍',
             icon: const Icon(Icons.add),
-            onPressed: _startImport,
+            onPressed: batchImporting ? null : _startImport,
+          ),
+          PopupMenuButton<String>(
+            tooltip: '更多',
+            icon: const Icon(Icons.more_vert),
+            onSelected: (value) {
+              if (value == 'batch_import') _startBatchImport();
+            },
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                value: 'batch_import',
+                enabled: !batchImporting,
+                child: const Text('批量导入（文件夹）'),
+              ),
+            ],
           ),
         ],
       ),

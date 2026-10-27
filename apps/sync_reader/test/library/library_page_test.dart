@@ -20,6 +20,7 @@ import 'package:sync_reader/data/files/book_file_store.dart';
 import 'package:sync_reader/data/secure/secure_credential_store.dart';
 import 'package:sync_reader/features/library/library_page.dart';
 import 'package:sync_reader/features/sync/sync_facade.dart';
+import 'package:sync_reader/features/library/import/batch_import_controller.dart';
 import 'package:sync_reader/features/library/library_providers.dart';
 
 void main() {
@@ -97,7 +98,15 @@ void main() {
     ],
   );
 
-  Future<void> pumpLibrary(WidgetTester tester) async {
+  /// [picker] / [batchImporting] / [fakeIdleBatch]：批量导入（FR-109）
+  /// 用例的注入开关（Riverpod 3 不导出 Override 类型，用开关而非
+  /// override 列表参数）。
+  Future<void> pumpLibrary(
+    WidgetTester tester, {
+    DirectoryPicker? picker,
+    bool batchImporting = false,
+    bool fakeIdleBatch = false,
+  }) async {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -110,6 +119,13 @@ void main() {
           secureCredentialStoreProvider.overrideWithValue(
             InMemoryCredentialStore(),
           ),
+          if (picker != null) directoryPickerProvider.overrideWithValue(picker),
+          if (batchImporting)
+            batchImportControllerProvider.overrideWith(
+              _ImportingController.new,
+            ),
+          if (fakeIdleBatch)
+            batchImportControllerProvider.overrideWith(_IdleController.new),
         ],
         child: MaterialApp.router(routerConfig: buildRouter()),
       ),
@@ -298,6 +314,74 @@ void main() {
     await shutdown(tester);
   });
 
+  // ---- 批量导入入口（FR-109）----
+
+  testWidgets('溢出菜单提供批量导入入口（默认可用）', (tester) async {
+    await bootstrapSafely(tester);
+    await pumpLibrary(tester);
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    final item = tester.widget<PopupMenuItem<String>>(
+      find.byType(PopupMenuItem<String>),
+    );
+    expect(item.enabled, isTrue);
+    expect(find.text('批量导入（文件夹）'), findsOneWidget);
+    await shutdown(tester);
+  });
+
+  testWidgets('批量导入进行中：入口与单本导入按钮禁用（防重入）', (tester) async {
+    await bootstrapSafely(tester);
+    await pumpLibrary(tester, batchImporting: true);
+    // 单本导入按钮禁用。
+    expect(
+      tester
+          .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.add).first)
+          .onPressed,
+      isNull,
+    );
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    final item = tester.widget<PopupMenuItem<String>>(
+      find.byType(PopupMenuItem<String>),
+    );
+    expect(item.enabled, isFalse);
+    await shutdown(tester);
+  });
+
+  testWidgets('选择目录后推送批量导入确认页（目录选择器注入）', (tester) async {
+    await bootstrapSafely(tester);
+    final dir = tmp!;
+    await pumpLibrary(
+      tester,
+      picker: _FakeDirectoryPicker(dir.path),
+      // 假控制器：确认页 initState 的 startScan 不做真实 IO（fakeAsync
+      // 中真实文件 IO 不可靠），页面稳定停留在"扫描中"提示。
+      fakeIdleBatch: true,
+    );
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('批量导入（文件夹）'));
+    // 路由过渡动画 + 确认页 initState；确认页初始为扫描中（含不确定
+    // 进度圈），只能定长泵推进，不能 pumpAndSettle。
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(find.text('批量导入'), findsOneWidget); // 确认页 AppBar 标题
+    expect(find.text('正在扫描文件夹…'), findsOneWidget);
+    await shutdown(tester);
+  });
+
+  testWidgets('取消选择目录：静默留在书库', (tester) async {
+    await bootstrapSafely(tester);
+    await pumpLibrary(tester, picker: const _FakeDirectoryPicker(null));
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('批量导入（文件夹）'));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('批量导入'), findsNothing);
+    expect(find.text('SyncReader'), findsOneWidget);
+    await shutdown(tester);
+  });
+
   testWidgets('书库流错误 → 空态标题 + 错误提示', (tester) async {
     await bootstrapSafely(tester);
     await tester.pumpWidget(
@@ -334,4 +418,33 @@ void main() {
     db = null;
     tmp = null;
   });
+}
+
+/// 假目录选择器：返回预置路径（null = 模拟用户取消）。
+final class _FakeDirectoryPicker implements DirectoryPicker {
+  const _FakeDirectoryPicker(this.result);
+
+  final String? result;
+
+  @override
+  Future<String?> pickDirectory() async => result;
+}
+
+/// 假批量导入控制器：空闲态，startScan 不做真实扫描。
+final class _IdleController extends BatchImportController {
+  @override
+  BatchImportState build() => const BatchImportState();
+
+  @override
+  Future<void> startScan(String directoryPath) async {}
+}
+
+/// 假批量导入控制器：恒为导入中（验证入口禁用）。
+final class _ImportingController extends BatchImportController {
+  @override
+  BatchImportState build() =>
+      const BatchImportState(phase: BatchImportPhase.importing);
+
+  @override
+  Future<void> startScan(String directoryPath) async {}
 }
