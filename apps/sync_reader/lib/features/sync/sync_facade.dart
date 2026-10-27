@@ -267,6 +267,21 @@ final class SyncFacade {
     return report;
   }
 
+  /// 删除同步（FR-408，docs/04 §7.1）：在本地删除之后调用，推送 tombstone
+  /// 到云端。用户显式操作，不受 autoSyncEnabled 门控；失败（离线/冲突）
+  /// 由引擎记入 tombstone 账本，下次 fullSync 补推收敛——故静默不提示。
+  Future<SyncReport?> deleteBook(String bookId) async {
+    final engine = await _ensureEngine();
+    if (engine == null) return null;
+    SyncReport? report;
+    try {
+      report = await engine.deleteBook(bookId);
+    } catch (e, s) {
+      _log.error('删除推送外层异常', e, s);
+    }
+    return report;
+  }
+
   /// 占位书正文按需下载（docs/04 §5.4；FR-402 的下载触发——点开占位书时
   /// 由 UI 调用。仅 Wi-Fi 限制在此把关；配额闸门在 TransferQueue 内）。
   Future<bool> downloadPlaceholder(String bookId) async {

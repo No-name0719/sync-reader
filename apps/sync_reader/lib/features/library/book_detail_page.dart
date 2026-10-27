@@ -13,6 +13,7 @@ import '../../data/db/app_database.dart';
 import '../../shared/cover_view.dart';
 import '../../shared/format_utils.dart';
 import '../sync/placeholder_download.dart';
+import '../sync/sync_facade.dart' show syncFacadeProvider;
 import 'library_providers.dart';
 
 /// 书籍详情页（`/book/:bookId`）。
@@ -262,7 +263,8 @@ class BookDetailPage extends ConsumerWidget {
           '删除后的行为：\n'
           '· 本地书目与阅读进度移入库内回收区；\n'
           '· 正文文件移入游离区保留，可手动恢复或清理；\n'
-          '· 云端删除标记（tombstone）将在同步功能上线后生效。\n\n'
+          '· 删除标记（tombstone）将同步到云端，其他设备的此书'
+          '也会移出书库（其正文文件同样保留）。\n\n'
           '不会删除你磁盘上的原始书籍文件。',
         ),
         actions: [
@@ -282,6 +284,9 @@ class BookDetailPage extends ConsumerWidget {
     final store = await ref.read(bookFileStoreProvider.future);
     await store.moveToOrphans(book.bookId);
     await ref.read(booksDaoProvider).softDelete(book.bookId);
+    // 云端 tombstone 推送（FR-408）：本地优先之后台进行，不阻塞返回书库；
+    // 失败由引擎记入 tombstone 账本，下次全量同步补推收敛。
+    unawaited(ref.read(syncFacadeProvider).deleteBook(book.bookId));
     if (context.mounted) context.go('/');
   }
 }

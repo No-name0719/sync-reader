@@ -228,6 +228,49 @@ void main() {
     expect(adapter.contentOf(cloudId), isNotNull);
   });
 
+  test('本地删除：deleteBook 推 tombstone；本地行已删时经公共祖先回退成功', () async {
+    await credentials.save(SecureKeys.webdavAccount, 'u@example.com');
+    await credentials.save(SecureKeys.webdavPassword, 'app-secret');
+    final localId = await importLocalBook(title: '要删的书');
+    await facade.fullSync(source: SyncTriggerSource.manual);
+    expect(adapter.metas.containsKey(localId), isTrue);
+
+    // app 删除顺序：先本地 softDelete，再后台 deleteBook（FR-408）。
+    await db.booksDao.softDelete(localId);
+    final report = await facade.deleteBook(localId);
+    expect(report, isNotNull);
+    if (!report!.success) {
+      // ignore: avoid_print
+      print('phaseError=${report.phaseError} results=${report.results}');
+    }
+    expect(report.success, isTrue);
+    final meta = BookMeta.fromJsonString(adapter.metas[localId]!);
+    expect(meta.isTombstone, isTrue);
+    final ledger = await store.tombstoneLedger();
+    expect(ledger.single.bookId, localId);
+    expect(ledger.single.pushed, isTrue);
+    // 重复删除幂等：云端已是 tombstone，不再报错。
+    final again = await facade.deleteBook(localId);
+    expect(again!.success, isTrue);
+  });
+
+  test('autoSyncEnabled=false 时删除推送仍执行（用户显式操作不受门控）', () async {
+    prefs = const SyncPreferencesSnapshot(autoSyncEnabled: false);
+    await credentials.save(SecureKeys.webdavAccount, 'u@example.com');
+    await credentials.save(SecureKeys.webdavPassword, 'app-secret');
+    final localId = await importLocalBook(title: '手动同步才动');
+    await facade.fullSync(source: SyncTriggerSource.manual);
+
+    await db.booksDao.softDelete(localId);
+    final report = await facade.deleteBook(localId);
+    expect(report, isNotNull);
+    expect(report!.success, isTrue);
+    expect(
+      BookMeta.fromJsonString(adapter.metas[localId]!).isTombstone,
+      isTrue,
+    );
+  });
+
   test('占位书下载：downloadPlaceholder 拉正文并转正', () async {
     await credentials.save(SecureKeys.webdavAccount, 'u@example.com');
     await credentials.save(SecureKeys.webdavPassword, 'app-secret');
