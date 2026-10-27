@@ -99,4 +99,34 @@ final class BookFileStore {
     }
     _log.info('删除本地文件：bookId=$bookId');
   }
+
+  // ── 平铺正文（游离文件面板，FR-408 / docs/04 §7.1.3）───────────────────
+
+  /// 平铺正文路径：`books/{bookId}.{ext}`。
+  ///
+  /// 与云端 `books/{bookId}.{ext}` 同形的平铺布局，游离文件面板的扫描
+  /// 差集与挂回目标都按此路径约定（游离文件 = 文件名主干 ∉ books.bookId
+  /// 集合的平铺正文）。
+  String resolveFlatBookPath(String bookId, String ext) =>
+      p.join(booksDir.path, '$bookId.${ext.toLowerCase().replaceAll('.', '')}');
+
+  /// 游离正文挂回书库：同盘 rename 进平铺路径（原路径不复存在，零拷贝）。
+  ///
+  /// [bookId] 为新生成的 ULID；目标已存在视为异常（新 ULID 正常不会撞）。
+  /// 返回挂回后的正文路径（登记 books.localPath 用）。
+  Future<String> adoptBookFile({
+    required String bookId,
+    required String ext,
+    required File source,
+  }) async {
+    final targetPath = resolveFlatBookPath(bookId, ext);
+    final target = File(targetPath);
+    if (target.existsSync()) {
+      throw StateError('挂回目标路径已存在：$targetPath');
+    }
+    await target.parent.create(recursive: true);
+    await source.rename(targetPath);
+    _log.info('游离正文挂回：bookId=$bookId size=${await target.length()}');
+    return targetPath;
+  }
 }

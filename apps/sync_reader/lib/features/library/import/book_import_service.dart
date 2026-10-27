@@ -70,6 +70,26 @@ class ImportSummary {
   }
 }
 
+/// 游离文件挂回结果（FR-408：恢复挂回的去重分流）。
+class OrphanAdoptResult {
+  /// 已挂回：生成新 bookId 并登记入库。
+  const OrphanAdoptResult.adopted(this.book) : duplicateOf = null;
+
+  /// 库内已有同 hash 书（[duplicateOf] 为其书名）：不重复挂回，
+  /// 游离文件保持原样（冗余，用户可引导彻底删除）。
+  const OrphanAdoptResult.duplicate(this.duplicateOf) : book = null;
+
+  /// 挂回成功时的新书行。
+  final Book? book;
+
+  /// 去重命中时的已有书名。
+  final String? duplicateOf;
+
+  bool get adopted => book != null;
+
+  bool get isDuplicate => duplicateOf != null;
+}
+
 /// 书籍导入服务。依赖经构造注入，便于测试（内存库 + 临时目录存储 + 假 handler）。
 class BookImportService {
   BookImportService({
@@ -175,6 +195,69 @@ class BookImportService {
     );
     await _booksDao.upsert(book);
     summary.imported.add(book);
+  }
+
+  /// 游离正文文件挂回书库（FR-408 游离文件面板，docs/04 §7.1.3 重关联）。
+  ///
+  /// 流程：hash 只算一次（move 不改内容，挂回后无需复算）→ 库内同 hash
+  /// 去重分流（命中则原文件不动，返回 duplicate）→ 生成新 ULID → 元数据
+  /// 解析（move 前做，文件还在旧路径）→ 同盘 rename 进平铺书库路径 →
+  /// 封面落盘 → 登记 books 行。云端收敛是自动的：新书的 dirty meta 下次
+  /// 同步走 §5.3 哈希去重或 §7.2 复活路径，进度按 LWW 尽力恢复。
+  ///
+  /// 不支持的扩展名抛 [FormatException]（面板扫描已过滤，此为防御性兜底）。
+  Future<OrphanAdoptResult> adoptExistingFile({
+    required String filePath,
+  }) async {
+    final bookFile = await BookFile.fromPath(filePath);
+    final handler = _registry.byExtension(
+      bookFile.ext,
+      magicHeader: await _readMagicHeader(bookFile.file),
+    );
+    if (handler == null) {
+      throw FormatException('不支持的格式（.${bookFile.ext}）', filePath);
+    }
+
+    // 1. 内容哈希（旧路径上算一次）+ 库内去重：已有同 hash 书 → 不重复挂回。
+    final contentHash = await ContentHasher.hashFile(bookFile.file);
+    final existing = await _booksDao.getByContentHash(contentHash);
+    if (existing != null) {
+      return OrphanAdoptResult.duplicate(existing.title);
+    }
+
+    final store = await _fileStore;
+    final bookId = generateUlid();
+
+    // 2. 元数据解析（handler 保证失败降级为文件名元数据），move 前执行。
+    final parsed = await handler.parseMetadata(bookFile);
+
+    // 3. 同盘 rename 挂回平铺路径（books/{bookId}.{ext}），原路径消失。
+    final localPath = await store.adoptBookFile(
+      bookId: bookId,
+      ext: bookFile.ext,
+      source: bookFile.file,
+    );
+
+    // 4. 封面落盘 + 登记 books 行（sizeBytes 取 move 前 stat，rename 不变）。
+    final coverPath = await writeCoverFile(store, bookId, parsed.coverBytes);
+    final book = Book(
+      bookId: bookId,
+      title: parsed.title.trim().isEmpty
+          ? _fallbackTitle(bookFile)
+          : parsed.title,
+      author: parsed.author,
+      format: handler.formatId,
+      fileName: bookFile.fileName,
+      localPath: localPath,
+      contentHash: contentHash,
+      sizeBytes: bookFile.sizeBytes,
+      coverPath: coverPath,
+      tocFingerprint: parsed.tocFingerprint,
+      addedAt: DateTime.now().millisecondsSinceEpoch,
+      totalSeconds: 0,
+    );
+    await _booksDao.upsert(book);
+    return OrphanAdoptResult.adopted(book);
   }
 
   /// 文件名兜底书名（去扩展名）。

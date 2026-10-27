@@ -322,7 +322,7 @@ void main() {
     await tester.tap(find.byIcon(Icons.more_vert));
     await tester.pumpAndSettle();
     final item = tester.widget<PopupMenuItem<String>>(
-      find.byType(PopupMenuItem<String>),
+      find.byType(PopupMenuItem<String>).first,
     );
     expect(item.enabled, isTrue);
     expect(find.text('批量导入（文件夹）'), findsOneWidget);
@@ -342,7 +342,7 @@ void main() {
     await tester.tap(find.byIcon(Icons.more_vert));
     await tester.pumpAndSettle();
     final item = tester.widget<PopupMenuItem<String>>(
-      find.byType(PopupMenuItem<String>),
+      find.byType(PopupMenuItem<String>).first,
     );
     expect(item.enabled, isFalse);
     await shutdown(tester);

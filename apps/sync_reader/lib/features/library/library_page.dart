@@ -18,6 +18,7 @@ import 'import/book_import_service.dart';
 import 'import/batch_import_controller.dart';
 import 'import/batch_import_page.dart';
 import 'library_providers.dart';
+import 'orphan/orphan_files_page.dart';
 import 'widgets/book_cards.dart';
 
 /// 书库首页。
@@ -115,6 +116,12 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
     );
   }
 
+  /// 游离文件管理入口（FR-408）：本地孤儿正文的清单/挂回/清理。
+  Future<void> _openOrphanFiles() async {
+    await Navigator.of(context)
+        .push(MaterialPageRoute<void>(builder: (_) => const OrphanFilesPage()));
+  }
+
   /// 点开书籍（FR-402 分流）：有正文 → 详情页（现有点开即读链路）；
   /// 占位书（localPath 为空）→ 触发云端正文下载，成功后直接进阅读页
   /// （阅读器不接收无正文的书），失败保持占位可重试。
@@ -193,12 +200,18 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
             icon: const Icon(Icons.more_vert),
             onSelected: (value) {
               if (value == 'batch_import') _startBatchImport();
+              if (value == 'orphan_files') _openOrphanFiles();
             },
             itemBuilder: (context) => [
               PopupMenuItem(
                 value: 'batch_import',
                 enabled: !batchImporting,
                 child: const Text('批量导入（文件夹）'),
+              ),
+              PopupMenuItem(
+                value: 'orphan_files',
+                enabled: !batchImporting,
+                child: const Text('游离文件管理'),
               ),
             ],
           ),

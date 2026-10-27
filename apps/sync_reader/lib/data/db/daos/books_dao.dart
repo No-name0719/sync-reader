@@ -65,6 +65,21 @@ class BooksDao extends DatabaseAccessor<AppDatabase> with _$BooksDaoMixin {
   Future<Book?> getById(String bookId) =>
       (select(books)..where((b) => b.bookId.equals(bookId))).getSingleOrNull();
 
+  /// 全部 bookId 集合（一次性读取；游离文件扫描的差集用，FR-408）。
+  Future<Set<String>> readAllBookIds() async {
+    final rows = await select(books).get();
+    return rows.map((b) => b.bookId).toSet();
+  }
+
+  /// 全部 bookId 集合流（drift watch；游离文件面板据此在挂回/入库后
+  /// 自动重扫，FR-408）。
+  Stream<Set<String>> watchAllBookIds() {
+    final query = selectOnly(books)..addColumns([books.bookId]);
+    return query.watch().map(
+      (rows) => rows.map((row) => row.read(books.bookId)!).toSet(),
+    );
+  }
+
   /// 按正文哈希查询（导入去重，FR-101：同哈希提示"已存在"并复用条目）。
   Future<Book?> getByContentHash(String contentHash) => (select(
     books,
@@ -87,6 +102,31 @@ class BooksDao extends DatabaseAccessor<AppDatabase> with _$BooksDaoMixin {
   Future<void> updateCoverPath(String bookId, String coverPath) {
     return (update(books)..where((b) => b.bookId.equals(bookId))).write(
       BooksCompanion(coverPath: Value(coverPath)),
+    );
+  }
+
+  /// 更新重解析元数据列（FR-410 文件替换：新文件重解析后回写）。
+  ///
+  /// 仅写入非 null 实参对应的列——null 表示"保留旧值"（解析失败降级时
+  /// title/author/tocFingerprint 不动；无新封面字节时旧封面保留）。
+  /// 文件指征列（fileName/contentHash/sizeBytes/format/localPath）由
+  /// `DriftLocalLibrary.updateBookFileInfo` 负责，两路各管各的列。
+  Future<void> updateParsedMeta(
+    String bookId, {
+    String? title,
+    String? author,
+    String? tocFingerprint,
+    String? coverPath,
+  }) {
+    return (update(books)..where((b) => b.bookId.equals(bookId))).write(
+      BooksCompanion(
+        title: title == null ? const Value.absent() : Value(title),
+        author: author == null ? const Value.absent() : Value(author),
+        tocFingerprint: tocFingerprint == null
+            ? const Value.absent()
+            : Value(tocFingerprint),
+        coverPath: coverPath == null ? const Value.absent() : Value(coverPath),
+      ),
     );
   }
 
