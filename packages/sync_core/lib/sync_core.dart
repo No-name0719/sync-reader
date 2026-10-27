@@ -12,6 +12,7 @@ library;
 
 export 'src/backend/backend_adapter.dart';
 export 'src/backend/memory/in_memory_adapter.dart';
+export 'src/backend/webdav/webdav_adapter.dart';
 export 'src/conflict/conflict_resolver.dart';
 export 'src/diff/diff_engine.dart';
 export 'src/engine/sync_engine.dart';

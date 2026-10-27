@@ -13,6 +13,11 @@ dependencies:
   meta: ^1.16.0
   # 下载断点续传的 SHA-256 完整性校验（docs/04 §5.4）；纯 Dart。
   crypto: ^3.0.0
+  # WebDAV 适配器的 HTTP 客户端（docs/04 §8.1：PROPFIND/GET/PUT/MOVE/MKCOL/DELETE
+  # 六动词直用，不引入 webdav_client 之类封装）；纯 Dart。
+  dio: ^5.0.0
+  # WebDAV PROPFIND 207 multistatus XML 解析（d:/D:/无前缀命名空间容错）；纯 Dart。
+  xml: ^6.0.0
 
 dev_dependencies:
   flutter_lints: ^6.0.0
