@@ -1,6 +1,6 @@
 # CLAUDE.md — SyncReader 项目上下文
 
-> 面向后续 AI 编码会话的项目说明。**当前阶段：M2 同步上线开发完成（坚果云真实联调待用户），下一站 M3。** 开工前请先通读本文与 `docs/` 设计基线。
+> 面向后续 AI 编码会话的项目说明。**当前阶段：M3 客户端功能补全开发完成（2026-10-28），下一站 M4 打磨分发。** 开工前请先通读本文与 `docs/` 设计基线。
 
 ## 1. 项目一句话
 
@@ -66,9 +66,10 @@ sync-reader/
 | M0 工程奠基（Flutter 工程 + sync_core + Go 骨架 + CI） | ✅ 完成（2026-10-26；analyze/test 全绿，APK 空壳构建通过；Windows 本机构建依赖 VS Build Tools，见 docs/08 §4） |
 | M1 本地阅读闭环（书库 FR-1xx + txt/md/pdf 阅读器 + 本地进度/时长/设置 + TOC 抽屉） | ✅ 完成（2026-10-26；app 293 测试全绿；Windows debug 构建通过并冒烟验证；Android debug APK 构建通过（含四 ABI libpdfium）；epub 渲染器按路线图随 M2/M3 交付；pdfrx 收编副本与机器环境补丁见 docs/07-R15、docs/08 §6.3） |
 | M2 同步上线（sync_core 引擎 + WebDAV 适配器 + App 接入） | ✅ 开发完成（2026-10-27）：sync_core 165 + app 359 测试全绿；契约套件同用例双跑（内存参考实现 + 标准/降级内存 WebDAV 服务器）；rclone 真实 HTTP 联调通过；**坚果云真实环境联调完成**（R3：实测画像 + 缺失目录 409 兼容修复 + 双端收敛 FR-404 真实预演，见 docs/07-R3）；Windows debug 构建通过。**待收口**：两真机 FR-404 验收；flutter_secure_storage_windows 收编见 docs/07-R16 |
-| M3 客户端功能补全（epub 渲染器 + 同步体验 P1）→ M4 打磨分发 → M5 服务端扩展（后置，2026-10-27 调整） | ⬜ 见 `docs/00-总览.md` §4 |
+| M3 客户端功能补全（epub 渲染器 + 同步体验 P1；服务端方案后置至 M5，2026-10-27 调整） | ✅ 开发完成（2026-10-28）：sync_core 192 + app 514 测试全绿。**epub 渲染器**（FR-203）：epub_pro 解析 + flutter_widget_from_html 块化渲染、分页（连续排版+视口 snap）/滚动双模式、NCX 目录跳转、locator 与 sync_core EpubLocator 字段级互通、ReaderPage 指纹门（指纹不一致全格式降级 percent）、阅读设置热应用；降级项（复杂表格/浮动布局）登记 07-R2。**同步体验**：游离文件面板（FR-408 UI 半边：orphans 区/分层残留/平铺三形态扫描 + contentHash 挂回 + 彻底删除）；云端孤儿清理工具（docs/04 §7.1 规则 4：逐文件确认、批量可暂停、配额联动）；FR-410 文件替换（sync_core 冻结 replaceBookContent + uploadBook overwrite 语义，接收端自动下载覆盖；详情页"重新选择文件"）。**书库补齐**：批量导入（FR-109 递归扫描+清单确认）、pdf 封面（FR-103 第一页缩略图，pdfrx 可注入）、配额面板 80% 常驻提醒（docs/04 §8.3）。C3（FR-208 阅读时长按天统计）按任务允许后置 |
+| M4 打磨分发 → M5 服务端扩展 | ⬜ 见 `docs/00-总览.md` §4 |
 
-下一步：M3 客户端功能补全——epub 渲染器（FR-203 P0）+ 游离文件面板/云端孤儿清理/文件替换同步（FR-410）/批量导入（FR-109）；服务端（Go + REST 适配器）后置至 M5。
+下一步：M4 打磨分发——引导向导打磨、离线/弱网用例、性能达标（NFR-04/05）、首发打包；后置项：C3 阅读时长按天统计、M5 服务端（Go + REST 适配器）。epub 真机渲染验收建议自备常规小说类 epub（含图片/粗斜体/标题/引用）。
 
 ## 8. 文档索引
 
