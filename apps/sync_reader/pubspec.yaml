@@ -1,0 +1,60 @@
+name: sync_reader
+description: "SyncReader：跨平台电子书进度同步阅读客户端（docs/00-总览.md）。"
+publish_to: 'none'
+
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.7
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # 已定论工程配套（docs/02 §D7）。
+  flutter_riverpod: ^3.0.0
+  go_router: ^16.0.0
+
+  # 同步核心（本仓库纯 Dart 包，docs/03 §2）。
+  sync_core:
+    path: ../../packages/sync_core
+
+  # M1 本地阅读闭环基建（drift 表结构见 docs/05 §5）。
+  drift: ^2.35.3
+  drift_flutter: ^0.3.1
+  sqlite3_flutter_libs: ^0.6.0+eol
+  path_provider: ^2.1.6
+  path: ^1.9.1
+  crypto: ^3.0.8
+  ulid: ^2.2.0
+  fast_gbk: ^1.0.0
+  intl: ^0.20.3
+  file_picker: ^13.3.0
+  window_manager: ^0.5.2
+  flutter_markdown_plus: ^1.0.12
+  epub_pro: ^5.6.0
+  # pdfrx 用仓库内收编副本（packages/third_party/pdfrx，见 dependency_overrides）：
+  # 1) 2.x 的 native assets 钩子在本机被 cmd AutoRun 注册表问题阻塞；
+  # 2) 1.3.5 有一处 Dart 3.13 流分析不兼容（pdf_file_cache.dart），已打最小补丁，
+  #    不收编则 CI 全新 pub cache 无法编译。升级路径见 docs/07。
+  pdfrx: 1.3.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+  drift_dev: ^2.35.2
+  build_runner: ^2.17.1
+  sqlite3: ^3.8.0
+  archive: ^4.5.2
+
+flutter:
+  uses-material-design: true
+
+# pdfrx 指向仓库内收编副本（含 Dart 3.13 兼容补丁，详见上方注释与 docs/07）。
+dependency_overrides:
+  pdfrx:
+    path: ../../packages/third_party/pdfrx
