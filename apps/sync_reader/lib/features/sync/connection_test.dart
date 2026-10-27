@@ -181,7 +181,12 @@ final class ConnectionTester {
       final (deleteStatus, deleteRow) = await _timed(steps, '删探针文件', () {
         return request('DELETE', _uri(baseUrl, probeFile));
       });
-      if (!_expect(deleteStatus, deleteRow, const {200, 202, 204, 404}, steps)) {
+      if (!_expect(deleteStatus, deleteRow, const {
+        200,
+        202,
+        204,
+        404,
+      }, steps)) {
         return _failure(steps, _classifyStatus(deleteStatus));
       }
 

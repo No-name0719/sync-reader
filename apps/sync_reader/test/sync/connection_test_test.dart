@@ -48,8 +48,7 @@ class _MiniWebDav {
         final missing = _dirs.any((d) => path == d || path.startsWith('$d/'))
             ? false
             : !(path == '/' || path == '/Apps');
-        req.response.statusCode =
-            missing
+        req.response.statusCode = missing
             ? (propfindMissingStatus ?? 404)
             : 207;
       case 'MKCOL':
