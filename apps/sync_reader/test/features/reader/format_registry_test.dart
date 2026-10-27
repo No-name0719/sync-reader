@@ -18,11 +18,11 @@ import 'package:sync_reader/features/reader/contract/toc_fingerprint.dart';
 import 'package:sync_reader/features/reader/contract/toc_entry.dart';
 import 'package:sync_reader/features/reader/formats/common/text_decoder.dart';
 import 'package:sync_reader/features/reader/formats/epub/epub_format_handler.dart';
+import 'package:sync_reader/features/reader/formats/epub/epub_renderer.dart';
 import 'package:sync_reader/features/reader/formats/md/md_format_handler.dart';
 import 'package:sync_reader/features/reader/formats/pdf/pdf_format_handler.dart';
 import 'package:sync_reader/features/reader/formats/txt/txt_format_handler.dart';
 import 'package:sync_reader/features/reader/formats/txt/txt_renderer.dart';
-import 'package:sync_reader/features/reader/stub_renderer.dart';
 
 void main() {
   late Directory tempDir;
@@ -198,13 +198,14 @@ void main() {
       // 锚点 toString 稳定性（指纹契约的一部分）。
       expect(parsed.toc[0].anchor.toString(), 'epub:spine:0:chapter1.xhtml');
 
-      // epub 渲染器仍未实现（M1 后续里程碑），基线占位是当前正确行为。
+      // M3 起 epub 渲染器就绪：createRenderer 返回真实渲染器
+      // （块化 HtmlWidget 渲染；恢复/进度由 controller.restore 承担）。
       final renderer = await EpubFormatHandler().createRenderer(
         file,
         ReaderSettings.defaults,
         ProgressAnchor.empty,
       );
-      expect(renderer, isA<StubRenderer>());
+      expect(renderer, isA<EpubRenderer>());
       renderer.dispose();
     });
 

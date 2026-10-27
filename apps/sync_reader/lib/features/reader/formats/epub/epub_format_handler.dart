@@ -1,9 +1,9 @@
 /// epub handler（完整基线实现）：OPF 元数据 + 封面字节 + spine 序目录 + 指纹。
 ///
-/// 解析基于 epub_pro（epubx 的活跃分叉）。M1 后续 epub 阅读器代理将整文件
-/// 重写渲染部分（flutter_widget_from_html + 自研分页 + CFI 定位）；
-/// [EpubFormatHandler] 的公开接口与 [EpubSpineAnchor] 的 toString 形态
-/// 属于冻结 API——指纹算法依赖锚点序列化稳定，升级渲染器不得改变它。
+/// 解析基于 epub_pro（epubx 的活跃分叉）。渲染由 [EpubRenderer] 承担
+/// （flutter_widget_from_html 块化 + 双翻页模式）；[EpubFormatHandler] 的
+/// 公开接口与 [EpubSpineAnchor] 的 toString 形态属于冻结 API——指纹算法
+/// 依赖锚点序列化稳定，升级渲染器不得改变它。
 library;
 
 import 'dart:typed_data';
@@ -16,22 +16,12 @@ import '../../contract/progress_anchor.dart';
 import '../../contract/reader_settings.dart';
 import '../../contract/toc_entry.dart';
 import '../handler_base.dart';
-import '../../stub_renderer.dart';
+import 'epub_locator.dart';
+import 'epub_renderer.dart';
 
-/// epub 锚点：spine 序号 + 文件 href（docs/05 §3.3 type=epub）。
-class EpubSpineAnchor {
-  const EpubSpineAnchor({required this.spineIndex, required this.href});
-
-  /// spine 序号（0 起）。
-  final int spineIndex;
-
-  /// 内容文件 href（相对 OPF 目录，可含 fragment）。
-  final String href;
-
-  /// 稳定序列化（目录指纹的一部分，勿改动格式）。
-  @override
-  String toString() => 'epub:spine:$spineIndex:$href';
-}
+/// epub 目录锚点定义在 epub_locator.dart（与 locator/位置换算同域）；
+/// 此处转发导出，保持本文件的原有公开 API 不变。
+export 'epub_locator.dart' show EpubSpineAnchor;
 
 /// epub 格式处理器。
 class EpubFormatHandler extends FormatHandlerBase {
@@ -179,5 +169,5 @@ class EpubFormatHandler extends FormatHandlerBase {
     BookFile file,
     ReaderSettings settings,
     ProgressAnchor anchor,
-  ) async => StubRenderer(formatId: formatId);
+  ) => EpubRenderer.open(file: file, settings: settings);
 }

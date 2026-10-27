@@ -34,10 +34,12 @@ import '../../features/sync/sync_facade.dart';
 import '../../features/sync/sync_triggers.dart';
 import 'contract/book_file.dart';
 import 'contract/book_renderer.dart';
+import 'contract/parsed_book.dart';
 import 'contract/progress_anchor.dart';
 import 'contract/reader_settings.dart';
 import 'contract/reader_settings_repository.dart';
 import 'contract/toc_entry.dart';
+import 'contract/toc_fingerprint.dart';
 import 'settings/settings_panel.dart';
 
 /// 进度落库防抖窗口（docs/03 §3.1：翻页/滚动后 3s）。
@@ -256,13 +258,19 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
       final settings = await _settingsRepo.load();
 
       // toc 解析与渲染器创建并行：toc 失败不影响打开（目录按钮降级隐藏）。
-      final tocFuture = handler
-          .parseMetadata(file)
-          .then<List<TocEntry>>((parsed) => parsed.toc)
-          .catchError((Object _) => <TocEntry>[]);
+      final parsedFuture = handler.parseMetadata(file).catchError((Object _) {
+        // 解析失败降级：空目录 + 空指纹（指纹门跳过比对，不阻塞打开）。
+        const emptyToc = <TocEntry>[];
+        return ParsedBook(
+          title: '',
+          author: '',
+          toc: emptyToc,
+          tocFingerprint: TocFingerprint.compute(emptyToc),
+        );
+      });
 
       final savedProgress = await _progressDao.getByBookId(widget.bookId);
-      final anchor = savedProgress == null
+      var anchor = savedProgress == null
           ? ProgressAnchor.empty
           : ProgressAnchor.fromRaw(
               savedProgress.locatorJson,
@@ -270,6 +278,21 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
             );
 
       renderer = await handler.createRenderer(file, settings, anchor);
+
+      // 指纹门（docs/05 §3.3 恢复规则 1，全格式生效）：解析目录非空且与
+      // 入库指纹不一致时，locator 精确恢复不可信（解析器升级/规则调整）→
+      // 把锚点降级为 raw（percent 保持），restore 走 percent 分支。
+      // 目录为空（解析失败）时跳过比对，不得阻塞打开。
+      final parsed = await parsedFuture;
+      if (anchor.hasProgress &&
+          parsed.toc.isNotEmpty &&
+          parsed.tocFingerprint != book.tocFingerprint) {
+        anchor = ProgressAnchor(
+          locatorJson: '{"type":"raw","ratio":${anchor.percent}}',
+          percent: anchor.percent,
+        );
+      }
+
       try {
         await renderer.controller.restore(anchor);
       } catch (e, s) {
@@ -277,13 +300,13 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
         _log.warn('进度恢复失败，从头开始');
         _log.error('恢复异常详情', e, s);
       }
-      renderer.controller.onProgressChanged = _onProgressChanged;
-
-      final toc = await tocFuture;
       if (!mounted) {
         renderer.dispose();
         return;
       }
+      renderer.controller.onProgressChanged = _onProgressChanged;
+
+      final toc = parsed.toc;
       setState(() {
         _state = _ReadyState(
           session: _ReaderSession(book: book!, renderer: renderer!),

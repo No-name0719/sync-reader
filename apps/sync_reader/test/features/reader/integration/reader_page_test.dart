@@ -19,11 +19,16 @@ import 'package:sync_reader/features/reader/reader_page.dart';
 import 'fakes.dart';
 
 /// 造一本书行（字段可覆盖）。
+///
+/// [tocFingerprint] 默认与 fakes.dart 假 handler 的解析指纹不一致；
+/// 需要验证"指纹一致时原锚点直传 restore"的用例应传入
+/// 'tfp:0123456789abcdef'（指纹门 docs/05 §3.3 恢复规则 1）。
 BooksCompanion bookRow(
   String id, {
   String title = '假书名',
   String format = 'txt',
   String? localPath = '/books/x.txt',
+  String tocFingerprint = 'tfp:0000000000000000',
 }) => BooksCompanion.insert(
   bookId: id,
   title: title,
@@ -31,7 +36,7 @@ BooksCompanion bookRow(
   fileName: '$id.$format',
   contentHash: 'sha256:$id',
   sizeBytes: 128,
-  tocFingerprint: 'tfp:0000000000000000',
+  tocFingerprint: tocFingerprint,
   addedAt: 1000,
   localPath: Value(localPath),
 );
@@ -110,6 +115,9 @@ void main() {
         dirty: true,
       ),
     );
+    // 本用例验证"restore 传入已存进度"：pumpReady 的假 handler 默认 toc 为空
+    // （解析失败降级形态），指纹门跳过比对，原锚点原样传入 restore。
+    // 指纹不一致时的降级行为见 test/reader/epub/epub_fingerprint_gate_test.dart。
 
     expect(renderer.controller.restoreCalls, hasLength(1));
     expect(

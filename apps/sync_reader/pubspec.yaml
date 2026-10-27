@@ -44,6 +44,8 @@ dependencies:
   # 2) 1.3.5 有一处 Dart 3.13 流分析不兼容（pdf_file_cache.dart），已打最小补丁，
   #    不收编则 CI 全新 pub cache 无法编译。升级路径见 docs/07。
   pdfrx: 1.3.5
+  flutter_widget_from_html: ^0.17.4
+  xml: ^6.6.1
 
 dev_dependencies:
   flutter_test:
