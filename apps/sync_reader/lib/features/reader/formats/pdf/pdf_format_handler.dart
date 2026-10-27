@@ -1,16 +1,20 @@
-/// pdf 格式处理器（FR-205 / FR-102）：元数据解析（outline 目录 + 首页封面）
-/// 与渲染器创建。
+/// pdf 格式处理器（FR-205 / FR-102 / FR-103）：元数据解析（outline 目录 +
+/// 首页封面缩略图）与渲染器创建。
 ///
 /// 解析约定（契约，见 `FormatHandlerBase`）：**解析失败不得抛出**——
 /// flutter test 环境无 pdfium.dll、损坏/加密文件等一律捕获后降级为
 /// 文件名元数据 + 空目录，绝不阻塞书库导入。
+///
+/// 封面注入点（FR-103）：pdfrx 封面渲染经 [PdfCoverRenderer] 函数类型注入
+/// （构造函数可选参数，默认 [renderPdfFirstPageCover]）。测试环境无 pdfium
+/// 时注入 fake 即可覆盖封面成功/失败路径；封面渲染失败只降级为无封面，
+/// 不影响 toc/元数据。
 ///
 /// 指纹约定：有 outline 时对 toc 指纹；无 outline 时对页数指纹
 /// （`pagesFingerprintEntry`），保证跨端对同一文件产出一致指纹。
 library;
 
 import 'dart:typed_data';
-import 'dart:ui' as ui;
 
 import 'package:pdfrx/pdfrx.dart' as pdfrx;
 
@@ -19,16 +23,15 @@ import '../../contract/book_renderer.dart';
 import '../../contract/parsed_book.dart';
 import '../../contract/progress_anchor.dart';
 import '../../contract/reader_settings.dart';
+import '../../contract/toc_entry.dart';
 import '../../contract/toc_fingerprint.dart';
 import '../common/file_name_parser.dart';
 import '../handler_base.dart';
+import 'pdf_cover_renderer.dart';
 import 'pdf_outline_mapper.dart';
 import 'pdf_renderer.dart';
 
 export 'pdf_page_anchor.dart';
-
-/// 封面渲染的目标宽度（逻辑像素；高度按页面纵横比换算）。
-const _coverWidth = 320.0;
 
 /// 内部解析产物：[ParsedContent] + 页数（指纹用；解析失败为 null）。
 class _ParsedPdf {
@@ -45,6 +48,12 @@ class _ParsedPdf {
 
 /// pdf 格式处理器。
 class PdfFormatHandler extends FormatHandlerBase {
+  /// [coverRenderer]：封面渲染注入点（测试注入 fake，生产用默认 pdfrx 实现）。
+  PdfFormatHandler({PdfCoverRenderer? coverRenderer})
+    : _coverRenderer = coverRenderer ?? renderPdfFirstPageCover;
+
+  final PdfCoverRenderer _coverRenderer;
+
   @override
   String get formatId => 'pdf';
 
@@ -99,55 +108,41 @@ class PdfFormatHandler extends FormatHandlerBase {
   Future<ParsedContent> parseContent(BookFile file) async =>
       (await _parse(file)).content;
 
+  /// 解析 pdf：目录/页数与封面为**两个独立降级段**——任一失败只影响
+  /// 自身（目录 → 空目录；封面 → 无封面字节），本方法整体不抛出。
+  ///
+  /// 目录与封面解耦的原因：pdfrx 目录提取与封面渲染各自打开文档，测试
+  /// 环境无 pdfium 时目录段必抛（降级空目录），但注入 fake 封面函数后
+  /// 封面段仍可独立验证（FR-103 测试契约）。
   Future<_ParsedPdf> _parse(BookFile file) async {
-    final document = await pdfrx.PdfDocument.openFile(file.path);
+    // 目录/页数段：pdfrx 直接解析（无 pdfium/损坏/加密 → 抛异常 → 空目录）。
+    int? pageCount;
+    var toc = const <TocEntry>[];
     try {
-      final pageCount = document.pages.length;
-      // 注意：pdfrx 的 FFI 有专属后台 worker，切勿将 document 调用包进 compute()。
-      final outline = await document.loadOutline();
-      final toc = outlineItemsToTocEntries(flattenPdfOutline(outline));
-      Uint8List? cover;
+      final document = await pdfrx.PdfDocument.openFile(file.path);
       try {
-        cover = await _renderCover(document);
-      } catch (e, s) {
-        log.warn('${file.fileName}：封面渲染失败，忽略（不影响导入）');
-        log.error('封面渲染异常详情', e, s);
-      }
-      // pdf 无可靠语言字段（Info dict 未暴露）→ language 置空。
-      return _ParsedPdf(ParsedContent(coverBytes: cover, toc: toc), pageCount);
-    } finally {
-      await document.dispose();
-    }
-  }
-
-  /// 首页渲染为 PNG 封面：整页按 320px 宽等比渲染 → ui.Image → PNG 字节。
-  Future<Uint8List?> _renderCover(pdfrx.PdfDocument document) async {
-    final pages = document.pages;
-    if (pages.isEmpty) return null;
-    final page = pages.first;
-    // render 语义（1.3.5 源码）：fullWidth/fullHeight 为页面虚拟全尺寸，
-    // width/height 为输出位图尺寸；只传 width 会渲染左上角子区而非整页，
-    // 故必须成对给出 fullWidth/fullHeight。
-    final fullWidth = _coverWidth;
-    final fullHeight = page.width > 0
-        ? _coverWidth * page.height / page.width
-        : _coverWidth * 1.414;
-    final rendered = await page.render(
-      fullWidth: fullWidth,
-      fullHeight: fullHeight,
-    );
-    if (rendered == null) return null;
-    try {
-      final image = await rendered.createImage();
-      try {
-        final data = await image.toByteData(format: ui.ImageByteFormat.png);
-        return data?.buffer.asUint8List();
+        pageCount = document.pages.length;
+        // 注意：pdfrx 的 FFI 有专属后台 worker，切勿将 document 调用包进 compute()。
+        final outline = await document.loadOutline();
+        toc = outlineItemsToTocEntries(flattenPdfOutline(outline));
       } finally {
-        image.dispose();
+        await document.dispose();
       }
-    } finally {
-      rendered.dispose();
+    } catch (e, s) {
+      log.warn('${file.fileName}：PDF 解析失败，降级为文件名元数据+空目录');
+      log.error('PDF 解析异常详情', e, s);
     }
+    // 封面段：经注入函数独立渲染（内部自开文档句柄，见 pdf_cover_renderer.dart）；
+    // 失败只降级为无封面，不影响目录/元数据，也不向上抛。
+    Uint8List? cover;
+    try {
+      cover = await _coverRenderer(file.path);
+    } catch (e, s) {
+      log.warn('${file.fileName}：封面渲染失败，忽略（不影响导入）');
+      log.error('封面渲染异常详情', e, s);
+    }
+    // pdf 无可靠语言字段（Info dict 未暴露）→ language 置空。
+    return _ParsedPdf(ParsedContent(coverBytes: cover, toc: toc), pageCount);
   }
 
   @override

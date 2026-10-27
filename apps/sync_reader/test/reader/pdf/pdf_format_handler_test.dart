@@ -1,8 +1,10 @@
-/// pdf handler 单测：canHandle 魔数判定 + parseMetadata 降级路径。
+/// pdf handler 单测：canHandle 魔数判定 + parseMetadata 降级路径 +
+/// 封面提取（FR-103，经 [PdfCoverRenderer] 注入）。
 ///
 /// flutter test 环境无 pdfium.dll，真实打开 pdf 必然抛异常——恰好验证
 /// "解析失败不得抛出、降级文件名元数据"的契约（FR-102/FR-205）。
 /// 该降级对损坏文件同样成立（真机环境行为一致），测试在两种环境均稳定。
+/// 封面渲染经构造函数注入 fake（返回 tinyPng/null/抛异常）覆盖三条路径。
 library;
 
 import 'dart:convert';
@@ -15,6 +17,8 @@ import 'package:sync_reader/features/reader/contract/book_file.dart';
 import 'package:sync_reader/features/reader/contract/toc_fingerprint.dart';
 import 'package:sync_reader/features/reader/formats/pdf/pdf_format_handler.dart';
 import 'package:sync_reader/features/reader/formats/pdf/pdf_outline_mapper.dart';
+
+import '../../library/fake_handler.dart';
 
 void main() {
   late Directory tempDir;
@@ -103,6 +107,95 @@ void main() {
       final parsed = await PdfFormatHandler().parseMetadata(file);
       expect(parsed.title, '算法导论');
       expect(parsed.author, '');
+    });
+  });
+
+  group('parseContent 封面提取（注入 PdfCoverRenderer，FR-103）', () {
+    test('注入 fake 返回 tinyPng：parseContent 产出封面字节并收到文件路径', () async {
+      final file = await writeBookFile(
+        '封面书 - 作者.pdf',
+        utf8.encode('%PDF-1.4\n%%EOF\n'),
+      );
+      final capturedPaths = <String>[];
+      final handler = PdfFormatHandler(
+        coverRenderer: (path) async {
+          capturedPaths.add(path);
+          return tinyPng;
+        },
+      );
+
+      final content = await handler.parseContent(file);
+
+      expect(content.coverBytes, same(tinyPng));
+      expect(capturedPaths, [file.path]);
+    });
+
+    test('注入 fake 返回 tinyPng：parseMetadata 透传封面字节', () async {
+      final file = await writeBookFile(
+        '封面书 - 作者.pdf',
+        utf8.encode('%PDF-1.4\n%%EOF\n'),
+      );
+      final parsed = await PdfFormatHandler(coverRenderer: (_) async => tinyPng)
+          .parseMetadata(file);
+
+      expect(parsed.title, '封面书'); // 文件名兜底（fake 只管封面）。
+      expect(parsed.author, '作者');
+      expect(parsed.coverBytes, same(tinyPng));
+    });
+
+    test('注入 fake 返回 null：coverBytes 为 null 且不抛出（降级）', () async {
+      final file = await writeBookFile(
+        '无封面.pdf',
+        utf8.encode('%PDF-1.4\n%%EOF\n'),
+      );
+      final content = await PdfFormatHandler(coverRenderer: (_) async => null)
+          .parseContent(file);
+
+      expect(content.coverBytes, isNull);
+    });
+
+    test('注入 fake 抛异常：coverBytes 为 null 且不抛出（降级）', () async {
+      final file = await writeBookFile(
+        '渲染失败.pdf',
+        utf8.encode('%PDF-1.4\n%%EOF\n'),
+      );
+      final content = await PdfFormatHandler(
+        coverRenderer: (_) => throw StateError('渲染失败'),
+      ).parseContent(file);
+
+      expect(content.coverBytes, isNull);
+      // 封面失败不影响整体解析产物形态（目录段独立降级，不向上抛）。
+      expect(content.toc, isEmpty);
+    });
+  });
+
+  group('默认封面渲染（测试环境无 pdfium → 异常降级，FR-103）', () {
+    test('最小 pdf 夹具：parseMetadata 整体成功（文件名元数据+空目录+无封面）', () async {
+      // 夹具只保证 %PDF 头合法；测试环境无 pdfium，打开必然抛异常，
+      // 目录段与封面段（默认 pdfrx 实现）双双走异常降级路径。
+      final fixture = await File(
+        p.join(
+          Directory.current.path,
+          'test',
+          'reader',
+          'pdf',
+          'fixtures',
+          'minimal.pdf',
+        ),
+      ).readAsBytes();
+      final file = await writeBookFile('minimal.pdf', fixture);
+
+      final parsed = await PdfFormatHandler().parseMetadata(file);
+
+      expect(parsed.title, 'minimal');
+      expect(parsed.author, '');
+      expect(parsed.toc, isEmpty);
+      expect(parsed.coverBytes, isNull);
+      // 降级时页数未知 → 与打开成功路径相区分的 pages:0 兜底指纹。
+      expect(
+        parsed.tocFingerprint,
+        TocFingerprint.compute([pagesFingerprintEntry(0)]),
+      );
     });
   });
 }
