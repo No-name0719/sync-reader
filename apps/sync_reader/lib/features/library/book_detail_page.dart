@@ -1,0 +1,296 @@
+/// 书籍详情页（FR-104）：封面、元数据、进度与阅读时长统计，
+/// 提供"打开阅读 / 删除"操作；删除语义遵循 FR-408（softDelete + 游离文件）。
+library;
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../app/providers.dart';
+import '../../data/db/app_database.dart';
+import '../../shared/cover_view.dart';
+import '../../shared/format_utils.dart';
+import 'library_providers.dart';
+
+/// 书籍详情页（`/book/:bookId`）。
+class BookDetailPage extends ConsumerWidget {
+  const BookDetailPage({super.key, required this.bookId});
+
+  /// 目标书籍 ULID。
+  final String bookId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final bookAsync = ref.watch(bookDetailProvider(bookId));
+    final progress = ref.watch(bookProgressProvider(bookId)).value;
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('书籍详情'),
+        actions: [
+          if (bookAsync.value != null)
+            IconButton(
+              tooltip: '删除本书',
+              icon: const Icon(Icons.delete_outline),
+              onPressed: () => _confirmDelete(context, ref, bookAsync.value!),
+            ),
+        ],
+      ),
+      body: bookAsync.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (error, _) => _MissingBook(error: error),
+        data: (book) => book == null
+            ? const _MissingBook()
+            : ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SizedBox(
+                        width: 110,
+                        height: 165,
+                        child: CoverView(
+                          coverPath: book.coverPath,
+                          title: book.title,
+                          author: book.author,
+                          contentHash: book.contentHash,
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              book.title,
+                              style: theme.textTheme.headlineSmall,
+                            ),
+                            if (book.author.trim().isNotEmpty) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                book.author,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: theme.colorScheme.outline,
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 4,
+                              children: [
+                                Chip(
+                                  label: Text(
+                                    book.format.toUpperCase(),
+                                    style: theme.textTheme.labelSmall,
+                                  ),
+                                  visualDensity: VisualDensity.compact,
+                                  padding: EdgeInsets.zero,
+                                ),
+                                if (book.localPath == null)
+                                  const Chip(
+                                    label: Text('仅云端'),
+                                    visualDensity: VisualDensity.compact,
+                                    padding: EdgeInsets.zero,
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  const Divider(),
+                  _metaRow(context, '文件名', book.fileName),
+                  _metaRow(context, '大小', humanizeBytes(book.sizeBytes)),
+                  _metaRow(context, '内容哈希', shortenHash(book.contentHash)),
+                  _metaRow(context, '添加时间', formatEpochMs(book.addedAt)),
+                  const Divider(),
+                  _metaRow(
+                    context,
+                    '阅读进度',
+                    progress == null
+                        ? '尚未开始'
+                        : '${formatPercent(progress.percent)}'
+                              '（更新于 ${formatEpochMs(progress.updatedAt)}）',
+                  ),
+                  _metaRow(
+                    context,
+                    '上次阅读',
+                    book.lastReadAt == null
+                        ? '尚未阅读'
+                        : formatEpochMs(book.lastReadAt),
+                  ),
+                  _metaRow(
+                    context,
+                    '累计阅读',
+                    humanizeDuration(book.totalSeconds),
+                  ),
+                  const Divider(),
+                  _metaToc(context, ref),
+                  const SizedBox(height: 4),
+                  Text(
+                    '目录与章节跳转在阅读页内提供（顶部"打开"进入后查看）。',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.outline,
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  FilledButton.icon(
+                    onPressed: book.localPath == null
+                        ? null
+                        : () => context.push('/reader/${book.bookId}'),
+                    icon: const Icon(Icons.menu_book_outlined),
+                    label: Text(
+                      (progress == null || progress.percent <= 0)
+                          ? '开始阅读'
+                          : '继续阅读',
+                    ),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+
+  /// 元数据行：固定宽标签 + 内容。
+  Widget _metaRow(BuildContext context, String label, String value) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 84,
+            child: Text(
+              label,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.outline,
+              ),
+            ),
+          ),
+          Expanded(
+            child: SelectableText(value, style: theme.textTheme.bodyMedium),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 章节目录数量（FR-108 书库侧：仅展示数量，抽屉由阅读器负责）。
+  Widget _metaToc(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 84,
+            child: Text(
+              '章节目录',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.outline,
+              ),
+            ),
+          ),
+          Expanded(
+            child: ref
+                .watch(tocCountProvider(bookId))
+                .when(
+                  data: (count) => Text(switch (count) {
+                    null => '暂不可得（占位书或文件缺失）',
+                    0 => '无章节结构',
+                    _ => '共 $count 章',
+                  }, style: theme.textTheme.bodyMedium),
+                  loading: () => Text(
+                    '解析中…',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.outline,
+                    ),
+                  ),
+                  error: (_, _) => Text('—', style: theme.textTheme.bodyMedium),
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 删除确认（FR-408 语义说明）→ softDelete + moveToOrphans → 返回书库。
+  Future<void> _confirmDelete(
+    BuildContext context,
+    WidgetRef ref,
+    Book book,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('删除《${book.title}》？'),
+        content: const Text(
+          '删除后的行为：\n'
+          '· 本地书目与阅读进度移入库内回收区；\n'
+          '· 正文文件移入游离区保留，可手动恢复或清理；\n'
+          '· 云端删除标记（tombstone）将在同步功能上线后生效。\n\n'
+          '不会删除你磁盘上的原始书籍文件。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final store = await ref.read(bookFileStoreProvider.future);
+    await store.moveToOrphans(book.bookId);
+    await ref.read(booksDaoProvider).softDelete(book.bookId);
+    if (context.mounted) context.go('/');
+  }
+}
+
+/// 书籍不存在或已删除的空态。
+class _MissingBook extends StatelessWidget {
+  const _MissingBook({this.error});
+
+  /// 数据层异常（与"记录不存在"区分展示）。
+  final Object? error;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.auto_stories_outlined,
+            size: 64,
+            color: theme.colorScheme.outline,
+          ),
+          const SizedBox(height: 16),
+          Text(
+            error == null ? '书籍不存在或已删除' : '书籍信息加载失败：$error',
+            style: theme.textTheme.bodyLarge,
+          ),
+          const SizedBox(height: 16),
+          TextButton.icon(
+            onPressed: () => context.go('/'),
+            icon: const Icon(Icons.arrow_back),
+            label: const Text('返回书库'),
+          ),
+        ],
+      ),
+    );
+  }
+}
