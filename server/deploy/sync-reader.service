@@ -1,0 +1,19 @@
+# 裸机 systemd 部署（docs/06 §4.4）
+# 安装：sudo cp sync-reader.service /etc/systemd/system/ && sudo systemctl enable --now sync-reader
+[Unit]
+Description=SyncReader server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=syncreader
+Environment=DATA_DIR=/var/lib/sync-reader
+Environment=PORT=8080
+Environment=SINGLE_USER=true
+ExecStart=/usr/local/bin/sync-reader-server
+Restart=on-failure
+# 基础加固：按需增补 ProtectSystem=strict / PrivateTmp=true 等
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

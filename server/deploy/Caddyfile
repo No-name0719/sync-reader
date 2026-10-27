@@ -1,0 +1,7 @@
+# 公网云服务器反代示例（docs/06 §4.2）—— Caddy 自动 HTTPS
+sync.example.com {
+    reverse_proxy 127.0.0.1:8080
+    request_body {
+        max_size 600MB # 覆盖单文件上限（NFR-07：500MB）
+    }
+}
