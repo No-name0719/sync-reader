@@ -1,6 +1,8 @@
 /// 书库顶部同步状态横幅（FR-406 全局态可视化；点击进入同步设置页）。
 ///
 /// 只消费 [syncMemoryStatusProvider] 等状态 provider，不触碰引擎。
+/// 80% 常驻提醒（docs/04 §8.3）：内存侧实时告警优先，否则从持久化配额
+/// 快照推导——冷启动尚未同步也能把警示带到书库横幅。
 library;
 
 import 'package:flutter/material.dart';
@@ -8,6 +10,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../shared/format_utils.dart';
+import '../quota_gate.dart';
 import '../sync_facade.dart';
 import '../sync_status.dart';
 
@@ -21,7 +24,18 @@ class SyncStatusBanner extends ConsumerWidget {
     final lastPersisted = ref.watch(lastFullSyncAtProvider).value;
     final theme = Theme.of(context);
 
-    final (icon, color, text) = switch (memory.id) {
+    // 配额告警链路：内存侧（同步轮次实时上报）→ 持久化快照推导兜底。
+    final snap = ref.watch(quotaSnapshotProvider).value;
+    final quotaWarn =
+        memory.quotaWarnText ??
+        (snap == null ? null : SyncQuotaGate.warnText(snap));
+    // 空闲/正常态下直接以警示文案替代默认文本（提醒更明确）；
+    // 同步中/失败/未配置态保留原语义，仅在尾部显示警示图标。
+    final quotaWarnAsText =
+        quotaWarn != null &&
+        (memory.id == SyncStateId.idle || memory.id == SyncStateId.ok);
+
+    var (icon, color, text) = switch (memory.id) {
       SyncStateId.unconfigured => (
         Icons.cloud_off_outlined,
         theme.colorScheme.outline,
@@ -44,6 +58,11 @@ class SyncStatusBanner extends ConsumerWidget {
         '同步失败：${memory.failureText ?? '未知原因'}',
       ),
     };
+    if (quotaWarnAsText) {
+      icon = Icons.warning_amber_rounded;
+      color = theme.colorScheme.error;
+      text = quotaWarn;
+    }
 
     return Material(
       color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
@@ -63,7 +82,7 @@ class SyncStatusBanner extends ConsumerWidget {
                   style: TextStyle(color: color, fontSize: 12),
                 ),
               ),
-              if (memory.quotaWarnText != null) ...[
+              if (quotaWarn != null && !quotaWarnAsText) ...[
                 const SizedBox(width: 6),
                 Icon(
                   Icons.warning_amber_rounded,
