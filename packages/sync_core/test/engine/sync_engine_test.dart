@@ -530,6 +530,41 @@ void main() {
       await engine.fullSync();
       expect(await memory.readLibraryJson(), isNotNull);
     });
+
+    test('换后端重连（同 store 新引擎）：新后端上重建布局并重新上架（resetEngine 闭环）', () async {
+      // 设备在旧后端完成过全量（cursor.lastFullSyncAt 已落）。
+      await importBook(bookIdOf(1));
+      await engine.fullSync();
+      expect(await memory.readLibraryJson(), isNotNull);
+
+      // 用户换后端（新空适配器）→ 门面 resetEngine 重建引擎（同 store）。
+      final memory2 = InMemoryAdapter();
+      await memory2.connect(
+        const BackendConfig(kind: BackendKind.webdav, baseUrl: 'memory://2'),
+      );
+      final transfer2 = TransferQueue(
+        adapter: memory2,
+        retryPolicy: const RetryPolicy(),
+        delay: (_) async {},
+      );
+      final engine2 = SyncEngine(
+        adapter: memory2,
+        store: store,
+        library: library,
+        transfer: transfer2,
+        now: () => now,
+        identity: () async => (deviceId: deviceId, deviceName: deviceName),
+        backendKey: backendKey,
+      );
+      final report = await engine2.fullSync();
+      expect(report.success, isTrue, reason: '${report.results}');
+      // 新后端上必须重建布局（否则后续 meta PUT 无父目录可写）。
+      expect(await memory2.readLibraryJson(), isNotNull);
+      // 本地书已有 baseRev 而新后端无 meta → §5.1 第 7b 行：保留本地、
+      // 标记云端缺失、不推（防网盘误清后的整库重传）。
+      expect(report.decisions[bookIdOf(1)], SyncDecision.cloudMissing);
+      expect(library.cloudMissingMarks, 1);
+    });
   });
 
   group('tombstone GC（docs/04 §7.3）', () {

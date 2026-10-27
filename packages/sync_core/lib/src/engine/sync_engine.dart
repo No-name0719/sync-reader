@@ -846,10 +846,12 @@ class SyncEngine {
 
   Future<void> _ensureLayout() async {
     if (_layoutEnsured) return;
-    final cursor = await _store.cursorSnapshot(backendKey);
-    if (cursor.lastFullSyncAt == null) {
-      await _adapter.ensureLayout(); // 幂等（docs/04 §5.2）
-    }
+    // 每个引擎实例的首次全量都确保布局（幂等，docs/04 §5.2 步骤 1）。
+    // cursor.lastFullSyncAt 只证明"本机同步过"，不证明"当前后端还是当年那
+    // 台"——换账号/换服务器后经 resetEngine 重建的引擎（同 store）必须在
+    // 新后端上重建 library.json/meta/，否则 meta 推送因父目录缺失而 409。
+    // ensureLayout 幂等且轻量（3 次 PROPFIND + 1 次 GET），无需跨实例记忆。
+    await _adapter.ensureLayout();
     _layoutEnsured = true;
   }
 
