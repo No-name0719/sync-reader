@@ -282,6 +282,51 @@ final class SyncFacade {
     return report;
   }
 
+  // ── M3：云端孤儿清理与文件替换（docs/04 §7.1 规则 4 / FR-410）─────────
+
+  /// 列出云端孤儿正文（`books/*` 中无 meta 引用者；docs/04 §7.1 规则 4）。
+  /// 未配置 → null；引擎永不抛出，外层异常折算为带 error 的空清单。
+  Future<CloudOrphanListing?> listCloudOrphans() async {
+    final engine = await _ensureEngine();
+    if (engine == null) return null;
+    try {
+      return await engine.listCloudOrphans();
+    } catch (e, s) {
+      _log.error('孤儿清单外层异常', e, s);
+      return CloudOrphanListing(
+        orphans: const [],
+        error: SyncErrorMapper.fromException(e, context: '孤儿清单'),
+      );
+    }
+  }
+
+  /// 逐文件删除云端孤儿（UI 负责逐文件确认与可暂停；未配置 → null）。
+  Future<SyncError?> deleteCloudOrphan(String name) async {
+    final engine = await _ensureEngine();
+    if (engine == null) return null;
+    try {
+      return await engine.deleteCloudOrphan(name);
+    } catch (e, s) {
+      _log.error('孤儿删除外层异常', e, s);
+      return SyncErrorMapper.fromException(e, context: '孤儿删除 $name');
+    }
+  }
+
+  /// 文件替换推送（FR-410）：本地行已由 app 更新（updateBookFileInfo +
+  /// 重解析列）后调用，推 meta 并 overwrite 上传正文。用户显式操作，不受
+  /// autoSyncEnabled 门控（对齐 deleteBook）；未配置 → null（本地优先，
+  /// 本地替换已生效，调用方据此提示"仅替换本地"）。
+  Future<SyncReport?> replaceBookContent(String bookId) async {
+    final engine = await _ensureEngine();
+    if (engine == null) return null;
+    try {
+      return await engine.replaceBookContent(bookId);
+    } catch (e, s) {
+      _log.error('替换推送外层异常', e, s);
+      return null;
+    }
+  }
+
   /// 占位书正文按需下载（docs/04 §5.4；FR-402 的下载触发——点开占位书时
   /// 由 UI 调用。仅 Wi-Fi 限制在此把关；配额闸门在 TransferQueue 内）。
   Future<bool> downloadPlaceholder(String bookId) async {
