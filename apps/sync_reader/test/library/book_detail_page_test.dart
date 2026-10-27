@@ -1,6 +1,7 @@
-/// 书籍详情页 widget 测试（FR-104/FR-408）：元数据/进度/时长展示、
-/// 打开阅读器导航、删除确认对话框与 softDelete+游离语义、缺书空态。
-/// 注入内存库 + 临时目录存储 + 假 handler 注册表。
+/// 书籍详情页 widget 测试（FR-104/FR-408/FR-410）：元数据/进度/时长展示、
+/// 打开阅读器导航、删除确认对话框与 softDelete+游离语义、文件替换入口
+/// （按钮可见性/确认文案/替换成功反馈与刷新）、缺书空态。
+/// 注入内存库 + 临时目录存储 + 假 handler 注册表 + 假文件选择器。
 ///
 /// 真实 IO（临时目录/种子文件）经 `tester.runAsync` 执行（fakeAsync 限制）。
 library;
@@ -13,12 +14,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:path/path.dart' as p;
+import 'package:sync_core/sync_core.dart';
 import 'package:sync_reader/app/providers.dart';
+import 'package:sync_reader/core/content_hasher.dart';
 import 'package:sync_reader/data/db/app_database.dart';
 import 'package:sync_reader/data/files/book_file_store.dart';
 import 'package:sync_reader/data/secure/secure_credential_store.dart';
 import 'package:sync_reader/features/sync/sync_facade.dart';
 import 'package:sync_reader/features/library/book_detail_page.dart';
+import 'package:sync_reader/features/library/replace/book_replace_service.dart';
 import 'package:sync_reader/features/reader/contract/format_registry.dart';
 import 'package:sync_reader/shared/format_utils.dart';
 
@@ -64,12 +68,16 @@ void main() {
     );
   }
 
-  /// 让 fakeAsync 内由 widget 回调发起的真实 IO（目录解析读文件、
-  /// 删除时的游离移动）完成，再 settle UI。
+  /// 让 fakeAsync 内由 widget 回调发起的真实 IO 完成，再 settle UI。
+  /// 真实 IO 的完成事件经真实事件循环投递：每进一次 runAsync 窗口推进
+  /// 串行链的一环（删除的移动/替换的复制+哈希链），故用多窗口循环。
   Future<void> settleReal(WidgetTester tester) async {
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 150)),
-    );
+    for (var i = 0; i < 12; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 50)),
+      );
+      await tester.pump();
+    }
     await tester.pumpAndSettle();
   }
 
@@ -107,7 +115,11 @@ void main() {
     ],
   );
 
-  Future<void> pumpDetail(WidgetTester tester) async {
+  Future<void> pumpDetail(
+    WidgetTester tester, {
+    ReplaceFilePicker? picker,
+    Future<SyncReport?> Function(String bookId)? pushToCloud,
+  }) async {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -116,11 +128,26 @@ void main() {
           formatRegistryProvider.overrideWith(
             (ref) => FormatRegistry()..register(FakeHandler()),
           ),
-          // 占位书"下载正文"按钮（FR-402）会触碰同步门面：注入内存凭据
-          // 存储（未存凭据 → readConfig 返回 null → 提示配置，不触碰平台通道）。
+          // 占位书"下载正文"按钮（FR-402）与替换确认对话框（FR-410）会触碰
+          // 同步门面：注入内存凭据存储（未存凭据 → readConfig 返回 null →
+          // 按未配置处理，不触碰平台通道）。
           secureCredentialStoreProvider.overrideWithValue(
             InMemoryCredentialStore(),
           ),
+          // 文件替换（FR-410）替身：假选择器 + 可选假云端推送（行更新
+          // 顺序经推送发生时的行内 hash 断言，见各测试体）。
+          if (picker != null)
+            replaceFilePickerProvider.overrideWithValue(picker),
+          if (pushToCloud != null)
+            bookReplaceServiceProvider.overrideWith(
+              (ref) => BookReplaceService(
+                booksDao: ref.watch(booksDaoProvider),
+                registry: ref.watch(formatRegistryProvider),
+                fileStore: ref.watch(bookFileStoreProvider.future),
+                library: ref.watch(driftLocalLibraryProvider),
+                pushToCloud: pushToCloud,
+              ),
+            ),
         ],
         child: MaterialApp.router(routerConfig: buildRouter()),
       ),
@@ -224,6 +251,181 @@ void main() {
     await shutdown(tester);
   });
 
+  /// 加高测试视口：详情页 ListView 较长，"重新选择文件"按钮位于默认
+  /// 600px 折叠线以下（ListView 惰性构建，折叠下不进树）。
+  void useTallViewport(WidgetTester tester) {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+  }
+
+  testWidgets('文件替换（FR-410）：按钮仅本地书显示，占位书不显示', (tester) async {
+    useTallViewport(tester);
+    await bootstrap(tester);
+    await seedBook(tester);
+    await pumpDetail(tester);
+    final button = tester.widget<OutlinedButton>(
+      find.ancestor(
+        of: find.text('重新选择文件'),
+        matching: find.byType(OutlinedButton),
+      ),
+    );
+    expect(button.onPressed, isNotNull);
+    await shutdown(tester);
+
+    await bootstrap(tester);
+    await seedBook(tester, withLocalFile: false);
+    await pumpDetail(tester);
+    expect(find.text('重新选择文件'), findsNothing); // 占位书无本地文件不可替换。
+    expect(find.text('仅云端'), findsOneWidget);
+    await shutdown(tester);
+  });
+
+  testWidgets('文件替换：确认对话框警示文案（含未配置说明），取消不动数据', (tester) async {
+    useTallViewport(tester);
+    await bootstrap(tester);
+    await seedBook(tester);
+    final localPath = p.join(store!.booksDir.path, bookId, 'source.txt');
+    final picker = FakeReplacePicker(null);
+    await pumpDetail(tester, picker: picker);
+
+    await tester.tap(find.text('重新选择文件'));
+    await tester.pumpAndSettle();
+    // 语义警示 + 进度保留说明 + 未配置同步说明（内存凭据为空 → 未配置）。
+    expect(find.text('替换《三体》的正文文件？'), findsOneWidget);
+    expect(find.textContaining('下次同步后更新'), findsOneWidget);
+    expect(find.textContaining('大致位置（百分比）恢复'), findsOneWidget);
+    expect(find.textContaining('当前未配置同步，仅替换本地文件'), findsOneWidget);
+
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+    expect(find.text('替换《三体》的正文文件？'), findsNothing);
+    // 未进入选文件环节，数据未动。
+    expect(picker.callCount, 0);
+    expect(find.textContaining('正在替换'), findsNothing);
+    await tester.runAsync(() async {
+      expect(File(localPath).readAsStringSync(), '正文内容');
+      expect((await db!.booksDao.getById(bookId))!.fileName, '三体.txt');
+    });
+    await shutdown(tester);
+  });
+
+  testWidgets('文件替换：确认后选文件 → 替换成功 → 提示 + 详情刷新', (tester) async {
+    useTallViewport(tester);
+    await bootstrap(tester);
+    await seedBook(tester);
+    // 待选新文件（真实 IO 先于 UI 流程落盘）。
+    final newBytes = (await tester.runAsync(() async {
+      final file = File(p.join(tmp!.path, '三体新版.txt'));
+      await file.writeAsString('替换后的新正文');
+      return file.readAsBytesSync();
+    }))!;
+    final newPath = p.join(tmp!.path, '三体新版.txt');
+    final localPath = p.join(store!.booksDir.path, bookId, 'source.txt');
+    final picker = FakeReplacePicker(newPath);
+    var pushCalls = 0;
+    String? hashAtPush;
+    await pumpDetail(
+      tester,
+      picker: picker,
+      pushToCloud: (id) async {
+        pushCalls++;
+        hashAtPush = (await db!.booksDao.getById(id))!.contentHash;
+        return SyncReport(startedAt: DateTime.now()); // 假门面：成功报告。
+      },
+    );
+
+    await tester.tap(find.text('重新选择文件'));
+    await tester.pumpAndSettle();
+    expect(picker.callCount, 0); // 对话框先于选文件。
+    await tester.tap(find.text('选择新文件'));
+    await settleReal(tester);
+
+    expect(picker.callCount, 1);
+    expect(find.text('正文已替换并开始同步'), findsOneWidget);
+    // 详情已刷新：文件名/标题为替换后的值。
+    expect(find.text('三体新版.txt'), findsOneWidget);
+    expect(find.text('三体.txt'), findsNothing);
+    expect(find.text('解析书名'), findsWidgets);
+
+    await tester.runAsync(() async {
+      // 原路径覆盖 + 行内文件指征列更新。
+      expect(File(localPath).readAsBytesSync(), newBytes);
+      final book = (await db!.booksDao.getById(bookId))!;
+      expect(book.fileName, '三体新版.txt');
+      final newHash = await ContentHasher.hashStream(Stream.value(newBytes));
+      expect(book.contentHash, newHash);
+      expect(book.sizeBytes, newBytes.length);
+      expect(book.title, '解析书名'); // 假 handler 重解析结果。
+      // 行更新先于云端推送。
+      expect(pushCalls, 1);
+      expect(hashAtPush, newHash);
+      // 进度行不动。
+      final progress = await (db!.select(
+        db!.progress,
+      )..where((r) => r.bookId.equals(bookId))).getSingle();
+      expect(progress.percent, 0.42);
+      expect(progress.dirty, isFalse);
+    });
+    await shutdown(tester);
+  });
+
+  testWidgets('文件替换：未配置同步走真实门面 → 本地已替换并提示', (tester) async {
+    useTallViewport(tester);
+    await bootstrap(tester);
+    await seedBook(tester);
+    final newBytes = (await tester.runAsync(() async {
+      final file = File(p.join(tmp!.path, '三体新版.txt'));
+      await file.writeAsString('仅本地替换的新正文');
+      return file.readAsBytesSync();
+    }))!;
+    final localPath = p.join(store!.booksDir.path, bookId, 'source.txt');
+    await pumpDetail(
+      tester,
+      // 真实替换服务 + 真实门面（内存凭据为空 → replaceBookContent 返回 null）。
+      picker: FakeReplacePicker(p.join(tmp!.path, '三体新版.txt')),
+    );
+
+    await tester.tap(find.text('重新选择文件'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('选择新文件'));
+    await settleReal(tester);
+
+    expect(find.text('本地文件已替换（未配置同步，云端未更新）'), findsOneWidget);
+    await tester.runAsync(() async {
+      expect(File(localPath).readAsBytesSync(), newBytes);
+      final book = (await db!.booksDao.getById(bookId))!;
+      expect(book.fileName, '三体新版.txt');
+    });
+    await shutdown(tester);
+  });
+
+  testWidgets('文件替换：取消选择文件 → 静默返回，按钮恢复可用', (tester) async {
+    useTallViewport(tester);
+    await bootstrap(tester);
+    await seedBook(tester);
+    final picker = FakeReplacePicker(null);
+    await pumpDetail(tester, picker: picker);
+
+    await tester.tap(find.text('重新选择文件'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('选择新文件'));
+    await settleReal(tester);
+
+    expect(picker.callCount, 1);
+    expect(find.textContaining('正在替换'), findsNothing);
+    expect(find.textContaining('替换失败'), findsNothing);
+    final button = tester.widget<OutlinedButton>(
+      find.ancestor(
+        of: find.text('重新选择文件'),
+        matching: find.byType(OutlinedButton),
+      ),
+    );
+    expect(button.onPressed, isNotNull);
+    await shutdown(tester);
+  });
+
   testWidgets('书不存在 → 空态返回', (tester) async {
     await bootstrap(tester);
     await tester.pumpWidget(
@@ -291,4 +493,21 @@ Future<void> seedBookData({
     percent: 0.42,
     dirty: false,
   );
+}
+
+/// 假文件选择器（FR-410）：返回预置路径（null = 模拟用户取消），
+/// 记录调用次数供"对话框先于选文件 / 取消静默返回"断言。
+class FakeReplacePicker implements ReplaceFilePicker {
+  FakeReplacePicker(this.path);
+
+  /// 预置返回的文件路径；null = 用户取消。
+  final String? path;
+
+  int callCount = 0;
+
+  @override
+  Future<String?> pickBookFile() async {
+    callCount++;
+    return path;
+  }
 }

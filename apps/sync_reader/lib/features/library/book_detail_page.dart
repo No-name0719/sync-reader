@@ -1,5 +1,6 @@
 /// 书籍详情页（FR-104）：封面、元数据、进度与阅读时长统计，
-/// 提供"打开阅读 / 删除"操作；删除语义遵循 FR-408（softDelete + 游离文件）。
+/// 提供"打开阅读 / 重新选择文件（FR-410）/ 删除"操作；删除语义遵循
+/// FR-408（softDelete + 游离文件）。
 library;
 
 import 'dart:async';
@@ -15,16 +16,26 @@ import '../../shared/format_utils.dart';
 import '../sync/placeholder_download.dart';
 import '../sync/sync_facade.dart' show syncFacadeProvider;
 import 'library_providers.dart';
+import 'replace/book_replace_service.dart';
 
 /// 书籍详情页（`/book/:bookId`）。
-class BookDetailPage extends ConsumerWidget {
+class BookDetailPage extends ConsumerStatefulWidget {
   const BookDetailPage({super.key, required this.bookId});
 
   /// 目标书籍 ULID。
   final String bookId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<BookDetailPage> createState() => _BookDetailPageState();
+}
+
+class _BookDetailPageState extends ConsumerState<BookDetailPage> {
+  /// 文件替换进行中（FR-410 防重入：期间按钮禁用）。
+  bool _replacing = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final bookId = widget.bookId;
     final bookAsync = ref.watch(bookDetailProvider(bookId));
     final progress = ref.watch(bookProgressProvider(bookId)).value;
     final theme = Theme.of(context);
@@ -37,7 +48,7 @@ class BookDetailPage extends ConsumerWidget {
             IconButton(
               tooltip: '删除本书',
               icon: const Icon(Icons.delete_outline),
-              onPressed: () => _confirmDelete(context, ref, bookAsync.value!),
+              onPressed: () => _confirmDelete(bookAsync.value!),
             ),
         ],
       ),
@@ -147,7 +158,7 @@ class BookDetailPage extends ConsumerWidget {
                   // 进阅读页；失败保持占位，可再次点击重试。
                   FilledButton.icon(
                     onPressed: book.localPath == null
-                        ? () => unawaited(_downloadAndOpen(context, ref, book))
+                        ? () => unawaited(_downloadAndOpen(book))
                         : () => context.push('/reader/${book.bookId}'),
                     icon: Icon(
                       book.localPath == null
@@ -162,6 +173,18 @@ class BookDetailPage extends ConsumerWidget {
                           : '继续阅读',
                     ),
                   ),
+                  // 文件替换（FR-410）：仅本地有正文的书提供（占位书无文件
+                  // 可替换）；进行中禁用防重入。
+                  if (book.localPath != null) ...[
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: _replacing
+                          ? null
+                          : () => unawaited(_startReplace(book)),
+                      icon: const Icon(Icons.published_with_changes_outlined),
+                      label: const Text('重新选择文件'),
+                    ),
+                  ],
                 ],
               ),
       ),
@@ -212,7 +235,7 @@ class BookDetailPage extends ConsumerWidget {
           ),
           Expanded(
             child: ref
-                .watch(tocCountProvider(bookId))
+                .watch(tocCountProvider(widget.bookId))
                 .when(
                   data: (count) => Text(switch (count) {
                     null => '暂不可得（占位书或文件缺失）',
@@ -234,27 +257,86 @@ class BookDetailPage extends ConsumerWidget {
   }
 
   /// 占位书下载（FR-402）：成功 → 详情刷新 + 直接进阅读页。
-  Future<void> _downloadAndOpen(
-    BuildContext context,
-    WidgetRef ref,
-    Book book,
-  ) async {
+  Future<void> _downloadAndOpen(Book book) async {
     final ok = await downloadPlaceholderBook(
       context,
       ref,
       bookId: book.bookId,
       title: book.title,
     );
-    if (!ok || !context.mounted) return;
+    if (!ok || !mounted) return;
     context.push('/reader/${book.bookId}');
   }
 
+  /// 文件替换（FR-410）：确认对话框（语义警示）→ 选新文件 → 替换服务 →
+  /// 结果反馈 + 详情刷新。用户取消任一步都静默返回，不动数据。
+  Future<void> _startReplace(Book book) async {
+    // 未配置同步（异常按未配置）→ 对话框追加"仅替换本地"说明。
+    bool syncConfigured;
+    try {
+      syncConfigured = await ref.read(syncFacadeProvider).readConfig() != null;
+    } catch (_) {
+      syncConfigured = false; // 安全存储不可用：按未配置（对齐占位书下载）。
+    }
+    if (!mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('替换《${book.title}》的正文文件？'),
+        content: Text(
+          '· 新文件将替换本书正文，云端与其他设备的正文在下次同步后更新；\n'
+          '· 阅读进度保留，其他设备会按大致位置（百分比）恢复。'
+          '${syncConfigured ? '' : '\n· 当前未配置同步，仅替换本地文件。'}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('选择新文件'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    // 选新文件（扩展名已按注册格式过滤）；取消静默返回。
+    final sourcePath = await ref.read(replaceFilePickerProvider).pickBookFile();
+    if (sourcePath == null || !mounted) return;
+
+    final bookId = widget.bookId;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _replacing = true);
+    final progress = messenger.showSnackBar(
+      SnackBar(
+        duration: const Duration(minutes: 10),
+        content: Text('正在替换《${book.title}》…'),
+      ),
+    );
+    try {
+      final result = await ref
+          .read(bookReplaceServiceProvider)
+          .replaceFile(bookId: bookId, sourcePath: sourcePath);
+      progress.close();
+      if (mounted) {
+        // 成功/失败都失效一次性详情 provider（列表/进度走 drift watch 自动刷新）。
+        ref.invalidate(bookDetailProvider);
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(result.toMessage()),
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _replacing = false);
+    }
+  }
+
   /// 删除确认（FR-408 语义说明）→ softDelete + moveToOrphans → 返回书库。
-  Future<void> _confirmDelete(
-    BuildContext context,
-    WidgetRef ref,
-    Book book,
-  ) async {
+  Future<void> _confirmDelete(Book book) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -279,7 +361,7 @@ class BookDetailPage extends ConsumerWidget {
         ],
       ),
     );
-    if (confirmed != true) return;
+    if (confirmed != true || !mounted) return;
 
     final store = await ref.read(bookFileStoreProvider.future);
     await store.moveToOrphans(book.bookId);
@@ -287,7 +369,7 @@ class BookDetailPage extends ConsumerWidget {
     // 云端 tombstone 推送（FR-408）：本地优先之后台进行，不阻塞返回书库；
     // 失败由引擎记入 tombstone 账本，下次全量同步补推收敛。
     unawaited(ref.read(syncFacadeProvider).deleteBook(book.bookId));
-    if (context.mounted) context.go('/');
+    if (mounted) context.go('/');
   }
 }
 
