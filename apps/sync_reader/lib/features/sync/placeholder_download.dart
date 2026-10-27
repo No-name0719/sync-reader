@@ -12,9 +12,12 @@
 ///   自动刷新）并返回 true，由调用方决定"正常打开"（进阅读页）。
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../library/import/cover_generator.dart';
 import '../library/library_providers.dart' show bookDetailProvider;
 import 'sync_facade.dart';
 
@@ -59,6 +62,10 @@ Future<bool> downloadPlaceholderBook(
   if (ok) {
     // 书库刷新：占位 → 可读（详情/TOC 为一次性源需失效；列表走 drift watch）。
     ref.invalidate(bookDetailProvider);
+    // 下载完成后补生成封面（云端书此前永远没有真实封面；app 层职责）。
+    // 异步不阻塞"正常打开"；失败静默（generateForBook 内部已兜），封面
+    // 落地后 books 行更新经 drift watch 自动刷新。
+    unawaited(ref.read(coverGeneratorProvider).generateForBook(bookId));
     return true;
   }
   messenger.showSnackBar(

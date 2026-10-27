@@ -78,6 +78,18 @@ class BooksDao extends DatabaseAccessor<AppDatabase> with _$BooksDaoMixin {
   Future<void> upsertCompanion(BooksCompanion entry) =>
       into(books).insertOnConflictUpdate(entry);
 
+  /// 需要补封面的书：正文已落盘但 coverPath 为空（云端下载的书/存量回填）。
+  Future<List<Book>> missingCovers() => (select(
+    books,
+  )..where((b) => b.localPath.isNotNull() & b.coverPath.isNull())).get();
+
+  /// 登记封面路径（封面落盘后调用；书库列表经 drift watch 自动刷新）。
+  Future<void> updateCoverPath(String bookId, String coverPath) {
+    return (update(books)..where((b) => b.bookId.equals(bookId))).write(
+      BooksCompanion(coverPath: Value(coverPath)),
+    );
+  }
+
   /// 更新阅读统计（FR-207：lastReadAt / totalSeconds）。
   ///
   /// - [lastReadAt]：传则覆盖；

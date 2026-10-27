@@ -46,153 +46,163 @@ class SyncSettingsPage extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(title: const Text('同步设置')),
-      body: ListView(
-        children: [
-          // ── 后端卡片（FR-405）──
-          configAsync.when(
-            loading: () => const ListTile(
-              leading: Icon(Icons.cloud_outlined),
-              title: Text('正在读取后端配置…'),
-            ),
-            error: (error, _) => const ListTile(
-              leading: Icon(Icons.cloud_off),
-              title: Text('后端未配置'),
-              subtitle: Text('配置读取失败，可重新配置'),
-            ),
-            data: (config) => config == null
-                ? Card(
-                    margin: const EdgeInsets.fromLTRB(12, 12, 12, 4),
-                    child: ListTile(
-                      leading: const Icon(Icons.cloud_off),
-                      title: const Text('后端未配置'),
-                      subtitle: const Text('坚果云 WebDAV（引导式配置）'),
-                      trailing: FilledButton(
-                        onPressed: () => context.push('/sync/guide'),
-                        child: const Text('去配置'),
-                      ),
-                    ),
-                  )
-                : Card(
-                    margin: const EdgeInsets.fromLTRB(12, 12, 12, 4),
-                    child: ListTile(
-                      leading: const Icon(Icons.cloud_done_outlined),
-                      title: const Text('坚果云 WebDAV'),
-                      subtitle: Text(
-                        '${config.account}\n同步根：${config.rootPath}',
-                      ),
-                      isThreeLine: true,
-                      trailing: TextButton(
-                        onPressed: () => context.push('/sync/guide'),
-                        child: const Text('重新配置'),
-                      ),
-                    ),
-                  ),
-          ),
-
-          // ── 立即同步（FR-409）+ 状态行（FR-406）──
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(switch (memory.id) {
-                        SyncStateId.unconfigured => '云端同步未配置',
-                        SyncStateId.idle => '同步空闲',
-                        SyncStateId.syncing => '正在同步…',
-                        SyncStateId.ok =>
-                          '上次同步：'
-                              '${lastSyncedAt == null ? '-' : formatEpochMs(lastSyncedAt.millisecondsSinceEpoch)}',
-                        SyncStateId.failed => '上次同步失败',
-                      }, style: Theme.of(context).textTheme.bodyMedium),
-                      if (memory.failureText != null)
-                        Text(
-                          '失败原因：${memory.failureText}',
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.error,
-                            fontSize: 12,
+      // 居中限宽（与引导页一致；窄窗 480px 不横向溢出，宽窗不无限拉伸）。
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 640),
+          child: ListView(
+            children: [
+              // ── 后端卡片（FR-405）──
+              configAsync.when(
+                loading: () => const ListTile(
+                  leading: Icon(Icons.cloud_outlined),
+                  title: Text('正在读取后端配置…'),
+                ),
+                error: (error, _) => const ListTile(
+                  leading: Icon(Icons.cloud_off),
+                  title: Text('后端未配置'),
+                  subtitle: Text('配置读取失败，可重新配置'),
+                ),
+                data: (config) => config == null
+                    ? Card(
+                        margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                        child: ListTile(
+                          leading: const Icon(Icons.cloud_off),
+                          title: const Text('后端未配置'),
+                          subtitle: const Text('坚果云 WebDAV（引导式配置）'),
+                          trailing: FilledButton(
+                            onPressed: () => context.push('/sync/guide'),
+                            child: const Text('去配置'),
                           ),
                         ),
-                    ],
-                  ),
+                      )
+                    : Card(
+                        margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                        child: ListTile(
+                          leading: const Icon(Icons.cloud_done_outlined),
+                          title: const Text('坚果云 WebDAV'),
+                          // Expanded 内自动换行：长账号/根目录不横向溢出。
+                          subtitle: Text(
+                            '${config.account}\n同步根：${config.rootPath}',
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis,
+                            softWrap: true,
+                          ),
+                          isThreeLine: true,
+                          trailing: TextButton(
+                            onPressed: () => context.push('/sync/guide'),
+                            child: const Text('重新配置'),
+                          ),
+                        ),
+                      ),
+              ),
+
+              // ── 立即同步（FR-409）+ 状态行（FR-406）──
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(switch (memory.id) {
+                            SyncStateId.unconfigured => '云端同步未配置',
+                            SyncStateId.idle => '同步空闲',
+                            SyncStateId.syncing => '正在同步…',
+                            SyncStateId.ok =>
+                              '上次同步：'
+                                  '${lastSyncedAt == null ? '-' : formatEpochMs(lastSyncedAt.millisecondsSinceEpoch)}',
+                            SyncStateId.failed => '上次同步失败',
+                          }, style: Theme.of(context).textTheme.bodyMedium),
+                          if (memory.failureText != null)
+                            Text(
+                              '失败原因：${memory.failureText}',
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.error,
+                                fontSize: 12,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton.icon(
+                      onPressed: memory.id == SyncStateId.syncing
+                          ? null
+                          : () => ref
+                                .read(syncFacadeProvider)
+                                .fullSync(source: SyncTriggerSource.manual),
+                      icon: memory.id == SyncStateId.syncing
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.sync),
+                      label: const Text('立即同步'),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 8),
-                FilledButton.icon(
-                  onPressed: memory.id == SyncStateId.syncing
-                      ? null
-                      : () => ref
-                            .read(syncFacadeProvider)
-                            .fullSync(source: SyncTriggerSource.manual),
-                  icon: memory.id == SyncStateId.syncing
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.sync),
-                  label: const Text('立即同步'),
+              ),
+
+              const Divider(height: 32),
+
+              // ── 自动同步开关（docs/04 §3）──
+              SwitchListTile(
+                title: const Text('自动同步'),
+                subtitle: const Text('关闭后仅手动"立即同步"生效'),
+                value: prefs.autoSyncEnabled,
+                onChanged: (value) => ref
+                    .read(syncPreferencesProvider.notifier)
+                    .setAutoSyncEnabled(value),
+              ),
+
+              // ── 仅 Wi-Fi 正文开关 ──
+              SwitchListTile(
+                title: const Text('仅 Wi-Fi 同步正文'),
+                subtitle: const Text('元数据不受限；正文下载避开移动网络'),
+                value: prefs.wifiOnlyContent,
+                onChanged: (value) => ref
+                    .read(syncPreferencesProvider.notifier)
+                    .setWifiOnlyContent(value),
+              ),
+
+              const Divider(height: 32),
+
+              // ── 配额面板（FR-407；内存侧告警优先于快照推导）──
+              _QuotaPanel(
+                snapshot: quotaAsync.value,
+                statusWarnText: memory.quotaWarnText,
+              ),
+
+              const Divider(height: 32),
+
+              // ── 连接测试（FR-505，见向导）──
+              ListTile(
+                leading: const Icon(Icons.network_check),
+                title: const Text('测试连接'),
+                subtitle: const Text('往返延迟与目录权限检查'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => context.push('/sync/guide'),
+              ),
+
+              // ── 危险区：清除凭据（FR-504 整体清除语义）──
+              ListTile(
+                leading: Icon(
+                  Icons.key_off,
+                  color: Theme.of(context).colorScheme.error,
                 ),
-              ],
-            ),
+                title: Text(
+                  '清除凭据',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+                subtitle: const Text('删除账号、应用密码与设备关联信息'),
+                onTap: () => _confirmClearCredentials(context, ref),
+              ),
+            ],
           ),
-
-          const Divider(height: 32),
-
-          // ── 自动同步开关（docs/04 §3）──
-          SwitchListTile(
-            title: const Text('自动同步'),
-            subtitle: const Text('关闭后仅手动"立即同步"生效'),
-            value: prefs.autoSyncEnabled,
-            onChanged: (value) => ref
-                .read(syncPreferencesProvider.notifier)
-                .setAutoSyncEnabled(value),
-          ),
-
-          // ── 仅 Wi-Fi 正文开关 ──
-          SwitchListTile(
-            title: const Text('仅 Wi-Fi 同步正文'),
-            subtitle: const Text('元数据不受限；正文下载避开移动网络'),
-            value: prefs.wifiOnlyContent,
-            onChanged: (value) => ref
-                .read(syncPreferencesProvider.notifier)
-                .setWifiOnlyContent(value),
-          ),
-
-          const Divider(height: 32),
-
-          // ── 配额面板（FR-407；内存侧告警优先于快照推导）──
-          _QuotaPanel(
-            snapshot: quotaAsync.value,
-            statusWarnText: memory.quotaWarnText,
-          ),
-
-          const Divider(height: 32),
-
-          // ── 连接测试（FR-505，见向导）──
-          ListTile(
-            leading: const Icon(Icons.network_check),
-            title: const Text('测试连接'),
-            subtitle: const Text('往返延迟与目录权限检查'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => context.push('/sync/guide'),
-          ),
-
-          // ── 危险区：清除凭据（FR-504 整体清除语义）──
-          ListTile(
-            leading: Icon(
-              Icons.key_off,
-              color: Theme.of(context).colorScheme.error,
-            ),
-            title: Text(
-              '清除凭据',
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
-            ),
-            subtitle: const Text('删除账号、应用密码与设备关联信息'),
-            onTap: () => _confirmClearCredentials(context, ref),
-          ),
-        ],
+        ),
       ),
     );
   }

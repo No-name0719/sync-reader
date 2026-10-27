@@ -20,6 +20,7 @@ import '../../../data/db/daos/books_dao.dart';
 import '../../../data/files/book_file_store.dart';
 import '../../reader/contract/book_file.dart';
 import '../../reader/contract/format_registry.dart';
+import 'cover_generator.dart' show writeCoverFile;
 
 /// 单文件导入进度（UI Snackbar 用）。
 class ImportProgress {
@@ -147,16 +148,8 @@ class BookImportService {
     final bookId = generateUlid();
     final parsed = await handler.parseMetadata(bookFile);
 
-    // 4. 封面落盘（有字节才写；字节魔数 png/jpg 皆可为 flutter 解码器按
-    // 内容识别，文件名沿用 BookFileStore 冻结的 covers/{bookId}.png）。
-    String? coverPath;
-    final coverBytes = parsed.coverBytes;
-    if (coverBytes != null && coverBytes.isNotEmpty) {
-      coverPath = store.resolveCoverPath(bookId);
-      final coverFile = File(coverPath);
-      await coverFile.parent.create(recursive: true);
-      await coverFile.writeAsBytes(coverBytes, flush: true);
-    }
+    // 4. 封面落盘（有字节才写；写入与下载后补生成共用 writeCoverFile）。
+    final coverPath = await writeCoverFile(store, bookId, parsed.coverBytes);
 
     // 5. 复制正文入库（原文件保留在用户处），再写库行。
     final localPath = await store.importCopy(

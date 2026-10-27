@@ -30,6 +30,10 @@ class JianguoYunGuidePage extends ConsumerStatefulWidget {
 final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
   int _currentStep = 0;
 
+  /// 历史上到达过的最远步骤：头部点击只允许跳到已到达的步骤，
+  /// 未到达的未来步骤置 disabled（不可点），避免跳过输入直接到测试。
+  int _maxVisitedStep = 0;
+
   final _accountController = TextEditingController();
   final _passwordController = TextEditingController();
   final _baseUrlController = TextEditingController(
@@ -74,7 +78,11 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
     setState(() {
       _testing = false;
       _result = result;
-      if (result.success) _currentStep = 3;
+      // 测试成功自动流转到成功页（保留原行为）；同步更新最远到达步。
+      if (result.success) {
+        _currentStep = 3;
+        if (_maxVisitedStep < 3) _maxVisitedStep = 3;
+      }
     });
   }
 
@@ -105,26 +113,51 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('配置坚果云同步')),
-      body: Stepper(
-        currentStep: _currentStep,
-        type: StepperType.vertical,
-        physics: const ClampingScrollPhysics(),
-        onStepTapped: (step) => setState(() => _currentStep = step),
-        onStepContinue: _onContinue,
-        onStepCancel: _onCancel,
-        controlsBuilder: (context, details) => _controls(context, details),
-        steps: [_step1(), _step2(), _step3(), _step4()],
+      // 居中限宽（8/16/24 栅格；窄窗 480px 时不横向溢出，宽窗不无限拉伸）。
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 640),
+          child: Stepper(
+            currentStep: _currentStep,
+            type: StepperType.vertical,
+            physics: const ClampingScrollPhysics(),
+            onStepTapped: _onStepTapped,
+            onStepContinue: _onContinue,
+            onStepCancel: _onCancel,
+            controlsBuilder: (context, details) => KeyedSubtree(
+              // 竖向 Stepper 会为每个步骤构建 controls（仅当前步可见）；
+              // 按步骤索引加 key，便于测试精确定位可见的那一份。
+              key: ValueKey('guide-controls-${details.stepIndex}'),
+              child: _controls(context, details),
+            ),
+            steps: [_step1(), _step2(), _step3(), _step4()],
+          ),
+        ),
       ),
     );
   }
 
-  /// 步进器"继续"：①→② 触发连接测试；④ 落凭据返回。
+  /// 前进到目标步骤（记录最远到达步；测试中不接受前进）。
+  void _goto(int step) {
+    if (_testing) return;
+    setState(() {
+      _currentStep = step;
+      if (step > _maxVisitedStep) _maxVisitedStep = step;
+    });
+  }
+
+  /// 步进器"继续"：①→② 输入；②→③ 触发连接测试；③ 失败可重新测试；
+  /// ④ 落凭据返回（成功页自动流转由 [_runTest] 完成）。
   Future<void> _onContinue() async {
     switch (_currentStep) {
       case 0:
-        setState(() => _currentStep = 1);
+        _goto(1);
       case 1:
-        setState(() => _currentStep = 2);
+        if (!_inputsValid) return;
+        _goto(2);
+        await _runTest();
+      case 2:
+        // 首次进入已由 ② 触发；此处为失败后"重新测试"或回退后补测。
         await _runTest();
       case 3:
         await _saveAndBack();
@@ -139,56 +172,58 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
     });
   }
 
+  /// 头部点击：只允许跳到已到达过的步骤（未到达步骤头部为 disabled，
+  /// 这里再过滤一次作双保险）。
+  void _onStepTapped(int step) {
+    if (_testing || step > _maxVisitedStep || step == _currentStep) return;
+    setState(() {
+      _currentStep = step;
+      // 回到输入步 = 放弃本次测试结果（与"上一步"语义一致）。
+      if (step == 1) _result = null;
+    });
+  }
+
   Widget _controls(BuildContext context, ControlsDetails details) {
-    final theme = Theme.of(context);
+    // 测试进行中：只显示进度行，不渲染按钮（防重复触发）。
+    if (_testing) {
+      return const Padding(
+        padding: EdgeInsets.only(top: 12),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            SizedBox(width: 8),
+            Text('正在连接测试…'),
+          ],
+        ),
+      );
+    }
+    // 每步都有明确的「下一步」主按钮（步骤 1 需输入合法才可用）。
+    final (label, enabled) = switch (_currentStep) {
+      0 => ('开始配置', true),
+      1 => ('下一步', _inputsValid),
+      2 => (_result == null ? '开始连接测试' : '重新测试', true),
+      _ => ('完成', true),
+    };
     return Padding(
       padding: const EdgeInsets.only(top: 12),
-      child: _testing
-          ? const Row(
-              children: [
-                SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                SizedBox(width: 8),
-                Text('正在连接测试…'),
-              ],
-            )
-          : Row(
-              children: [
-                if (_currentStep == 1)
-                  FilledButton(
-                    onPressed: _inputsValid ? details.onStepContinue : null,
-                    child: const Text('开始连接测试'),
-                  )
-                else if (_currentStep == 3)
-                  FilledButton(
-                    onPressed: details.onStepContinue,
-                    child: const Text('保存并返回'),
-                  )
-                else if (_currentStep == 2 &&
-                    _result != null &&
-                    !_result!.success) ...[
-                  Text(
-                    _result!.failureText ?? '连接失败',
-                    style: TextStyle(color: theme.colorScheme.error),
-                  ),
-                  const SizedBox(width: 8),
-                  TextButton(
-                    onPressed: details.onStepContinue,
-                    child: const Text('重试'),
-                  ),
-                ] else
-                  const SizedBox.shrink(),
-                const SizedBox(width: 8),
-                if (_currentStep > 0 && _currentStep != 3)
-                  TextButton(
-                    onPressed: details.onStepCancel,
-                    child: const Text('上一步'),
-                  ),
-              ],
+      child: Row(
+        children: [
+          FilledButton(
+            onPressed: enabled ? details.onStepContinue : null,
+            child: Text(label),
+          ),
+          const SizedBox(width: 8),
+          if (_currentStep > 0)
+            TextButton(
+              onPressed: details.onStepCancel,
+              child: const Text('上一步'),
             ),
+        ],
+      ),
     );
   }
 
@@ -224,11 +259,12 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
     return Step(
       title: const Text('输入账号与应用密码'),
       isActive: _currentStep >= 1,
-      state: _currentStep > 1
+      // 未到达过的步骤头部禁用（配合 [_onStepTapped] 过滤，防跳过输入）。
+      state: _maxVisitedStep < 1
+          ? StepState.disabled
+          : _currentStep > 1
           ? StepState.complete
-          : _currentStep == 1
-          ? StepState.indexed
-          : StepState.disabled,
+          : StepState.indexed,
       content: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -269,7 +305,9 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
     return Step(
       title: const Text('自动连接测试'),
       isActive: _currentStep >= 2,
-      state: _testing
+      state: _maxVisitedStep < 2
+          ? StepState.disabled
+          : _testing
           ? StepState.editing
           : result == null
           ? StepState.indexed
@@ -294,8 +332,14 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
                               : Theme.of(context).colorScheme.error,
                         ),
                         const SizedBox(width: 6),
-                        Text(step.name),
-                        const Spacer(),
+                        // Expanded：窄窗（480px）下步骤名过长时省略，不横向溢出。
+                        Expanded(
+                          child: Text(
+                            step.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
                         Text(
                           step.latencyMs == null ? '-' : '${step.latencyMs} ms',
                           style: const TextStyle(fontSize: 12),
@@ -324,7 +368,11 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
     return Step(
       title: const Text('完成'),
       isActive: _currentStep >= 3,
-      state: _currentStep > 3 ? StepState.complete : StepState.indexed,
+      state: _maxVisitedStep < 3
+          ? StepState.disabled
+          : _currentStep > 3
+          ? StepState.complete
+          : StepState.indexed,
       content: caps == null
           ? const Text('完成连接测试后保存配置。')
           : Column(
@@ -338,15 +386,38 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
                       size: 20,
                     ),
                     const SizedBox(width: 6),
-                    const Text('连接成功'),
+                    const Expanded(child: Text('连接成功')),
                   ],
                 ),
                 const SizedBox(height: 8),
-                Text('MOVE 原子提交：${caps.supportsMove ? '支持' : '不支持（回退校验）'}'),
-                Text(
-                  'ETag 条件请求：${caps.supportsEtag ? '支持' : '不支持（size+mtime 合成）'}',
+                // Expanded：能力文案在窄窗下换行，不横向溢出。
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'MOVE 原子提交：${caps.supportsMove ? '支持' : '不支持（回退校验）'}',
+                      ),
+                    ),
+                  ],
                 ),
-                Text('Range 断点续传：${caps.supportsRange ? '支持' : '不支持'}'),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'ETag 条件请求：${caps.supportsEtag ? '支持' : '不支持（size+mtime 合成）'}',
+                      ),
+                    ),
+                  ],
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Range 断点续传：${caps.supportsRange ? '支持' : '不支持'}',
+                      ),
+                    ),
+                  ],
+                ),
               ],
             ),
     );

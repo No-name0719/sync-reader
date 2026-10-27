@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../features/library/import/cover_generator.dart';
 import '../features/sync/sync_facade.dart';
 import 'router.dart';
 
@@ -55,6 +58,11 @@ final class _SyncTriggerHostState extends ConsumerState<SyncTriggerHost> {
     } catch (_) {
       // 静默：同步是旁路，任何失败不影响本地阅读（CLAUDE.md §4.1）。
     }
+    // 存量封面回填（一次性）：修复前已下载的书（coverPath 为空）重启后
+    // 补出真实封面。fire-and-forget；provider/数据层不可用时静默失败。
+    unawaited(
+      ref.read(coverGeneratorProvider).backfillMissing().catchError((_) {}),
+    );
   }
 
   @override
