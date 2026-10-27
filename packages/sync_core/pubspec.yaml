@@ -11,6 +11,8 @@ environment:
 dependencies:
   # 仅允许纯 Dart 依赖；禁止引入 Flutter（CLAUDE.md §2）。
   meta: ^1.16.0
+  # 下载断点续传的 SHA-256 完整性校验（docs/04 §5.4）；纯 Dart。
+  crypto: ^3.0.0
 
 dev_dependencies:
   flutter_lints: ^6.0.0

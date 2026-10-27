@@ -70,8 +70,20 @@ abstract interface class BackendAdapter {
   /// 建立连接并做连通性/权限测试（读写 + 列目录 + MOVE 四项，FR-505）。
   Future<void> connect(BackendConfig cfg);
 
+  /// 连接后能力探测（MOVE / ETag / Range，docs/04 §8.1）。
+  /// 适配器内部可据此启用回退路径（如 size+mtime 合成 etag）。
+  Future<BackendCapabilities> probeCapabilities();
+
   /// 首次连接：幂等创建 `library.json / meta/ / books/ / tmp/`（docs/05 §1）。
   Future<void> ensureLayout();
+
+  /// 读取 `library.json` 原文；不存在返回 null（docs/05 §1）。
+  /// 自建模式的后端键 `server:{libraryId}` 依赖本方法发现 libraryId。
+  Future<String?> readLibraryJson();
+
+  /// 删除云端 meta 文件（docs/04 §7.3）——仅供 90 天 tombstone GC 调用，
+  /// 常规删除走 [putTombstone]，绝不删除 `books/` 下的正文。
+  Future<void> deleteMeta(String bookId);
 
   /// 元数据清单：WebDAV = PROPFIND Depth:1 on meta/；REST = GET /sync/changes?cursor。
   Future<MetaListing> listMetas({String? cursor});
@@ -100,7 +112,7 @@ abstract interface class BackendAdapter {
 /// 乐观锁冲突：服务端 rev 与 expectedRev 不符（HTTP 409 或 WebDAV 写前重读发现落后）。
 /// 调用方取远端当前 meta → ConflictResolver 合并 → 以新 expectedRev 重试一次（docs/06 §2.2）。
 class RevConflict implements Exception {
-  RevConflict(this.bookId, this.remoteRev, this.remoteMeta);
+  const RevConflict(this.bookId, this.remoteRev, this.remoteMeta);
 
   final String bookId;
   final int remoteRev;
@@ -114,10 +126,82 @@ class RevConflict implements Exception {
 
 /// 连接/认证失败（WebDAV 401、REST token 失效）——触发重新授权流程。
 class AuthFailed implements Exception {
-  AuthFailed(this.message);
+  const AuthFailed(this.message);
 
   final String message;
 
   @override
   String toString() => 'AuthFailed: $message';
+}
+
+/// 连接后能力探测结果（docs/03 §4.3 / docs/04 §8.1）。
+///
+/// 由适配器在 [BackendAdapter.connect] 之后自检上报；无 ETag 的网盘以
+/// `size + mtime` 合成 etag 属适配器内部实现，对引擎透明。
+class BackendCapabilities {
+  const BackendCapabilities({
+    required this.supportsMove,
+    required this.supportsEtag,
+    required this.supportsRange,
+  });
+
+  /// 服务端是否支持 MOVE 原子提交（不支持的网盘以 Content-Length 校验兜底）。
+  final bool supportsMove;
+
+  /// 是否支持 ETag / If-None-Match 条件请求（304 语义）。
+  final bool supportsEtag;
+
+  /// 是否支持 Range 断点续传。
+  final bool supportsRange;
+
+  @override
+  String toString() =>
+      'BackendCapabilities(move=$supportsMove, etag=$supportsEtag, '
+      'range=$supportsRange)';
+}
+
+/// 传输层异常：适配器抛出的可重试 HTTP/网络错误（docs/04 §8.4）。
+///
+/// 语义约定（错误映射的边界）：
+/// - 401 → [AuthFailed]（认证类，不重试）；
+/// - 409 / 412 / 428 → [RevConflict]（由引擎走合并流程，不进重试队列）；
+/// - 429 / 5xx / 网络异常 → 本类（可重试，[TransferQueue] 负责退避）。
+///
+/// 引擎与传输队列只依赖本类，不直接依赖任何 HTTP 客户端。
+class BackendRequestException implements Exception {
+  const BackendRequestException(
+    this.message, {
+    this.statusCode,
+    this.retryAfter,
+    this.cause,
+  });
+
+  /// 开发者可读描述（不得含凭据）。
+  final String message;
+
+  /// HTTP 状态码；纯网络异常（连接失败/超时）为 null。
+  final int? statusCode;
+
+  /// 服务端 `Retry-After` 解析结果（429/503 优先尊重）。
+  final Duration? retryAfter;
+
+  /// 底层原始异常。
+  final Object? cause;
+
+  @override
+  String toString() =>
+      'BackendRequestException(${statusCode ?? 'network'}): $message';
+}
+
+/// 正文内容哈希不符（docs/04 §5.3 / 契约用例 6）：
+/// 远端已存在不同版本的正文，或本地文件实际哈希与声明值不一致。
+class ContentHashMismatch implements Exception {
+  const ContentHashMismatch(this.bookId, this.message, {this.cause});
+
+  final String bookId;
+  final String message;
+  final Object? cause;
+
+  @override
+  String toString() => 'ContentHashMismatch($bookId): $message';
 }
