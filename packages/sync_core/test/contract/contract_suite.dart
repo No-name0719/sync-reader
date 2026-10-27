@@ -95,19 +95,34 @@ void contractSuite(AdapterFactory make, {String tag = 'adapter'}) {
       },
     );
 
-    test('5 putTombstone：写入后 listMetas 标记 deleted=true（docs/04 §7）', () async {
-      await adapter.ensureLayout();
-      final meta = buildMeta(bookId: bookIdOf(1), rev: 1);
-      await adapter.putMeta(meta, expectedRev: 0);
-      final tomb = meta.toTombstone(
-        deletedAt: t0.add(const Duration(hours: 1)),
-        deviceId: '01DEVA000000000000',
-        deviceName: 'DeviceA',
-      );
-      await adapter.putTombstone(tomb, expectedRev: 1);
-      final stub = (await adapter.listMetas()).stubs[bookIdOf(1)]!;
-      expect(stub.deleted, isTrue);
-    });
+    test(
+      '5 putTombstone：清单仍含该书且 getMeta 读回 deleted=true（docs/04 §7）',
+      () async {
+        await adapter.ensureLayout();
+        final meta = buildMeta(bookId: bookIdOf(1), rev: 1);
+        await adapter.putMeta(meta, expectedRev: 0);
+        final tomb = meta.toTombstone(
+          deletedAt: t0.add(const Duration(hours: 1)),
+          deviceId: '01DEVA000000000000',
+          deviceName: 'DeviceA',
+        );
+        await adapter.putTombstone(tomb, expectedRev: 1);
+        // 双端公共真值：tombstone 对清单可见（bookId 不消失）、内容可读回。
+        // RemoteMetaStub.deleted 仅在清单阶段即可确知的后端（内存/REST）为 true；
+        // WebDAV 的 PROPFIND 无法感知内容级删除标记（恒 false），tombstone 的
+        // 权威判定在 getMeta 内容，引擎以拉取阶段 + 本地账本兜底（docs/04 §7.3）。
+        final listing = await adapter.listMetas();
+        expect(listing.stubs.keys, contains(bookIdOf(1)));
+        final read = await adapter.getMeta(bookIdOf(1));
+        expect(read?.isTombstone, isTrue);
+        expect(read?.deletedAt, isNotNull);
+        // 对能确知的实现，摘要不撒谎（内存/REST=true；WebDAV 恒 false 也合法）。
+        final stub = listing.stubs[bookIdOf(1)]!;
+        if (stub.deleted) {
+          expect(read?.deleted, isTrue);
+        }
+      },
+    );
 
     test('6 uploadBook 幂等：同 hash 二次上传跳过；hash 不符报错（docs/04 §5.3）', () async {
       await adapter.ensureLayout();

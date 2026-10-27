@@ -21,7 +21,13 @@ class RemoteMetaStub {
   final String? etag; // WebDAV 条件请求用
   final int? size; // meta 文件字节数
   final DateTime? modifiedAt;
-  final bool deleted; // tombstone
+
+  /// 清单阶段即可确知的 tombstone 标记。
+  ///
+  /// REST 后端由服务端直报；WebDAV 的 PROPFIND 看不到 JSON 内容里的删除
+  /// 标记，恒为 false——tombstone 的权威判定在 [BackendAdapter.getMeta]
+  /// 内容，引擎以拉取阶段 + 本地账本兜底（docs/04 §7.3），两种后端收敛语义一致。
+  final bool deleted;
 }
 
 /// 元数据清单结果。REST 模式可携带服务端游标供增量续拉。

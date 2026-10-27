@@ -178,8 +178,16 @@ class SyncEngine {
     await _library.commitContentFile(bookId, target);
   }
 
-  /// tombstone GC（docs/04 §7.3）：本地账本 30 天后清理（不再参与合并决策）；
-  /// 云端仅删除 `deletedAt > 90 天` 的 tombstone meta 文件（不碰正文）。
+  /// tombstone GC（docs/04 §7.3）。
+  ///
+  /// - 30 天：tombstone 不再参与合并决策——合并始终走 meta 的 rev 链，引擎无需
+  ///   查账本，该期限只约束上层（游离文件重关联窗口）对账本时间戳的消费；
+  /// - 90 天：云端只删除 `deletedAt > 90 天` 的 tombstone meta 文件（不碰正文），
+  ///   本地 `deleted_books` 账本随后同步清理。
+  ///
+  /// 云端 GC 由本地账本驱动而非清单摘要：`RemoteMetaStub.deleted` 在 WebDAV
+  /// 的 PROPFIND 清单阶段不可知（恒 false），正确性以账本 ∩ 清单 + 逐本读
+  /// meta 确认为准（两种后端行为一致）。
   Future<GcReport> gcTombstones() async {
     final errors = <SyncError>[];
     var localPurged = 0;
@@ -187,36 +195,31 @@ class SyncEngine {
     final now = _now();
 
     try {
-      localPurged = await _store.purgeTombstones(
-        olderThan: now.subtract(const Duration(days: 30)),
-      );
-    } catch (e) {
-      errors.add(SyncErrorMapper.fromException(e, context: '本地 tombstone 清理'));
-    }
-
-    try {
       final listing = await _adapter.listMetas();
+      final ledger = await _store.tombstoneLedger();
       final cutoff = now.subtract(const Duration(days: 90));
-      for (final stub in listing.stubs.values) {
-        if (!stub.deleted) continue;
+      for (final entry in ledger) {
+        if (!listing.stubs.containsKey(entry.bookId)) continue; // 云端已无 meta
         try {
-          final meta = await _adapter.getMeta(stub.bookId);
+          final meta = await _adapter.getMeta(entry.bookId);
           final deletedAt = meta?.deletedAt;
           if (meta != null &&
               meta.isTombstone &&
               deletedAt != null &&
               deletedAt.isBefore(cutoff)) {
-            await _adapter.deleteMeta(stub.bookId);
+            await _adapter.deleteMeta(entry.bookId);
             cloudDeleted++;
           }
         } catch (e) {
           errors.add(
-            SyncErrorMapper.fromException(e, context: '云端 GC ${stub.bookId}'),
+            SyncErrorMapper.fromException(e, context: '云端 GC ${entry.bookId}'),
           );
         }
       }
+      // 云端 GC 之后同步清理本地账本（docs/04 §7.3"本地 deleted_books 同步清理"）。
+      localPurged = await _store.purgeTombstones(olderThan: cutoff);
     } catch (e) {
-      errors.add(SyncErrorMapper.fromException(e, context: '云端 GC 清单'));
+      errors.add(SyncErrorMapper.fromException(e, context: 'tombstone GC'));
     }
 
     return GcReport(
@@ -314,7 +317,18 @@ class SyncEngine {
       );
 
       // ── 阶段 5 Transfer（正文上传；下载默认按需，见 autoDownloadContent）──
-      await _transferContents(plan, skipContentUpload, report);
+      // 清单阶段无法感知 tombstone 的后端（WebDAV）此处按拉取结果兜底：
+      // 已发现远端为 tombstone 的书不再下载正文（docs/04 §7.1）。
+      final tombstoneDiscovered = {
+        for (final e in remoteMetas.entries)
+          if (e.value.isTombstone) e.key,
+      };
+      await _transferContents(
+        plan,
+        skipContentUpload,
+        report,
+        tombstoneDiscovered,
+      );
 
       // ── 落游标 ──
       await _store.saveCursorSnapshot(
@@ -777,8 +791,9 @@ class SyncEngine {
   Future<void> _transferContents(
     SyncPlan plan,
     Set<String> skipContentUpload,
-    SyncReport report,
-  ) async {
+    SyncReport report, [
+    Set<String> skipDownload = const {},
+  ]) async {
     for (final need in plan.needsUpload) {
       if (skipContentUpload.contains(need.bookId)) continue;
       try {
@@ -807,6 +822,7 @@ class SyncEngine {
     }
     if (autoDownloadContent) {
       for (final need in plan.needsDownload) {
+        if (skipDownload.contains(need.bookId)) continue;
         try {
           await downloadContent(need.bookId);
         } catch (e) {

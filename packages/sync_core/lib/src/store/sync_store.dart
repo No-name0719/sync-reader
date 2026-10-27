@@ -105,8 +105,13 @@ abstract interface class SyncStore {
   /// 标记 tombstone 已上云。
   Future<void> markTombstonePushed(String bookId);
 
-  /// 清理 [olderThan]（含）之前的账本条目，返回清理数量
-  /// （30 天保留期，docs/04 §7.3：过期后不再参与合并决策）。
+  /// 清理**严格早于** [olderThan] 的账本条目（不含边界），返回清理数量。
+  ///
+  /// 边界语义与云端 GC 对齐：云端只删 `deletedAt` 严格大于 90 天的
+  /// tombstone（`isBefore(cutoff)`），本地账本同步清理同一集合。
+  /// 引擎在云端 90 天 GC 之后调用（docs/04 §7.3"本地 deleted_books 同步
+  /// 清理"）；30 天期限只约束上层对账本时间戳的消费（重关联窗口），
+  /// 账本本身保留到 90 天。
   Future<int> purgeTombstones({required DateTime olderThan});
 
   /// 读某后端的游标快照；无记录返回全空默认值。

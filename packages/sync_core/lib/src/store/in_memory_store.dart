@@ -74,7 +74,7 @@ class InMemorySyncStore implements SyncStore {
   @override
   Future<int> purgeTombstones({required DateTime olderThan}) async {
     final doomed = _ledger.values
-        .where((e) => !e.deletedAt.isAfter(olderThan))
+        .where((e) => e.deletedAt.isBefore(olderThan))
         .map((e) => e.bookId)
         .toList();
     for (final id in doomed) {

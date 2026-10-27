@@ -533,8 +533,9 @@ void main() {
   });
 
   group('tombstone GC（docs/04 §7.3）', () {
-    test('本地账本 30 天边界清理；云端 tombstone 仅删 > 90 天', () async {
-      // 本地账本：29 天（保留）、30 天（清理，含边界）、31 天（清理）。
+    test('账本驱动云端 GC（仅删 > 90 天）；本地账本随 90 天同步清理', () async {
+      // 本地账本 = 云端 GC 的驱动源（WebDAV 清单无法感知 tombstone，docs/04 §7.3）。
+      // 条目：29 天（保留）、90 天（保留，清理界为"含 90 天"）、91 天（清理）。
       Future<void> ledger(String id, int days) => store.recordTombstone(
         TombstoneLedgerEntry(
           bookId: id,
@@ -544,10 +545,11 @@ void main() {
         ),
       );
       await ledger('ledger-29d', 29);
-      await ledger('ledger-30d', 30);
-      await ledger('ledger-31d', 31);
+      await ledger('ledger-90d', 90);
+      await ledger('ledger-91d', 91);
 
-      // 云端 tombstone：90 天整（保留，严格 >）、91 天（删除）、89 天（保留）。
+      // 云端 tombstone（同时记账本，模拟"他端删除已确认"）：
+      // 90 天整（保留，严格 > 90）、91 天（删除）、89 天（保留）。
       Future<void> cloudTomb(String bookId, int days) async {
         final tomb = buildMeta(
           bookId: bookId,
@@ -556,6 +558,7 @@ void main() {
           deletedAt: t0.subtract(Duration(days: days)),
         );
         await memory.putTombstone(tomb, expectedRev: 0);
+        await ledger(bookId, days);
       }
 
       await cloudTomb(bookIdOf(10), 90);
@@ -564,7 +567,6 @@ void main() {
 
       final report = await engine.gcTombstones();
       expect(report.success, isTrue, reason: '${report.errors}');
-      expect(report.localPurged, 2, reason: '30 天整即过期（不再参与合并决策）');
       expect(
         report.cloudDeleted,
         1,
@@ -574,8 +576,16 @@ void main() {
       expect(memory.metas.containsKey(bookIdOf(10)), isTrue, reason: '90 天整不删');
       expect(memory.metas.containsKey(bookIdOf(12)), isTrue);
 
+      // 本地清理发生在云端 GC 之后、以 90 天为界（含边界）：
+      // ledger-91d 与 bookIdOf(11) 的账本条目被清，其余保留。
+      expect(report.localPurged, 2);
       final remaining = (await store.tombstoneLedger()).map((e) => e.bookId);
-      expect(remaining, ['ledger-29d']);
+      expect(
+        remaining,
+        containsAll(['ledger-29d', 'ledger-90d', bookIdOf(10), bookIdOf(12)]),
+      );
+      expect(remaining, isNot(contains('ledger-91d')));
+      expect(remaining, isNot(contains(bookIdOf(11))));
     });
   });
 }
