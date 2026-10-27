@@ -14,6 +14,9 @@ class FlakyAdapter implements BackendAdapter {
   /// putMeta 故障脚本：bookId → 依次抛出的异常工厂（弹尽后放行）。
   final Map<String, List<Object Function()>> putMetaFailures = {};
 
+  /// putTombstone 故障脚本（deleteBook / 补推测试用）：bookId → 依次抛出。
+  final Map<String, List<Object Function()>> putTombstoneFailures = {};
+
   /// uploadBook 故障脚本（队列层重试测试用）。
   final List<Object Function()> uploadFailures = [];
 
@@ -78,8 +81,16 @@ class FlakyAdapter implements BackendAdapter {
   }
 
   @override
-  Future<void> putTombstone(BookMeta tombstoned, {required int expectedRev}) =>
-      inner.putTombstone(tombstoned, expectedRev: expectedRev);
+  Future<void> putTombstone(
+    BookMeta tombstoned, {
+    required int expectedRev,
+  }) async {
+    final script = putTombstoneFailures[tombstoned.bookId];
+    if (script != null && script.isNotEmpty) {
+      throw script.removeAt(0)();
+    }
+    return inner.putTombstone(tombstoned, expectedRev: expectedRev);
+  }
 
   @override
   Stream<List<int>> downloadBook(String bookId, {int? startByte}) async* {

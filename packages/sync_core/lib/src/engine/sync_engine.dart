@@ -156,6 +156,206 @@ class SyncEngine {
     return report;
   });
 
+  /// 删除同步（docs/04 §7.1）：组 tombstone → 尽力推送云端。
+  ///
+  /// 本地书库行的移除由调用方（app 删除流程）负责——本地优先，与本方法
+  /// 正交且顺序不限：本地行已删时基组依次回退"公共祖先缓存 → 远端 meta"。
+  /// 云端推送失败（如离线）时 tombstone 已入账本（pushed=false），由下次
+  /// [fullSync] 补推，最终收敛。冲突语义：删除与远端修改同序但"后操作
+  /// 优先"——用户点击删除的时刻更晚，tombstone 以 `rev = max(双端)+1、
+  /// updatedAt = now` 覆盖（docs/04 §7.2 行 2 的对称面）。
+  Future<SyncReport> deleteBook(String bookId) =>
+      _withLock(() => _deleteBook(bookId));
+
+  Future<SyncReport> _deleteBook(String bookId) async {
+    final report = SyncReport(startedAt: _now());
+    final id = await _identity();
+    try {
+      final snap = await _library.book(bookId);
+      var base = snap == null
+          ? null
+          : await _library.buildLocalMeta(
+              bookId,
+              rev: 1,
+              deviceId: id.deviceId,
+              deviceName: id.deviceName,
+              now: _now(),
+            );
+      base ??= _parseMeta(
+        (await _store.syncState(bookId, backendKey))?.lastSyncedMetaJson,
+      );
+      // 删除前确认云端现状：无 meta（从未上云或已被 GC）→ 只记账本；
+      // 已是 tombstone → 幂等确认。二者都不再造云端条目。
+      final remote = await _adapter.getMeta(bookId);
+      if (remote == null || remote.isTombstone) {
+        await _store.markTombstonePushed(bookId);
+        if (base != null) {
+          await _store.recordTombstone(
+            TombstoneLedgerEntry(
+              bookId: bookId,
+              deletedAt: _now(),
+              pushed: true,
+              contentHash: base.book.contentHash,
+            ),
+          );
+        }
+        report.add(
+          BookSyncResult(
+            bookId: bookId,
+            decision: SyncDecision.deletePush,
+            ok: true,
+          ),
+        );
+        report.finishedAt = _now();
+        return report;
+      }
+      base ??= remote;
+      final deletedAt = _now();
+      await _store.recordTombstone(
+        TombstoneLedgerEntry(
+          bookId: bookId,
+          deletedAt: deletedAt,
+          pushed: false,
+          contentHash: base.book.contentHash,
+        ),
+      );
+      final pushed = await _pushTombstoneOnce(
+        base: base,
+        deletedAt: deletedAt,
+        expectedRev: remote.rev,
+        deviceId: id.deviceId,
+        deviceName: id.deviceName,
+      );
+      if (pushed) {
+        await _store.markTombstonePushed(bookId);
+        report.add(
+          BookSyncResult(
+            bookId: bookId,
+            decision: SyncDecision.deletePush,
+            ok: true,
+          ),
+        );
+      } else {
+        // 双次冲突：账本已在（pushed=false），留给 fullSync 补推。
+        report.add(
+          BookSyncResult(
+            bookId: bookId,
+            decision: SyncDecision.deletePush,
+            ok: false,
+            error: ConflictUnresolvable('删除推送两次冲突，留待下轮同步补推'),
+          ),
+        );
+      }
+    } catch (e) {
+      // 传输类失败（如离线）同样已入账本，恢复后补推。
+      report.add(
+        BookSyncResult(
+          bookId: bookId,
+          decision: SyncDecision.deletePush,
+          ok: false,
+          error: SyncErrorMapper.fromException(e, context: '删除推送 $bookId'),
+        ),
+      );
+    }
+    report.finishedAt = _now();
+    return report;
+  }
+
+  /// 组 tombstone 并推送；`RevConflict` 时以"后操作优先"压过远端重试
+  /// 恰一次。成功时回写 sync_state（baseRev/公共祖先缓存）。返回是否成功。
+  Future<bool> _pushTombstoneOnce({
+    required BookMeta base,
+    required DateTime deletedAt,
+    required int expectedRev,
+    required String deviceId,
+    required String deviceName,
+  }) async {
+    final bookId = base.bookId;
+    var expected = expectedRev;
+    var rev = await _store.nextRev(bookId, atLeast: expected + 1);
+    for (var attempt = 0; attempt < 2; attempt++) {
+      final tomb = _makeTombstone(
+        base,
+        rev: rev,
+        deletedAt: deletedAt,
+        deviceId: deviceId,
+        deviceName: deviceName,
+      );
+      try {
+        await _adapter.putTombstone(tomb, expectedRev: expected);
+        await _store.saveSyncState(
+          BookSyncStateSnapshot(
+            bookId: bookId,
+            backendKey: backendKey,
+            baseRev: tomb.rev,
+            lastSyncedMetaJson: tomb.toJsonString(),
+            lastSyncedAt: _now(),
+          ),
+        );
+        return true;
+      } on RevConflict catch (e) {
+        if (attempt == 1) return false;
+        expected = e.remoteRev;
+        rev = await _store.nextRev(bookId, atLeast: e.remoteRev + 1);
+      }
+    }
+    return false;
+  }
+
+  /// 全量同步的前置补推：账本中 `pushed=false` 的 tombstone（离线删除的
+  /// 收敛路径，docs/04 §7.1）。云端无该书 meta 或已是 tombstone → 直接
+  /// 标记已推送；否则以公共祖先/远端为基组推送一次。
+  Future<void> _pushPendingTombstones(
+    MetaListing listing,
+    SyncReport report,
+    ({String deviceId, String deviceName}) id,
+  ) async {
+    for (final entry in await _store.tombstoneLedger()) {
+      if (entry.pushed || !listing.stubs.containsKey(entry.bookId)) continue;
+      try {
+        final remote = await _adapter.getMeta(entry.bookId);
+        if (remote == null || remote.isTombstone) {
+          await _store.markTombstonePushed(entry.bookId);
+          continue;
+        }
+        final cached = _parseMeta(
+          (await _store.syncState(
+            entry.bookId,
+            backendKey,
+          ))?.lastSyncedMetaJson,
+        );
+        final pushed = await _pushTombstoneOnce(
+          base: cached ?? remote,
+          deletedAt: entry.deletedAt,
+          expectedRev: remote.rev,
+          deviceId: id.deviceId,
+          deviceName: id.deviceName,
+        );
+        await _store.markTombstonePushed(entry.bookId);
+        report.add(
+          BookSyncResult(
+            bookId: entry.bookId,
+            decision: SyncDecision.deletePush,
+            ok: pushed,
+            error: pushed ? null : ConflictUnresolvable('tombstone 补推冲突，留待下轮'),
+          ),
+        );
+      } catch (e) {
+        report.add(
+          BookSyncResult(
+            bookId: entry.bookId,
+            decision: SyncDecision.deletePush,
+            ok: false,
+            error: SyncErrorMapper.fromException(
+              e,
+              context: 'tombstone 补推 ${entry.bookId}',
+            ),
+          ),
+        );
+      }
+    }
+  }
+
   /// 占位书正文按需下载（docs/04 §5.4）：配额校验 → `.part` 续传 →
   /// SHA-256 校验（不一致删重来，最多 2 次）→ 转正落盘。
   Future<void> downloadContent(String bookId) async {
@@ -251,6 +451,12 @@ class SyncEngine {
       final cursor = await _store.cursorSnapshot(backendKey);
       final listing = await _adapter.listMetas(cursor: cursor.changesCursor);
 
+      // ── 阶段 2 前置：账本未推送 tombstone 补推（离线删除收敛，§7.1）──
+      // 必须先于 Diff：推送成功会更新 sync_state（baseRev/公共祖先），
+      // Diff 依据它判定；若放在 Diff 后，删除端会把已删书误判为
+      // "云端新书"（row 5）而拉回复活。
+      await _pushPendingTombstones(listing, report, id);
+
       // ── 阶段 2 Diff ──
       final snapshots = await _library.listBooks();
       final states = {
@@ -275,6 +481,7 @@ class SyncEngine {
           case SyncDecision.conflictMerge:
           case SyncDecision.newFromCloud:
           case SyncDecision.localNewPush:
+          case SyncDecision.deletePush:
             break; // 由后续阶段记录
         }
       }

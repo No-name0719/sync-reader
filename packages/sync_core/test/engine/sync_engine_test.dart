@@ -567,6 +567,123 @@ void main() {
     });
   });
 
+  group('删除同步（docs/04 §7.1）', () {
+    test('在线删除：tombstone 上云、账本 pushed、sync_state 更新', () async {
+      await importBook(bookIdOf(1));
+      await engine.fullSync();
+      expect(
+        BookMeta.fromJsonString(memory.metas[bookIdOf(1)]!).isTombstone,
+        isFalse,
+      );
+
+      now = t0.add(const Duration(minutes: 5));
+      final report = await engine.deleteBook(bookIdOf(1));
+      expect(report.success, isTrue, reason: '${report.results}');
+
+      final cloud = BookMeta.fromJsonString(memory.metas[bookIdOf(1)]!);
+      expect(cloud.isTombstone, isTrue);
+      expect(cloud.rev, 2);
+      expect(cloud.deviceId, deviceId);
+      final ledger = await store.tombstoneLedger();
+      expect(ledger.single.bookId, bookIdOf(1));
+      expect(ledger.single.pushed, isTrue);
+      final state = await store.syncState(bookIdOf(1), backendKey);
+      expect(state!.baseRev, 2);
+      expect(
+        BookMeta.fromJsonString(state.lastSyncedMetaJson!).isTombstone,
+        isTrue,
+        reason: '公共祖先缓存更新为 tombstone',
+      );
+    });
+
+    test('从未上云的书删除：云端不造条目，账本直接标记已推送', () async {
+      await importBook(bookIdOf(2));
+      now = t0.add(const Duration(minutes: 5));
+      final report = await engine.deleteBook(bookIdOf(2));
+      expect(report.success, isTrue, reason: '${report.results}');
+      expect(
+        memory.metas.containsKey(bookIdOf(2)),
+        isFalse,
+        reason: '不为云端没见过的书造 tombstone',
+      );
+      expect((await store.tombstoneLedger()).single.pushed, isTrue);
+    });
+
+    test('离线删除 → 账本 pushed=false → 恢复后 fullSync 补推，书不复活', () async {
+      await importBook(bookIdOf(3));
+      await engine.fullSync();
+      now = t0.add(const Duration(minutes: 5));
+      adapter.putTombstoneFailures[bookIdOf(3)] = [
+        () => const BackendRequestException('网络不可达'),
+      ];
+      final failReport = await engine.deleteBook(bookIdOf(3));
+      expect(failReport.success, isFalse);
+      expect(
+        (await store.tombstoneLedger()).single.pushed,
+        isFalse,
+        reason: '离线失败已入账本',
+      );
+
+      // 模拟 app softDelete：本地行移除（正文保留不在本测试范围）。
+      await library.removeLocalBook(bookIdOf(3));
+
+      // 恢复网络后全量同步：补推 tombstone，且已删书不得被拉回（复活守卫）。
+      now = t0.add(const Duration(minutes: 10));
+      final report = await engine.fullSync();
+      expect(
+        BookMeta.fromJsonString(memory.metas[bookIdOf(3)]!).isTombstone,
+        isTrue,
+        reason: '${report.results}',
+      );
+      expect((await store.tombstoneLedger()).single.pushed, isTrue);
+      expect(await library.book(bookIdOf(3)), isNull, reason: '已删书不得复活为占位');
+    });
+
+    test('删除 vs 他端进度更新：后操作优先，删除胜（docs/04 §7.2 对称面）', () async {
+      await importBook(bookIdOf(4));
+      await engine.fullSync();
+      // 他端推更高 rev 的正常 meta（rev=2）。
+      await memory.putMeta(
+        buildMeta(bookId: bookIdOf(4), rev: 2),
+        expectedRev: 1,
+      );
+
+      now = t0.add(const Duration(minutes: 5));
+      final report = await engine.deleteBook(bookIdOf(4));
+      expect(report.success, isTrue, reason: '${report.results}');
+      final cloud = BookMeta.fromJsonString(memory.metas[bookIdOf(4)]!);
+      expect(cloud.isTombstone, isTrue);
+      expect(cloud.rev, 3, reason: 'rev = max(本地 1, 远端 2) + 1，压过他端');
+      expect(cloud.updatedAt, now, reason: 'updatedAt = 本端删除时刻（后操作优先）');
+    });
+
+    test('补推时云端已是 tombstone（他端已删）→ 幂等标记，不再推送', () async {
+      await importBook(bookIdOf(5));
+      await engine.fullSync();
+      now = t0.add(const Duration(minutes: 5));
+      adapter.putTombstoneFailures[bookIdOf(5)] = [
+        () => const BackendRequestException('网络不可达'),
+      ];
+      await engine.deleteBook(bookIdOf(5));
+      // 他端也删了：云端已是 tombstone。
+      await memory.putTombstone(
+        buildMeta(bookId: bookIdOf(5), rev: 9, deleted: true, deletedAt: now),
+        expectedRev: 1,
+      );
+      await library.removeLocalBook(bookIdOf(5));
+
+      now = t0.add(const Duration(minutes: 10));
+      final report = await engine.fullSync();
+      expect(report.success, isTrue, reason: '${report.results}');
+      expect(
+        BookMeta.fromJsonString(memory.metas[bookIdOf(5)]!).rev,
+        9,
+        reason: '他端 tombstone 不被覆盖',
+      );
+      expect((await store.tombstoneLedger()).single.pushed, isTrue);
+    });
+  });
+
   group('tombstone GC（docs/04 §7.3）', () {
     test('账本驱动云端 GC（仅删 > 90 天）；本地账本随 90 天同步清理', () async {
       // 本地账本 = 云端 GC 的驱动源（WebDAV 清单无法感知 tombstone，docs/04 §7.3）。

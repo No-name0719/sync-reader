@@ -83,6 +83,10 @@ enum SyncDecision {
 
   /// 第 7b 行：曾有 baseRev 但远端 meta 消失 → 保留本地，标记云端缺失。
   cloudMissing,
+
+  /// 删除同步（docs/04 §7.1，非 Diff 矩阵行）：本端删除 → tombstone 推送
+  /// （[全量同步](SyncEngine.fullSync) 对账本未推送条目补推时也用此值）。
+  deletePush,
 }
 
 /// 单本书的 Diff 结论。
