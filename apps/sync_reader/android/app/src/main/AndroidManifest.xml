@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- WebDAV 同步需要网络权限；Flutter 模板只在 debug/profile 清单中声明，
+         release APK 若缺失会以 DNS 解析失败（errno = 7）的形式暴露。 -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="sync_reader"
         android:name="${applicationName}"
