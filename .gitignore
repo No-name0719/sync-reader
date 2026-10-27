@@ -14,3 +14,6 @@ server/bin/
 
 # 手动测试样书（本地生成，不入库；生成脚本 testdata/gen_samples.py 保留）
 testdata/
+
+# 本地联调工具（rclone 等，C3/R3 用，不入库）
+.tools/

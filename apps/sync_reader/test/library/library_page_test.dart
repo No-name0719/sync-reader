@@ -17,7 +17,9 @@ import 'package:go_router/go_router.dart';
 import 'package:sync_reader/app/providers.dart';
 import 'package:sync_reader/data/db/app_database.dart';
 import 'package:sync_reader/data/files/book_file_store.dart';
+import 'package:sync_reader/data/secure/secure_credential_store.dart';
 import 'package:sync_reader/features/library/library_page.dart';
+import 'package:sync_reader/features/sync/sync_facade.dart';
 import 'package:sync_reader/features/library/library_providers.dart';
 
 void main() {
@@ -103,6 +105,11 @@ void main() {
           bookFileStoreProvider.overrideWith(
             (ref) async => BookFileStore(tmp!),
           ),
+          // 占位书分流（FR-402）会触碰同步门面：注入内存凭据存储，
+          // 避免测试环境触碰平台通道（未存凭据 → readConfig 返回 null）。
+          secureCredentialStoreProvider.overrideWithValue(
+            InMemoryCredentialStore(),
+          ),
         ],
         child: MaterialApp.router(routerConfig: buildRouter()),
       ),
@@ -169,6 +176,9 @@ void main() {
           databaseProvider.overrideWithValue(db!),
           bookFileStoreProvider.overrideWith(
             (ref) async => BookFileStore(tmp!),
+          ),
+          secureCredentialStoreProvider.overrideWithValue(
+            InMemoryCredentialStore(),
           ),
         ],
         child: MaterialApp.router(routerConfig: buildRouter()),
@@ -253,6 +263,38 @@ void main() {
     await tester.tap(find.text('AAA').first);
     await tester.pumpAndSettle();
     expect(find.text('详情页-stub'), findsOneWidget);
+    await shutdown(tester);
+  });
+
+  testWidgets('点击占位书卡片：触发下载分流，未配置同步 → 提示且不导航（FR-402）', (tester) async {
+    await bootstrapSafely(tester);
+    await tester.runAsync(
+      () => db!.booksDao.upsertCompanion(
+        bookRow('01B', title: 'BBB', localPath: null),
+      ),
+    );
+    final router = buildRouter();
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          databaseProvider.overrideWithValue(db!),
+          bookFileStoreProvider.overrideWith(
+            (ref) async => BookFileStore(tmp!),
+          ),
+          secureCredentialStoreProvider.overrideWithValue(
+            InMemoryCredentialStore(),
+          ),
+        ],
+        child: MaterialApp.router(routerConfig: router),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('BBB').first);
+    await tester.pumpAndSettle();
+    expect(find.text('尚未配置同步账号，请先在"同步设置"中完成配置'), findsOneWidget);
+    // 保持书库路由（未进详情/阅读器）。
+    expect(find.text('详情页-stub'), findsNothing);
     await shutdown(tester);
   });
 

@@ -172,7 +172,11 @@ void main() {
     await tester.pump();
 
     expect(find.text('正文尚未下载'), findsOneWidget);
-    expect(find.text('同步功能上线后，可从云端获取正文'), findsOneWidget);
+    // FR-402：占位页提供"下载正文"入口（Phase C 同步已上线）。
+    expect(
+      find.byKey(const ValueKey('reader-download-button')),
+      findsOneWidget,
+    );
     // 未创建渲染器。
     expect(renderer.controller.restoreCalls, isEmpty);
   });

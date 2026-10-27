@@ -2,6 +2,8 @@
 /// 提供"打开阅读 / 删除"操作；删除语义遵循 FR-408（softDelete + 游离文件）。
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -10,6 +12,7 @@ import '../../app/providers.dart';
 import '../../data/db/app_database.dart';
 import '../../shared/cover_view.dart';
 import '../../shared/format_utils.dart';
+import '../sync/placeholder_download.dart';
 import 'library_providers.dart';
 
 /// 书籍详情页（`/book/:bookId`）。
@@ -139,13 +142,21 @@ class BookDetailPage extends ConsumerWidget {
                     ),
                   ),
                   const SizedBox(height: 24),
+                  // 占位书（FR-402）：主按钮分流为"下载正文"，成功后直接
+                  // 进阅读页；失败保持占位，可再次点击重试。
                   FilledButton.icon(
                     onPressed: book.localPath == null
-                        ? null
+                        ? () => unawaited(_downloadAndOpen(context, ref, book))
                         : () => context.push('/reader/${book.bookId}'),
-                    icon: const Icon(Icons.menu_book_outlined),
+                    icon: Icon(
+                      book.localPath == null
+                          ? Icons.cloud_download_outlined
+                          : Icons.menu_book_outlined,
+                    ),
                     label: Text(
-                      (progress == null || progress.percent <= 0)
+                      book.localPath == null
+                          ? '下载正文'
+                          : (progress == null || progress.percent <= 0)
                           ? '开始阅读'
                           : '继续阅读',
                     ),
@@ -219,6 +230,22 @@ class BookDetailPage extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  /// 占位书下载（FR-402）：成功 → 详情刷新 + 直接进阅读页。
+  Future<void> _downloadAndOpen(
+    BuildContext context,
+    WidgetRef ref,
+    Book book,
+  ) async {
+    final ok = await downloadPlaceholderBook(
+      context,
+      ref,
+      bookId: book.bookId,
+      title: book.title,
+    );
+    if (!ok || !context.mounted) return;
+    context.push('/reader/${book.bookId}');
   }
 
   /// 删除确认（FR-408 语义说明）→ softDelete + moveToOrphans → 返回书库。

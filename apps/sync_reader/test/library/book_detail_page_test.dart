@@ -16,6 +16,8 @@ import 'package:path/path.dart' as p;
 import 'package:sync_reader/app/providers.dart';
 import 'package:sync_reader/data/db/app_database.dart';
 import 'package:sync_reader/data/files/book_file_store.dart';
+import 'package:sync_reader/data/secure/secure_credential_store.dart';
+import 'package:sync_reader/features/sync/sync_facade.dart';
 import 'package:sync_reader/features/library/book_detail_page.dart';
 import 'package:sync_reader/features/reader/contract/format_registry.dart';
 import 'package:sync_reader/shared/format_utils.dart';
@@ -114,6 +116,11 @@ void main() {
           formatRegistryProvider.overrideWith(
             (ref) => FormatRegistry()..register(FakeHandler()),
           ),
+          // 占位书"下载正文"按钮（FR-402）会触碰同步门面：注入内存凭据
+          // 存储（未存凭据 → readConfig 返回 null → 提示配置，不触碰平台通道）。
+          secureCredentialStoreProvider.overrideWithValue(
+            InMemoryCredentialStore(),
+          ),
         ],
         child: MaterialApp.router(routerConfig: buildRouter()),
       ),
@@ -152,15 +159,21 @@ void main() {
     await shutdown(tester);
   });
 
-  testWidgets('占位书（仅云端）：角标 + 打开按钮禁用', (tester) async {
+  testWidgets('占位书（仅云端）：角标 + 主按钮分流为"下载正文"（FR-402）', (tester) async {
     await bootstrap(tester);
     await seedBook(tester, withLocalFile: false);
     await pumpDetail(tester);
     expect(find.text('仅云端'), findsOneWidget);
+    // 主按钮不再是禁用的"继续阅读"，而是可点的"下载正文"。
     final button = tester.widget<FilledButton>(
-      find.ancestor(of: find.text('继续阅读'), matching: find.byType(FilledButton)),
+      find.ancestor(of: find.text('下载正文'), matching: find.byType(FilledButton)),
     );
-    expect(button.onPressed, isNull);
+    expect(button.onPressed, isNotNull);
+    // 未配置同步账号时点击：提示配置，不导航（仍在详情页）。
+    await tester.tap(find.text('下载正文'));
+    await tester.pumpAndSettle();
+    expect(find.text('尚未配置同步账号，请先在"同步设置"中完成配置'), findsOneWidget);
+    expect(find.text('下载正文'), findsOneWidget, reason: '保持占位可重试');
     await shutdown(tester);
   });
 

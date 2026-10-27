@@ -7,9 +7,11 @@ import 'dart:async';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../data/db/app_database.dart';
 import '../../data/db/daos/books_dao.dart';
+import '../sync/placeholder_download.dart';
 import '../sync/sync_status.dart';
 import '../sync/widgets/sync_status_banner.dart';
 import 'import/book_import_service.dart';
@@ -94,6 +96,28 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
     } finally {
       progress.dispose();
     }
+  }
+
+  /// 点开书籍（FR-402 分流）：有正文 → 详情页（现有点开即读链路）；
+  /// 占位书（localPath 为空）→ 触发云端正文下载，成功后直接进阅读页
+  /// （阅读器不接收无正文的书），失败保持占位可重试。
+  void _openBook(Book book) {
+    if ((book.localPath ?? '').isNotEmpty) {
+      context.push('/book/${book.bookId}');
+      return;
+    }
+    unawaited(_downloadPlaceholderAndOpen(book));
+  }
+
+  Future<void> _downloadPlaceholderAndOpen(Book book) async {
+    final ok = await downloadPlaceholderBook(
+      context,
+      ref,
+      bookId: book.bookId,
+      title: book.title,
+    );
+    if (!ok || !mounted) return;
+    context.push('/reader/${book.bookId}');
   }
 
   @override
@@ -181,11 +205,13 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
                         books: books,
                         progressMap: progressMap,
                         syncStatusMap: syncStatusMap,
+                        onOpen: _openBook,
                       ),
                       LibraryViewMode.list => _BookList(
                         books: books,
                         progressMap: progressMap,
                         syncStatusMap: syncStatusMap,
+                        onOpen: _openBook,
                       ),
                     },
             ),
@@ -240,11 +266,15 @@ class _BookGrid extends StatelessWidget {
     required this.books,
     required this.progressMap,
     required this.syncStatusMap,
+    required this.onOpen,
   });
 
   final List<Book> books;
   final Map<String, BookProgress>? progressMap;
   final Map<String, BookSyncStatus> syncStatusMap;
+
+  /// 点开回调（书库页分流：占位书下载 / 普通书进详情）。
+  final void Function(Book book) onOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -263,6 +293,7 @@ class _BookGrid extends StatelessWidget {
           book: book,
           percent: progressMap?[book.bookId]?.percent,
           syncStatus: syncStatusMap[book.bookId],
+          onOpen: () => onOpen(book),
         );
       },
     );
@@ -274,11 +305,15 @@ class _BookList extends StatelessWidget {
     required this.books,
     required this.progressMap,
     required this.syncStatusMap,
+    required this.onOpen,
   });
 
   final List<Book> books;
   final Map<String, BookProgress>? progressMap;
   final Map<String, BookSyncStatus> syncStatusMap;
+
+  /// 点开回调（书库页分流：占位书下载 / 普通书进详情）。
+  final void Function(Book book) onOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -291,6 +326,7 @@ class _BookList extends StatelessWidget {
           book: book,
           percent: progressMap?[book.bookId]?.percent,
           syncStatus: syncStatusMap[book.bookId],
+          onOpen: () => onOpen(book),
         );
       },
     );

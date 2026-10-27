@@ -2,14 +2,14 @@
 /// 一切方法安全 no-op 并报告 `SyncStateId.unconfigured`（FR-405）。
 ///
 /// 装配关系：
-/// - 适配器实例经 [SyncAdapterProvider] 注入——**Phase C 切换点**：B2 内置
-///   [InMemorySyncAdapterProvider]（sync_core 的 InMemoryAdapter，目录模型与
-///   WebDAV 一致，供联调/测试）；Phase C 把 `syncAdapterProvider` 换成
-///   WebDavAdapter 工厂即可，门面只依赖 `BackendAdapter` 接口；
+/// - 适配器实例经 [SyncAdapterProvider] 注入——Phase C 起默认
+///   [WebDavSyncAdapterProvider]（真实 WebDAV 传输，坚果云为第一目标）；
+///   [InMemorySyncAdapterProvider] 保留给测试/演示注入。凭据缺失/认证失败
+///   时引擎不构建，全部入口安全 no-op（见 [SyncFacade._ensureEngine]）；
 /// - 凭据从安全存储读取（[SecureKeys]，FR-504），配置齐全才建引擎；
 /// - 六种触发时机（docs/04 §3）全部经 [fullSync]/[pushBookMeta] 进入，
 ///   SyncEngine 自带单飞锁串行，触发器无需自建；
-/// - 本类只 import sync_core 的接口与导出，不 import 任何 WebDAV 实现。
+/// - 只 import sync_core 的导出（WebDavAdapter 由包出口统一提供）。
 library;
 
 import 'dart:async';
@@ -25,6 +25,7 @@ import '../../core/ulid.dart';
 import '../../data/secure/secure_credential_store.dart';
 import '../../data/sync/drift_local_library.dart';
 import '../../data/sync/drift_sync_store.dart';
+import '../library/library_providers.dart' show bookDetailProvider;
 import 'connection_test.dart';
 import 'quota_gate.dart';
 import 'sync_preferences.dart';
@@ -37,12 +38,24 @@ abstract interface class SyncAdapterProvider {
   BackendAdapter create(BackendConfig config);
 }
 
-/// B2 内置供应：sync_core 的内存适配器（联调/演示/测试；数据不持久）。
+/// B2 内置供应：sync_core 的内存适配器（测试/演示注入用；数据不持久）。
 final class InMemorySyncAdapterProvider implements SyncAdapterProvider {
   const InMemorySyncAdapterProvider();
 
   @override
   BackendAdapter create(BackendConfig config) => InMemoryAdapter();
+}
+
+/// Phase C 默认供应：真实 WebDAV 适配器工厂（docs/03 §4.3）。
+///
+/// 每次构建引擎新建实例（适配器持有 etag→rev 缓存与连接，随引擎生命周期
+/// 经 `dispose` 释放）；凭据不经过本工厂——`connect(config)` 由门面用安全
+/// 存储读出的配置调用，Basic 头只存在于请求内存中（NFR-03）。
+final class WebDavSyncAdapterProvider implements SyncAdapterProvider {
+  const WebDavSyncAdapterProvider();
+
+  @override
+  BackendAdapter create(BackendConfig config) => WebDavAdapter();
 }
 
 /// 触发来源（docs/04 §3 六种触发时机；downloadPlaceholder 不属于触发时机）。
@@ -396,9 +409,9 @@ final quotaGateProvider = Provider<SyncQuotaGate>((ref) {
   return SyncQuotaGate(store: ref.watch(driftSyncStoreProvider));
 });
 
-/// 后端适配器供应点——**Phase C 切换点**：替换为返回 WebDavAdapter 的实现。
+/// 后端适配器供应点——Phase C 起默认真实 WebDAV（测试可整体覆盖）。
 final syncAdapterProvider = Provider<SyncAdapterProvider>(
-  (ref) => const InMemorySyncAdapterProvider(),
+  (ref) => const WebDavSyncAdapterProvider(),
 );
 
 /// 同步门面（进程级单例；状态经 onOutcome 汇入内存侧状态）。
@@ -427,6 +440,11 @@ final syncFacadeProvider = Provider<SyncFacade>((ref) {
         notifier.setQuotaWarn(outcome.quotaWarnText);
       } else {
         notifier.applyOutcome(outcome);
+      }
+      // 一轮同步落地了书库变更（新占位书/删除/进度覆盖）→ 一次性详情
+      // provider 失效重取；books 列表与进度走 drift watch 自动刷新。
+      if (outcome.report != null) {
+        ref.invalidate(bookDetailProvider);
       }
     },
     quotaGate: ref.watch(quotaGateProvider),

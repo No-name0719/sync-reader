@@ -29,6 +29,7 @@ import '../../core/app_logger.dart';
 import '../../data/db/app_database.dart' show Book;
 import '../../data/db/daos/books_dao.dart';
 import '../../data/db/daos/progress_dao.dart';
+import '../../features/sync/placeholder_download.dart';
 import '../../features/sync/sync_facade.dart';
 import '../../features/sync/sync_triggers.dart';
 import 'contract/book_file.dart';
@@ -63,9 +64,11 @@ final class _MissingBookState extends _PageState {
   const _MissingBookState();
 }
 
-/// 占位书（云端有、本地无正文）。
+/// 占位书（云端有、本地无正文；FR-402 提供下载入口）。
 final class _PlaceholderState extends _PageState {
-  const _PlaceholderState();
+  const _PlaceholderState(this.title);
+
+  final String title;
 }
 
 /// 打开失败（错误信息 + 重试）。
@@ -226,7 +229,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     }
     final localPath = book.localPath;
     if (localPath == null || localPath.isEmpty) {
-      setState(() => _state = const _PlaceholderState());
+      // 占位书：不进渲染器（阅读器不接收无正文的书），给下载入口（FR-402）。
+      final title = book.title;
+      setState(() => _state = _PlaceholderState(title));
       return;
     }
 
@@ -538,8 +543,12 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     );
   }
 
-  /// 占位书提示页（FR-402 前置：同步上线前只给说明）。
+  /// 占位书提示页（FR-402）：提供"下载正文"入口，成功后重新走打开链路。
   Widget _buildPlaceholder(BuildContext context) {
+    final title = switch (_state) {
+      final _PlaceholderState s => s.title,
+      _ => '',
+    };
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -553,12 +562,44 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
           const Text('正文尚未下载'),
           const SizedBox(height: 8),
           Text(
-            '同步功能上线后，可从云端获取正文',
+            '该书来自云端同步，下载正文后即可阅读',
             style: Theme.of(context).textTheme.bodySmall,
           ),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            key: const ValueKey('reader-download-button'),
+            onPressed: _downloadPlaceholderContent,
+            icon: const Icon(Icons.cloud_download_outlined),
+            label: const Text('下载正文'),
+          ),
+          if (title.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              title,
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(color: Theme.of(context).colorScheme.outline),
+            ),
+          ],
         ],
       ),
     );
+  }
+
+  /// 占位书正文下载（FR-402）：复用统一入口（Wi-Fi/配额把关 + snackbar
+  /// 反馈）；成功后重新打开（localPath 已转正 → 正常进渲染器）。
+  Future<void> _downloadPlaceholderContent() async {
+    final title = switch (_state) {
+      final _PlaceholderState s => s.title,
+      _ => '',
+    };
+    final ok = await downloadPlaceholderBook(
+      context,
+      ref,
+      bookId: widget.bookId,
+      title: title,
+    );
+    if (!ok || !mounted) return;
+    _open();
   }
 
   Widget _buildError(BuildContext context, Object error) {

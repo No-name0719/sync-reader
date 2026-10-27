@@ -59,7 +59,15 @@ dev_dependencies:
 flutter:
   uses-material-design: true
 
-# pdfrx 指向仓库内收编副本（含 Dart 3.13 兼容补丁，详见上方注释与 docs/07）。
+# 收编副本（packages/third_party/，dependency_overrides 指向）：
+# - pdfrx：含 Dart 3.13 兼容补丁，详见上方注释与 docs/07；
+# - flutter_secure_storage_windows：上游 4.2.2 的唯一 ATL 依赖
+#   （atlstr.h 的 CA2W/CW2A 转换类）已以 Win32 API 等价实现替换
+#   （SyncReader patch 块见 windows/flutter_secure_storage_windows_plugin.cpp），
+#   否则本机 VS Build Tools（无 ATL 组件，静默安装需管理员）无法构建
+#   Windows 桌面端。其余与上游 4.2.2 一致。
 dependency_overrides:
   pdfrx:
     path: ../../packages/third_party/pdfrx
+  flutter_secure_storage_windows:
+    path: ../../packages/third_party/flutter_secure_storage_windows
