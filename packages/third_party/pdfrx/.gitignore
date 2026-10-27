@@ -1,0 +1,7 @@
+# pdfrx Android 构建时下载的 pdfium（CMAKE_SOURCE_DIR/.lib，见 android/CMakeLists.txt）
+.lib/
+# 本机构建产物（pdfium 预置/NDK 中间件等，见 docs/08 §6.3.1）
+.cxx/
+build/
+.gradle/
+local.properties
