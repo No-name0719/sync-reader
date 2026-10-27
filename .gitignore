@@ -1,0 +1,16 @@
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 本机环境说明中约定的本地目录（见 docs/08-开发环境搭建.md）
+server/data/
+server/bin/
+
+# 手动测试样书（本地生成，不入库；生成脚本 testdata/gen_samples.py 保留）
+testdata/
