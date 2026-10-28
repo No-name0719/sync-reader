@@ -11,13 +11,16 @@ import 'package:go_router/go_router.dart';
 
 import '../../data/db/app_database.dart';
 import '../../data/db/daos/books_dao.dart';
+import '../../app/providers.dart';
 import '../../core/startup_timer.dart';
+import '../../shared/cover_view.dart';
 import '../sync/placeholder_download.dart';
 import '../sync/sync_status.dart';
 import '../sync/widgets/sync_status_banner.dart';
 import 'import/book_import_service.dart';
 import 'import/batch_import_controller.dart';
 import 'import/batch_import_page.dart';
+import 'group_manage_dialog.dart';
 import 'library_providers.dart';
 import 'orphan/orphan_files_page.dart';
 import 'widgets/book_cards.dart';
@@ -242,6 +245,8 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
               ),
             ),
           ),
+          // 分组过滤栏（FR-107）：书卡可长按拖入 chip 归组。
+          const _GroupFilterBar(),
           Expanded(
             child: booksAsync.when(
               // 静态占位（不用不确定进度圈：本地库毫秒级加载，且避免
@@ -346,11 +351,14 @@ class _BookGrid extends StatelessWidget {
       itemCount: books.length,
       itemBuilder: (context, index) {
         final book = books[index];
-        return BookGridCard(
+        return _DraggableBook(
           book: book,
-          percent: progressMap?[book.bookId]?.percent,
-          syncStatus: syncStatusMap[book.bookId],
-          onOpen: () => onOpen(book),
+          child: BookGridCard(
+            book: book,
+            percent: progressMap?[book.bookId]?.percent,
+            syncStatus: syncStatusMap[book.bookId],
+            onOpen: () => onOpen(book),
+          ),
         );
       },
     );
@@ -379,13 +387,209 @@ class _BookList extends StatelessWidget {
       itemCount: books.length,
       itemBuilder: (context, index) {
         final book = books[index];
-        return BookListTile(
+        return _DraggableBook(
           book: book,
-          percent: progressMap?[book.bookId]?.percent,
-          syncStatus: syncStatusMap[book.bookId],
-          onOpen: () => onOpen(book),
+          child: BookListTile(
+            book: book,
+            percent: progressMap?[book.bookId]?.percent,
+            syncStatus: syncStatusMap[book.bookId],
+            onOpen: () => onOpen(book),
+          ),
         );
       },
+    );
+  }
+}
+
+/// 分组过滤栏（FR-107）：`[全部][未分组][分组A…] [管理]` 横向滚动一行，
+/// 位于搜索栏与书列表之间。分组 chip 兼作拖拽落点（书卡长按拖入归组，
+/// 拖入「未分组」移出分组；「全部」不接收拖拽）。
+class _GroupFilterBar extends ConsumerWidget {
+  const _GroupFilterBar();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final filter = ref.watch(libraryGroupFilterProvider);
+    final groups = ref.watch(groupsProvider).value ?? const <BookGroup>[];
+    // 选中分组被删除时回落「全部」，避免书列表停在空过滤视图。
+    ref.listen(groupsProvider, (_, next) {
+      final list = next.value;
+      if (list == null) return;
+      final current = ref.read(libraryGroupFilterProvider);
+      if (current is GroupFilterSelected &&
+          !list.any((g) => g.groupId == current.groupId)) {
+        ref
+            .read(libraryGroupFilterProvider.notifier)
+            .set(LibraryGroupFilter.all);
+      }
+    });
+    return SizedBox(
+      height: 56,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        children: [
+          ChoiceChip(
+            label: const Text('全部'),
+            selected: filter == LibraryGroupFilter.all,
+            onSelected: (_) => ref
+                .read(libraryGroupFilterProvider.notifier)
+                .set(LibraryGroupFilter.all),
+          ),
+          const SizedBox(width: 6),
+          _GroupDropChip(
+            label: '未分组',
+            selected: filter == LibraryGroupFilter.ungrouped,
+            onSelect: () => ref
+                .read(libraryGroupFilterProvider.notifier)
+                .set(LibraryGroupFilter.ungrouped),
+            onAcceptBook: (bookId) =>
+                _setBookGroup(context, ref, bookId, null, null),
+          ),
+          const SizedBox(width: 6),
+          for (final group in groups) ...[
+            _GroupDropChip(
+              key: ValueKey(group.groupId),
+              label: group.name,
+              selected:
+                  filter is GroupFilterSelected &&
+                  filter.groupId == group.groupId,
+              onSelect: () => ref
+                  .read(libraryGroupFilterProvider.notifier)
+                  .set(GroupFilterSelected(group.groupId)),
+              onAcceptBook: (bookId) =>
+                  _setBookGroup(context, ref, bookId, group.groupId, group.name),
+            ),
+            const SizedBox(width: 6),
+          ],
+          ActionChip(
+            avatar: const Icon(Icons.folder_open, size: 18),
+            label: const Text('管理'),
+            tooltip: '管理分组',
+            onPressed: () => showGroupManageDialog(context),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 落点归组（FR-107）：写库后 SnackBar 反馈；[name] 为 null = 移出分组
+/// （「未分组」chip）。分组纯本地（v1 不入同步），只调本地 DAO。
+Future<void> _setBookGroup(
+  BuildContext context,
+  WidgetRef ref,
+  String bookId,
+  String? groupId,
+  String? name,
+) async {
+  // ref/messenger 先取（跨 await 使用页面 ref 会随组件销毁失效）。
+  final dao = ref.read(booksDaoProvider);
+  final messenger = ScaffoldMessenger.of(context);
+  try {
+    await dao.setGroup(bookId, groupId);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(name == null ? '已移出分组' : '已移入「$name」'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  } catch (e) {
+    messenger.showSnackBar(SnackBar(content: Text('分组操作失败：$e')));
+  }
+}
+
+/// 分组 chip + 拖拽落点（FR-107）：拖拽悬停时 chip 呈选中态高亮提示
+/// 可放下，落下触发 [onAcceptBook]。
+class _GroupDropChip extends StatefulWidget {
+  const _GroupDropChip({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onSelect,
+    required this.onAcceptBook,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onSelect;
+  final Future<void> Function(String bookId) onAcceptBook;
+
+  @override
+  State<_GroupDropChip> createState() => _GroupDropChipState();
+}
+
+class _GroupDropChipState extends State<_GroupDropChip> {
+  /// 拖拽悬停中（高亮落点）。
+  bool _hovering = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return DragTarget<String>(
+      onWillAcceptWithDetails: (_) {
+        setState(() => _hovering = true);
+        return true;
+      },
+      onLeave: (_) {
+        if (mounted) setState(() => _hovering = false);
+      },
+      onAcceptWithDetails: (details) {
+        setState(() => _hovering = false);
+        widget.onAcceptBook(details.data);
+      },
+      builder: (context, _, _) => ChoiceChip(
+        label: Text(widget.label),
+        // 悬停即借用选中态高亮（ChoiceChip 默认视觉）。
+        selected: widget.selected || _hovering,
+        onSelected: (_) => widget.onSelect(),
+      ),
+    );
+  }
+}
+
+/// 长按拖拽书卡（FR-107）：data 为 bookId，feedback 为缩小带阴影封面。
+/// Draggable 不拦截短按（点开详情不受影响），长按阈值也保证列表滚动
+/// 不误触发；childWhenDragging 半透明标记"已拿起"。
+class _DraggableBook extends StatelessWidget {
+  const _DraggableBook({required this.book, required this.child});
+
+  final Book book;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return LongPressDraggable<String>(
+      data: book.bookId,
+      // feedback 随手指，起点即卡片原位附近（默认 pointer 锚点即可）。
+      feedback: _DragFeedback(book: book),
+      childWhenDragging: Opacity(opacity: 0.4, child: child),
+      child: child,
+    );
+  }
+}
+
+/// 拖拽跟随的小卡片：固定尺寸（Overlay 约束松散，网格卡内含 Expanded
+/// 不能直接复用），封面 + 阴影表达"拿起一本书"。
+class _DragFeedback extends StatelessWidget {
+  const _DragFeedback({required this.book});
+
+  final Book book;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      elevation: 8,
+      borderRadius: BorderRadius.circular(8),
+      child: SizedBox(
+        width: 84,
+        height: 118,
+        child: CoverView(
+          coverPath: book.coverPath,
+          title: book.title,
+          author: book.author,
+          contentHash: book.contentHash,
+        ),
+      ),
     );
   }
 }

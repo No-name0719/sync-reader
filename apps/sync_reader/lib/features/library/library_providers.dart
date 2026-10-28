@@ -9,10 +9,12 @@ library;
 
 import 'dart:convert';
 
+import 'package:drift/drift.dart' show OrderingTerm;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/providers.dart';
 import '../../data/db/app_database.dart';
+import '../../data/db/daos/book_groups_dao.dart';
 import '../../data/db/daos/books_dao.dart';
 import '../reader/contract/book_file.dart';
 import 'import/book_import_service.dart';
@@ -91,12 +93,94 @@ final class LibraryQueryNotifier extends Notifier<String> {
   void set(String query) => state = query;
 }
 
-/// 书库列表流：排序 + 搜索即时生效（drift watch）。
+/// 分组 DAO（FR-107 本地分类）：仅书库侧使用，groupsProvider / 分组管理
+/// 对话框共用（app/providers.dart 归基建所有，不在其上追加）。
+final bookGroupsDaoProvider = Provider<BookGroupsDao>(
+  (ref) => ref.watch(databaseProvider).bookGroupsDao,
+);
+
+/// 全部分组流（FR-107）：与书列表同为 drift watch，建/改/删组后 chip 栏与
+/// 管理对话框自动刷新。查询与 `BookGroupsDao.allGroups` 同序（sortOrder、
+/// createdAt 升序）；DAO 只提供一次性 Future，故 watch 查询在此装配。
+final groupsProvider = StreamProvider<List<BookGroup>>((ref) {
+  final db = ref.watch(databaseProvider);
+  final query = db.select(db.bookGroups)
+    ..orderBy([
+      (g) => OrderingTerm.asc(g.sortOrder),
+      (g) => OrderingTerm.asc(g.createdAt),
+    ]);
+  return query.watch();
+});
+
+/// 书库分组过滤状态（FR-107）：all = 不过滤；ungrouped = 只看未分组；
+/// selected(id) = 只看该分组。三种视图互斥（ungrouped 与 group(id) 映射到
+/// `watchBooks` 的两个互斥参数，ungroupedOnly 优先）。
+sealed class LibraryGroupFilter {
+  const LibraryGroupFilter();
+
+  /// 全部（不过滤）。
+  static const LibraryGroupFilter all = _AllGroupFilter();
+
+  /// 仅未分组。
+  static const LibraryGroupFilter ungrouped = _UngroupedGroupFilter();
+
+  /// 映射到 `BooksDao.watchBooks` 的分组过滤参数。
+  ({String? groupFilterId, bool ungroupedOnly}) get queryArgs =>
+      switch (this) {
+        _AllGroupFilter() => (groupFilterId: null, ungroupedOnly: false),
+        _UngroupedGroupFilter() => (groupFilterId: null, ungroupedOnly: true),
+        final GroupFilterSelected s => (
+          groupFilterId: s.groupId,
+          ungroupedOnly: false,
+        ),
+      };
+}
+
+/// 选中某个分组（按 groupId 判等）。
+final class GroupFilterSelected extends LibraryGroupFilter {
+  const GroupFilterSelected(this.groupId);
+
+  final String groupId;
+
+  @override
+  bool operator ==(Object other) =>
+      other is GroupFilterSelected && other.groupId == groupId;
+
+  @override
+  int get hashCode => Object.hash(GroupFilterSelected, groupId);
+}
+
+final class _AllGroupFilter extends LibraryGroupFilter {
+  const _AllGroupFilter();
+}
+
+final class _UngroupedGroupFilter extends LibraryGroupFilter {
+  const _UngroupedGroupFilter();
+}
+
+/// 书库分组过滤状态：默认「全部」；仅会话内记忆，不持久化。
+final libraryGroupFilterProvider =
+    NotifierProvider<LibraryGroupFilterNotifier, LibraryGroupFilter>(
+      LibraryGroupFilterNotifier.new,
+    );
+
+final class LibraryGroupFilterNotifier extends Notifier<LibraryGroupFilter> {
+  @override
+  LibraryGroupFilter build() => LibraryGroupFilter.all;
+
+  void set(LibraryGroupFilter filter) => state = filter;
+}
+
+/// 书库列表流：排序 + 搜索 + 分组过滤即时生效（drift watch；过滤条件
+/// 变化时重查由 watch 模式自动完成）。
 final booksStreamProvider = StreamProvider<List<Book>>((ref) {
   final dao = ref.watch(booksDaoProvider);
+  final args = ref.watch(libraryGroupFilterProvider).queryArgs;
   return dao.watchBooks(
     sort: ref.watch(bookSortProvider),
     query: ref.watch(libraryQueryProvider),
+    groupFilterId: args.groupFilterId,
+    ungroupedOnly: args.ungroupedOnly,
   );
 });
 
