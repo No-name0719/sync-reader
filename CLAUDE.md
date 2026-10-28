@@ -1,6 +1,6 @@
 # CLAUDE.md — SyncReader 项目上下文
 
-> 面向后续 AI 编码会话的项目说明。**当前阶段：M3 客户端功能补全开发完成（2026-10-28），下一站 M4 打磨分发。** 开工前请先通读本文与 `docs/` 设计基线。
+> 面向后续 AI 编码会话的项目说明。**当前阶段：M4 打磨分发开发完成（2026-10-28），待真机验收收口后进入 M5 服务端。** 开工前请先通读本文与 `docs/` 设计基线。
 
 ## 1. 项目一句话
 
@@ -67,10 +67,11 @@ sync-reader/
 | M1 本地阅读闭环（书库 FR-1xx + txt/md/pdf 阅读器 + 本地进度/时长/设置 + TOC 抽屉） | ✅ 完成（2026-10-26；app 293 测试全绿；Windows debug 构建通过并冒烟验证；Android debug APK 构建通过（含四 ABI libpdfium）；epub 渲染器按路线图随 M2/M3 交付；pdfrx 收编副本与机器环境补丁见 docs/07-R15、docs/08 §6.3） |
 | M2 同步上线（sync_core 引擎 + WebDAV 适配器 + App 接入） | ✅ 开发完成（2026-10-27）：sync_core 165 + app 359 测试全绿；契约套件同用例双跑（内存参考实现 + 标准/降级内存 WebDAV 服务器）；rclone 真实 HTTP 联调通过；**坚果云真实环境联调完成**（R3：实测画像 + 缺失目录 409 兼容修复 + 双端收敛 FR-404 真实预演，见 docs/07-R3）；Windows debug 构建通过。**待收口**：两真机 FR-404 验收；flutter_secure_storage_windows 收编见 docs/07-R16 |
 | M3 客户端功能补全（epub 渲染器 + 同步体验 P1；服务端方案后置至 M5，2026-10-27 调整） | ✅ 开发完成（2026-10-28）：sync_core 192 + app 514 测试全绿。**epub 渲染器**（FR-203）：epub_pro 解析 + flutter_widget_from_html 块化渲染、分页（连续排版+视口 snap）/滚动双模式、NCX 目录跳转、locator 与 sync_core EpubLocator 字段级互通、ReaderPage 指纹门（指纹不一致全格式降级 percent）、阅读设置热应用；降级项（复杂表格/浮动布局）登记 07-R2。**同步体验**：游离文件面板（FR-408 UI 半边：orphans 区/分层残留/平铺三形态扫描 + contentHash 挂回 + 彻底删除）；云端孤儿清理工具（docs/04 §7.1 规则 4：逐文件确认、批量可暂停、配额联动）；FR-410 文件替换（sync_core 冻结 replaceBookContent + uploadBook overwrite 语义，接收端自动下载覆盖；详情页"重新选择文件"）。**书库补齐**：批量导入（FR-109 递归扫描+清单确认）、pdf 封面（FR-103 第一页缩略图，pdfrx 可注入）、配额面板 80% 常驻提醒（docs/04 §8.3）。C3（FR-208 阅读时长按天统计）按任务允许后置 |
-| M4 打磨分发 → M5 服务端扩展 | ⬜ 见 `docs/00-总览.md` §4 |
+| M4 打磨分发（P0 平台可安装分发；性能/离线/补功能） | ✅ 开发完成（2026-10-28）：sync_core 192 + app 595 测试全绿。**发布打包**：release keystore 本地生成不入库（`android/key/` gitignored，环境变量可覆盖，材料缺失回退 debug——storeFile 须以 rootProject 解析，见 docs/08 §8.3 指纹验证教训）；applicationId 正式化为 `com.syncreader.app`；版本 1.0.0+1（pubspec 单点）；Inno Setup 安装器（16.5MB）+ 便携 zip（20.3MB）+ 三 ABI 签名 APK（32-36MB，apksigner 指纹比对通过）经 `scripts/package_release.ps1` 一键产出（NFR-04 体积门全过）；LICENSE（MIT，Q2 拍板）、CHANGELOG、README、docs/09 发布流程。**性能**：NFR-05 启动打点（startup_timer，release 冒烟 firstFrame=136ms）；FR-106 基准 2000 本搜索中位 0.4ms（门 100ms，docs/08 §8）。**离线/健壮性**：FR-601 飞行模式 9 用例固化（零报错弹窗，未发现生产缺陷）；FR-604 导出日志（2000 行环形缓冲 + 二次脱敏 + 同步设置页入口）。**补功能**：C3 FR-208 按天时长（schema v2 只增不删迁移 + 详情页最近 7 天）；FR-107 分组标签（分组栏/拖拽归组/管理，本地不同步）；FR-209 音量键翻页（Android 平台通道拦截 + 四渲染器翻页 API，默认关）。**待收口**：真机验收（M2/M3 遗留 epub 全链路与 FR-404 双端收敛 + M4 启动时长/音量键/离线/安装），清单见 §7 下一步 |
+| M5 服务端扩展（Go + REST 适配器） | ⬜ 见 `docs/00-总览.md` §4 |
 
-下一步：M4 打磨分发——引导向导打磨、离线/弱网用例、性能达标（NFR-04/05）、首发打包；后置项：C3 阅读时长按天统计、M5 服务端（Go + REST 适配器）。epub 真机渲染验收建议自备常规小说类 epub（含图片/粗斜体/标题/引用）。
+下一步：**M4 真机验收收口**（需用户配合，全部通过后 M4 才算出口）——① 签名 APK 真机安装冒烟（新包名 `com.syncreader.app`，与旧 debug 包不互替）；② 常规小说 epub（含图片/粗斜体/标题/引用）Windows+Android 导入→阅读→换端恢复进度全链路（M2/M3 遗留）；③ FR-404 两真机离线收敛（坚果云真实环境，M2 遗留）；④ NFR-05 真机冷启动实测（Android 中端机 ≤2.5s，打点随「导出诊断日志」带走）；⑤ FR-209 音量键翻页（开关/退出恢复/旋转重建/边界）；⑥ 飞行模式真机抽查；⑦ Windows 安装器+便携包安装冒烟；⑧ **keystore 与 key.properties 离线备份**（丢失将无法同签名覆盖升级）。之后进入 M5 服务端（Go + REST 适配器，契约套件第三跑）。
 
 ## 8. 文档索引
 
-`docs/00-总览.md`（地图+路线图）｜ `docs/01-需求规格说明.md`（FR/NFR 基线）｜ `docs/02-技术选型.md`（六大决策对比）｜ `docs/03-系统架构设计.md`（架构+接口）｜ `docs/04-同步引擎与冲突解决.md`（同步规格）｜ `docs/05-元数据Schema与云端目录布局.md`（schema 权威）｜ `docs/06-自建服务端设计与部署.md`（API+部署）｜ `docs/07-风险与待确认问题.md`（假设/风险登记）｜ `docs/08-开发环境搭建.md`（本机环境：安装位置/环境变量/镜像源）
+`docs/00-总览.md`（地图+路线图）｜ `docs/01-需求规格说明.md`（FR/NFR 基线）｜ `docs/02-技术选型.md`（六大决策对比）｜ `docs/03-系统架构设计.md`（架构+接口）｜ `docs/04-同步引擎与冲突解决.md`（同步规格）｜ `docs/05-元数据Schema与云端目录布局.md`（schema 权威）｜ `docs/06-自建服务端设计与部署.md`（API+部署）｜ `docs/07-风险与待确认问题.md`（假设/风险登记）｜ `docs/08-开发环境搭建.md`（本机环境：安装位置/环境变量/镜像源/性能实测）｜ `docs/09-发布与分发.md`（版本/签名/打包/Releases 流程/第三方声明）
