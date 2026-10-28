@@ -7,6 +7,8 @@
 /// 支持范围（docs/01 FR-203：常规小说类 epub；复杂排版允许降级，docs/07-R2）：
 /// - p / h1–h6 / strong、b、em、i、u 等内联 / img / blockquote / ul、ol、li
 ///   （嵌套拉平为条目序列）/ br / hr；
+/// - **svg 包裹图片转换**：`<svg><image xlink:href>` 整体转为 `<img src>`
+///   （HtmlWidget 不支持内联 svg，见 [_convertSvgImages]）；
 /// - div / span 按段落与内联处理；section/article/aside 等容器透明展开；
 /// - `<head>`/`<style>`/`<script>` 忽略；
 /// - **复杂表格与浮动布局降级**：table 折叠为顺序文本（保留单元格文字，
@@ -110,6 +112,7 @@ class EpubBlockParser {
     }
 
     // 图片 src 解析期归一化替换（原树为解析器私有，可安全改写）。
+    _convertSvgImages(doc);
     if (resolveImage != null) {
       for (final img in doc.findAllElements('img')) {
         final src = img.getAttribute('src');
@@ -128,6 +131,51 @@ class EpubBlockParser {
       _visitContainer(body, blocks);
     }
     return blocks;
+  }
+
+  // ---------------------------------------------------------------------------
+  // svg 包裹图片转换
+  // ---------------------------------------------------------------------------
+
+  /// epub2 图形页常见形态 `<svg><image xlink:href="…"/></svg>`：HtmlWidget
+  /// 不支持内联 svg，原图会整块丢失。把每个 `<image>` 的 href（含
+  /// xlink:href / href 两种写法）转成 `<img src>`，并以 `<div>` 包裹替换
+  /// svg 外壳（多图依次平铺）；src 归一化仍由解析期的 resolveImage 回调
+  /// 完成，未命中时保留原 src 走渲染错误占位。svg 内无 image（装饰性
+  /// svg）原样保留（existing kind=other 行为不变）；svg 外的裸 `<image>`
+  /// 原地转 img。
+  void _convertSvgImages(XmlDocument doc) {
+    for (final svg in doc.findAllElements('svg').toList()) {
+      final imgs = <XmlElement>[];
+      for (final image in svg.findAllElements('image').toList()) {
+        final img = _imageToImg(image);
+        if (img != null) imgs.add(img);
+      }
+      if (imgs.isEmpty) continue;
+      svg.replace(XmlElement(XmlName('div'), const [], imgs));
+    }
+    // svg 已被整体替换，此处 findAllElements 只剩 svg 外的裸 <image>。
+    for (final image in doc.findAllElements('image').toList()) {
+      final img = _imageToImg(image);
+      if (img != null) image.replace(img);
+    }
+  }
+
+  /// `<image href/xlink:href>` → `<img src alt>`；无 href 返回 null（不动原树）。
+  XmlElement? _imageToImg(XmlElement image) {
+    String? href;
+    for (final attr in image.attributes) {
+      if (attr.name.local.toLowerCase() == 'href') {
+        href = attr.value;
+        break;
+      }
+    }
+    if (href == null || href.trim().isEmpty) return null;
+    final alt = image.getAttribute('alt') ?? '';
+    return XmlElement(XmlName('img'), [
+      XmlAttribute(XmlName('src'), href),
+      if (alt.isNotEmpty) XmlAttribute(XmlName('alt'), alt),
+    ]);
   }
 
   // ---------------------------------------------------------------------------
@@ -176,7 +224,13 @@ class EpubBlockParser {
       case 'table':
         _degradeTable(el, out);
         return;
-      case 'div' || 'section' || 'article' || 'main' || 'aside' || 'center':
+      case 'div' ||
+          'section' ||
+          'article' ||
+          'main' ||
+          'aside' ||
+          'center' ||
+          'figure':
         if (_hasBlockChild(el)) {
           _visitContainer(el, out);
         } else {

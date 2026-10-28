@@ -108,6 +108,13 @@ void main() {
         }
       }
       expect(hasDataUri, isTrue, reason: 'img src 应在解析期归一化为 data URI');
+      // 图片真实渲染（回归守护）：data URI 走 MemoryImage 渲染出 Image 组件，
+      // 且无错误占位（此前仅断言 HTML 含 data URI，渲染层失败不会暴露）。
+      expect(
+        find.byWidgetPredicate((w) => w is Image && w.image is MemoryImage),
+        findsWidgets,
+      );
+      expect(find.byIcon(Icons.image_not_supported_outlined), findsNothing);
       expect(tester.takeException(), isNull);
       await drainProgressThrottle(tester);
     });

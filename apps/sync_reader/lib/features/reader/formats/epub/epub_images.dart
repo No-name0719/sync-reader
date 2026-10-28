@@ -47,6 +47,15 @@ String? resolveEpubImageDataUri({
       return _toDataUri(normalized, entry.value, imageMimes[entry.key]);
     }
   }
+  // 命中三：大小写不一致兜底（Windows 工具打包的 epub 中 src 与
+  // manifest href 大小写常不匹配；zip 本身大小写敏感）。
+  final lowerKey = normalized.toLowerCase();
+  for (final entry in images.entries) {
+    if (EpubImagePath.normalize(_tryDecodeUri(entry.key)).toLowerCase() ==
+        lowerKey) {
+      return _toDataUri(normalized, entry.value, imageMimes[entry.key]);
+    }
+  }
   return null;
 }
 

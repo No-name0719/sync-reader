@@ -45,6 +45,26 @@ void main() {
       expect(uri, isNotNull);
     });
 
+    test('大小写不一致兜底命中（Windows 工具打包的 epub）', () {
+      final uri = resolveEpubImageDataUri(
+        src: '../images/big.png',
+        chapterHref: 'text/chapter1.xhtml',
+        images: {'Images/Big.png': _bytes},
+        imageMimes: const {},
+      );
+      expect(uri, isNotNull);
+    });
+
+    test('大小写不一致 + 编码混合仍命中', () {
+      final uri = resolveEpubImageDataUri(
+        src: 'Images/PIC%201.png',
+        chapterHref: 'chapter1.xhtml',
+        images: {'images/pic 1.png': _bytes},
+        imageMimes: const {},
+      );
+      expect(uri, isNotNull);
+    });
+
     test('fragment 与 query 剥离', () {
       final uri = resolveEpubImageDataUri(
         src: 'images/pic.png#frag',

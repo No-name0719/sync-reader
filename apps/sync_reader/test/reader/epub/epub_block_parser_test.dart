@@ -243,6 +243,58 @@ void main() {
     });
   });
 
+  group('svg 包裹图片转换', () {
+    test('epub2 图形页 <svg><image xlink:href> → img 块（src 交给回调解析）', () {
+      const source =
+          '<html xmlns:xlink="http://www.w3.org/1999/xlink"><body>'
+          '<div style="text-align:center">'
+          '<svg xmlns="http://www.w3.org/2000/svg" width="100%" '
+          'viewBox="0 0 600 800"><image xlink:href="images/cover.png"/></svg>'
+          '</div><p>后文。</p></body></html>';
+      final blocks = parser.parse(
+        source,
+        resolveImage: (src) =>
+            src == 'images/cover.png' ? 'data:image/png;base64,AQIDBA==' : null,
+      );
+
+      expect(blocks, hasLength(2));
+      // div→paragraph（img 为内联名，div 走段落收拢），内层 img 已换数据 URI。
+      expect(blocks[0].kind, EpubBlockKind.paragraph);
+      expect(
+        blocks[0].html,
+        contains('<img src="data:image/png;base64,AQIDBA=="'),
+      );
+      expect(blocks[0].html, isNot(contains('<svg')));
+      expect(blocks[1].kind, EpubBlockKind.paragraph);
+      expect(blocks[1].plainText, '后文。');
+    });
+
+    test('裸 <image href>（epub3 写法）与无 href image 的混合', () {
+      const source =
+          '<html xmlns:xlink="http://www.w3.org/1999/xlink"><body>'
+          '<svg viewBox="0 0 1 1"><image href="a.png"/><image/></svg>'
+          '</body></html>';
+      final blocks = parser.parse(
+        source,
+        resolveImage: (src) =>
+            src == 'a.png' ? 'data:image/png;base64,AA==' : null,
+      );
+      expect(blocks, hasLength(1));
+      expect(blocks[0].html, contains('<img src="data:image/png;base64,AA=="'));
+      // 无 href 的 image 不转换也不阻塞其余转换。
+      expect(blocks[0].html, isNot(contains('<image')));
+    });
+
+    test('装饰性 svg（无 image）原样保留为 other 块', () {
+      const source =
+          '<html><body><svg viewBox="0 0 1 1"><path d="M0 0"/></svg>'
+          '<p>正文。</p></body></html>';
+      final blocks = parser.parse(source);
+      expect(blocks.first.kind, EpubBlockKind.other);
+      expect(blocks.first.html, contains('<svg'));
+    });
+  });
+
   group('EpubSpineAnchor', () {
     test('toString 形态冻结（指纹依赖）', () {
       const anchor = EpubSpineAnchor(spineIndex: 3, href: 'text/ch4.xhtml');
