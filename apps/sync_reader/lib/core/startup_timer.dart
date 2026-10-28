@@ -19,9 +19,9 @@ final class StartupTimer {
   /// 创建打点器。[now] 可注入用于测试；[threshold] 为"NFR-05 达标线"，
   /// 缺省按当前平台取值（Android 2.5s，其余 3s）。起点在构造时即取时钟。
   StartupTimer({DateTime Function()? now, Duration? threshold})
-      : _now = now ?? DateTime.now,
-        threshold = threshold ?? _defaultThreshold(),
-        _start = (now ?? DateTime.now)();
+    : _now = now ?? DateTime.now,
+      threshold = threshold ?? _defaultThreshold(),
+      _start = (now ?? DateTime.now)();
 
   final DateTime Function() _now;
 

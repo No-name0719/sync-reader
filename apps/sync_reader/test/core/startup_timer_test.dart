@@ -17,8 +17,10 @@ void main() {
 
       expect(timer.marks['a'], Duration.zero);
       expect(timer.marks['b'], const Duration(milliseconds: 120));
-      expect(timer.marks[StartupTimer.kFirstFrame],
-          const Duration(milliseconds: 150));
+      expect(
+        timer.marks[StartupTimer.kFirstFrame],
+        const Duration(milliseconds: 150),
+      );
     });
 
     test('exceeded：首帧超阈值判定；未打首帧恒为 false', () {

@@ -125,15 +125,14 @@ sealed class LibraryGroupFilter {
   static const LibraryGroupFilter ungrouped = _UngroupedGroupFilter();
 
   /// 映射到 `BooksDao.watchBooks` 的分组过滤参数。
-  ({String? groupFilterId, bool ungroupedOnly}) get queryArgs =>
-      switch (this) {
-        _AllGroupFilter() => (groupFilterId: null, ungroupedOnly: false),
-        _UngroupedGroupFilter() => (groupFilterId: null, ungroupedOnly: true),
-        final GroupFilterSelected s => (
-          groupFilterId: s.groupId,
-          ungroupedOnly: false,
-        ),
-      };
+  ({String? groupFilterId, bool ungroupedOnly}) get queryArgs => switch (this) {
+    _AllGroupFilter() => (groupFilterId: null, ungroupedOnly: false),
+    _UngroupedGroupFilter() => (groupFilterId: null, ungroupedOnly: true),
+    final GroupFilterSelected s => (
+      groupFilterId: s.groupId,
+      ungroupedOnly: false,
+    ),
+  };
 }
 
 /// 选中某个分组（按 groupId 判等）。

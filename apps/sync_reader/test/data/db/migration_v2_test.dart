@@ -117,26 +117,23 @@ void main() {
 
   test('以 user_version=1 打开：走 onUpgrade(1→2)，新表/新列就位，旧数据完好', () async {
     // 首个查询触发打开路径；若迁移抛错这里直接失败。
-    final versionRow = await db
-        .customSelect('PRAGMA user_version')
-        .getSingle();
+    final versionRow = await db.customSelect('PRAGMA user_version').getSingle();
     // drift 迁移成功后已把版本写为 2（证明确实发生了 1→2 而非 onCreate）。
     expect(versionRow.data['user_version'], 2);
 
     // v2 新增表存在。
-    final tables = (await db
-            .customSelect(
-              "SELECT name FROM sqlite_master WHERE type='table'",
-            )
-            .get())
-        .map((row) => row.data['name'] as String)
-        .toSet();
+    final tables =
+        (await db
+                .customSelect(
+                  "SELECT name FROM sqlite_master WHERE type='table'",
+                )
+                .get())
+            .map((row) => row.data['name'] as String)
+            .toSet();
     expect(tables, containsAll(<String>['reading_days', 'book_groups']));
 
     // books.group_id 列存在且可空（未分组书为 NULL）。
-    final columns = (await db
-            .customSelect('PRAGMA table_info(books)')
-            .get())
+    final columns = (await db.customSelect('PRAGMA table_info(books)').get())
         .map((row) => row.data['name'] as String)
         .toList();
     expect(columns, contains('group_id'));

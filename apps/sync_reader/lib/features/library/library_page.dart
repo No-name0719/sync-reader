@@ -457,8 +457,13 @@ class _GroupFilterBar extends ConsumerWidget {
               onSelect: () => ref
                   .read(libraryGroupFilterProvider.notifier)
                   .set(GroupFilterSelected(group.groupId)),
-              onAcceptBook: (bookId) =>
-                  _setBookGroup(context, ref, bookId, group.groupId, group.name),
+              onAcceptBook: (bookId) => _setBookGroup(
+                context,
+                ref,
+                bookId,
+                group.groupId,
+                group.name,
+              ),
             ),
             const SizedBox(width: 6),
           ],

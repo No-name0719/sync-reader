@@ -177,9 +177,7 @@ void main() {
 
       // 指定分组：只保留该组的书。
       expect(
-        (await db.booksDao
-                .watchBooks(groupFilterId: g1.groupId)
-                .first)
+        (await db.booksDao.watchBooks(groupFilterId: g1.groupId).first)
             .map((b) => b.bookId)
             .toList(),
         ['01A', '01B'],
@@ -206,10 +204,7 @@ void main() {
       // 两者同时传入以 ungroupedOnly 为准（互斥视图，文档化语义）。
       expect(
         (await db.booksDao
-                .watchBooks(
-                  groupFilterId: g1.groupId,
-                  ungroupedOnly: true,
-                )
+                .watchBooks(groupFilterId: g1.groupId, ungroupedOnly: true)
                 .first)
             .map((b) => b.bookId)
             .toList(),
@@ -328,5 +323,8 @@ void main() {
     });
   });
 
-  test('schemaVersion == 2（docs/05 §6，M4 只增不删）', () => expect(db.schemaVersion, 2));
+  test(
+    'schemaVersion == 2（docs/05 §6，M4 只增不删）',
+    () => expect(db.schemaVersion, 2),
+  );
 }

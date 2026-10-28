@@ -279,9 +279,11 @@ final class OfflineEnv {
   ProviderContainer makeContainer({
     SyncAdapterProvider? adapterProvider,
     FormatRegistry? registry,
-  }) => ProviderContainer(overrides: [
-    ..._injection(adapterProvider: adapterProvider, registry: registry),
-  ]);
+  }) => ProviderContainer(
+    overrides: [
+      ..._injection(adapterProvider: adapterProvider, registry: registry),
+    ],
+  );
 
   /// 收尾：关流、关库、删临时目录（在 runAsync 真实区执行；调用前应已
   /// 卸载 widget 树，使 drift 流订阅与触发器定时器先行释放）。
@@ -304,9 +306,7 @@ Future<void> pumpOfflineApp(
 }) async {
   await tester.pumpWidget(
     ProviderScope(
-      overrides: [
-        ...env._injection(adapterProvider: adapterProvider),
-      ],
+      overrides: [...env._injection(adapterProvider: adapterProvider)],
       child: SyncTriggerHost(
         child: MaterialApp.router(routerConfig: offlineRouter()),
       ),

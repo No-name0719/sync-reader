@@ -132,10 +132,8 @@ void main() {
   }
 
   /// 管理对话框范围（以其标题为锚，避免匹配到背后的确认/重命名对话框）。
-  Finder manageDialog(WidgetTester tester) => find.ancestor(
-    of: find.text('管理分组'),
-    matching: find.byType(AlertDialog),
-  );
+  Finder manageDialog(WidgetTester tester) =>
+      find.ancestor(of: find.text('管理分组'), matching: find.byType(AlertDialog));
 
   /// 书目可见性断言：封面与卡片标题各渲染一次书名，用 findsWidgets。
   Future<void> expectBookVisible(String title, bool visible) async {
@@ -216,9 +214,7 @@ void main() {
     });
     final groupAId = (await tester.runAsync(
       () => db!.bookGroupsDao.allGroups(),
-    ))!
-        .firstWhere((g) => g.name == '组A')
-        .groupId;
+    ))!.firstWhere((g) => g.name == '组A').groupId;
     expect(alphaGroupId, groupAId);
 
     // 切到「组A」视图：组内出现 Alpha（流重查生效）。
@@ -257,10 +253,7 @@ void main() {
       of: dialog,
       matching: find.byType(TextField),
     );
-    final createButton = find.descendant(
-      of: dialog,
-      matching: find.text('新建'),
-    );
+    final createButton = find.descendant(of: dialog, matching: find.text('新建'));
     await tester.enterText(newField, '组A');
     // pump 让"新建"按钮按输入刷新可用态。
     await tester.pump();

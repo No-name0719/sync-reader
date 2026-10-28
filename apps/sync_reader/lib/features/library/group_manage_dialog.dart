@@ -41,10 +41,8 @@ class _GroupManageDialogState extends ConsumerState<GroupManageDialog> {
   }
 
   /// 取当前面板依赖的 DAO/Messenger（跨 await 前先取，避免悬空引用）。
-  (BookGroupsDao, ScaffoldMessengerState) _deps() => (
-    ref.read(bookGroupsDaoProvider),
-    ScaffoldMessenger.of(context),
-  );
+  (BookGroupsDao, ScaffoldMessengerState) _deps() =>
+      (ref.read(bookGroupsDaoProvider), ScaffoldMessenger.of(context));
 
   /// 新建分组：重名 SnackBar 拒绝；空名由按钮禁用兜底（回车提交也拦截）。
   Future<void> _create() async {
@@ -177,10 +175,7 @@ class _GroupManageDialogState extends ConsumerState<GroupManageDialog> {
                                 value: 'rename',
                                 child: Text('重命名'),
                               ),
-                              PopupMenuItem(
-                                value: 'delete',
-                                child: Text('删除'),
-                              ),
+                              PopupMenuItem(value: 'delete', child: Text('删除')),
                             ],
                           ),
                         );

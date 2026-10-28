@@ -18,11 +18,10 @@ class BookGroupsDao extends DatabaseAccessor<AppDatabase>
 
   /// 全部分组（排序权重升序，同权重按创建顺序）。
   Future<List<BookGroup>> allGroups() =>
-      (select(bookGroups)
-            ..orderBy([
-              (g) => OrderingTerm.asc(g.sortOrder),
-              (g) => OrderingTerm.asc(g.createdAt),
-            ]))
+      (select(bookGroups)..orderBy([
+            (g) => OrderingTerm.asc(g.sortOrder),
+            (g) => OrderingTerm.asc(g.createdAt),
+          ]))
           .get();
 
   /// 新建分组：ULID 主键，sortOrder 排到当前末尾（空表为 0），createdAt 取现在。

@@ -30,9 +30,7 @@ void main() {
   testWidgets('none → wifi 触发网络恢复全量：失败落状态横幅而非弹窗', (tester) async {
     final env = (await tester.runAsync(OfflineEnv.create))!;
     await env.configureCredentials();
-    final failing = FailingBackendAdapter(
-      const NetworkUnreachable('网络不可达'),
-    );
+    final failing = FailingBackendAdapter(const NetworkUnreachable('网络不可达'));
 
     await pumpOfflineApp(
       tester,
@@ -77,9 +75,7 @@ void main() {
   testWidgets('网络不可达：书库页手动同步失败只进状态横幅，无弹窗无 SnackBar', (tester) async {
     final env = (await tester.runAsync(OfflineEnv.create))!;
     await env.configureCredentials();
-    final failing = FailingBackendAdapter(
-      const NetworkUnreachable('网络不可达'),
-    );
+    final failing = FailingBackendAdapter(const NetworkUnreachable('网络不可达'));
     final container = env.makeContainer(
       adapterProvider: FixedAdapterProvider(failing),
     );

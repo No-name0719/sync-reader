@@ -54,7 +54,9 @@ class Books extends Table {
 
   /// 所属分组（FR-107 本地列，不参与同步、不入云端 meta）；NULL = 未分组。
   /// 分组删除时由外键置回未分组。
-  TextColumn get groupId => text().references(BookGroups, #groupId, onDelete: KeyAction.setNull).nullable()();
+  TextColumn get groupId => text()
+      .references(BookGroups, #groupId, onDelete: KeyAction.setNull)
+      .nullable()();
 
   @override
   Set<Column> get primaryKey => {bookId};
@@ -188,7 +190,8 @@ class SyncQueue extends Table {
 @DataClassName('ReadingDay')
 class ReadingDays extends Table {
   /// 所属书籍（级联删除）。
-  TextColumn get bookId => text().references(Books, #bookId, onDelete: KeyAction.cascade)();
+  TextColumn get bookId =>
+      text().references(Books, #bookId, onDelete: KeyAction.cascade)();
 
   /// 本地自然日，格式 'YYYY-MM-DD'（设备时区）。
   TextColumn get day => text()();
