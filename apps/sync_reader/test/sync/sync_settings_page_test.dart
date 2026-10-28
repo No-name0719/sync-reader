@@ -135,6 +135,13 @@ void main() {
     await tester.pump();
     expect(find.textContaining('80%'), findsWidgets);
   });
+
+  testWidgets('诊断区：导出诊断日志与清空日志入口可见（FR-604）', (tester) async {
+    await pumpPage(tester);
+    expect(find.text('导出诊断日志'), findsOneWidget);
+    expect(find.text('清空日志'), findsOneWidget);
+    expect(find.textContaining('二次脱敏'), findsOneWidget);
+  });
 }
 
 /// 未配置适配器（设置页测试不需要真实引擎）。

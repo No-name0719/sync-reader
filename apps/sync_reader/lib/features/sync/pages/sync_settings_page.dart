@@ -6,13 +6,20 @@
 /// - 配额面板：月度上行/下行进度条 + 80%/100% 常驻警示条与越权放行
 ///   （FR-407/docs/04 §8.3）；
 /// - 同步维护：云端孤儿清理（docs/04 §7.1 规则 4）；连接测试（见向导）；
+///   导出诊断日志（FR-604：环形缓冲二次脱敏后另存 .txt）；
 ///   清除凭据（危险区）。
 library;
 
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../core/app_logger.dart';
+import '../../../core/log_exporter.dart';
 import '../../../shared/format_utils.dart';
 import '../quota_gate.dart';
 import '../sync_facade.dart';
@@ -190,6 +197,19 @@ class SyncSettingsPage extends ConsumerWidget {
                 onTap: () => context.push('/sync/guide'),
               ),
 
+              // ── 诊断：导出日志（FR-604）──
+              // 点击导出（file_picker saveDialog）；旁边不显眼地提供"清空日志"。
+              ListTile(
+                leading: const Icon(Icons.plagiarism_outlined),
+                title: const Text('导出诊断日志'),
+                subtitle: const Text('最近日志经二次脱敏后另存为 txt 文件'),
+                onTap: () => _exportLogs(context, ref),
+                trailing: TextButton(
+                  onPressed: () => _confirmClearLogs(context),
+                  child: const Text('清空日志'),
+                ),
+              ),
+
               // ── 同步维护：云端孤儿清理（docs/04 §7.1 规则 4）──
               // 未配置时点击引导去配置；已配置进入清理页。
               ListTile(
@@ -262,7 +282,92 @@ class SyncSettingsPage extends ConsumerWidget {
       await ref.read(syncFacadeProvider).clearCredentials();
     }
   }
+
+  /// 导出诊断日志（FR-604）：
+  /// 组装（二次脱敏）→ file_picker 另存对话框（v13 的 saveFile 自带写盘，
+  /// 内容以 bytes 传入）→ SnackBar 反馈路径与行数；用户取消静默返回。
+  Future<void> _exportLogs(BuildContext context, WidgetRef ref) async {
+    // 在异步间隙前取好 messenger 与 saver，避免 context/ref 跨 await 使用。
+    final messenger = ScaffoldMessenger.of(context);
+    final saver = ref.read(logFileSaverProvider);
+    try {
+      final bundle = await LogExporter.buildContent();
+      final now = DateTime.now();
+      String two(int n) => n.toString().padLeft(2, '0');
+      final stamp =
+          '${now.year}${two(now.month)}${two(now.day)}'
+          '-${two(now.hour)}${two(now.minute)}${two(now.second)}';
+      final uri = await saver.save(
+        fileName: 'syncreader-log-$stamp.txt',
+        bytes: utf8.encode(bundle.content),
+      );
+      if (uri == null) return; // 用户取消，静默返回。
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('已导出 ${bundle.lineCount} 行日志到 ${_displayPath(uri)}'),
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('导出失败：$e')));
+    }
+  }
+
+  /// 展示用路径：file scheme 转本机路径，其余（如 Android content://）原样。
+  static String _displayPath(Uri uri) =>
+      uri.scheme == 'file' ? uri.toFilePath() : uri.toString();
+
+  /// 清空日志：确认对话框 → [AppLogger.clear]（仅清内存缓冲，不动书库）。
+  Future<void> _confirmClearLogs(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('清空日志？'),
+        content: const Text(
+          '将清空内存中的诊断日志缓冲，'
+          '书库、阅读进度与云端数据不受影响。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      AppLogger.clear();
+    }
+  }
 }
+
+/// 日志保存器抽象：把 file_picker v13 静态 API 挡在接口后面，测试可注入假实现。
+abstract interface class LogFileSaver {
+  /// 弹出另存对话框并写入 [bytes]；用户取消返回 null。
+  Future<Uri?> save({required String fileName, required Uint8List bytes});
+}
+
+/// 默认实现：file_picker v13 静态 API（saveFile 选择路径后自行写盘）。
+final class FilePickerLogFileSaver implements LogFileSaver {
+  const FilePickerLogFileSaver();
+
+  @override
+  Future<Uri?> save({required String fileName, required Uint8List bytes}) {
+    return FilePicker.saveFile(
+      fileName: fileName,
+      bytes: bytes,
+      mimeType: 'text/plain',
+    );
+  }
+}
+
+/// 日志保存器提供者（设置页导出入口使用）。
+final logFileSaverProvider = Provider<LogFileSaver>(
+  (ref) => const FilePickerLogFileSaver(),
+);
 
 /// 配额面板：月度上行/下行进度条 + 顶部常驻警示条（80%/100%）+ 越权放行
 /// （FR-407/docs/04 §8.3）。闸门逻辑在引擎/闸门层，这里只做 UI 呈现与入口。
