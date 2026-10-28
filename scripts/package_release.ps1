@@ -177,10 +177,13 @@ $needRelease = (-not $SkipWindows) -or (-not $SkipPortable) -or (-not $SkipInsta
 
 if (-not $SkipWindows) {
     $flutter = Get-FlutterExe
-    Write-Info "开始构建 Windows：flutter build windows --release"
+    Write-Info "开始构建 Windows：flutter build windows --release --no-tree-shake-icons"
     Push-Location $AppDir
     try {
-        & $flutter build windows --release
+        # --no-tree-shake-icons：图标字体 tree-shaking 在本仓库曾误裁
+        # Icons.arrow_drop_down 字形（debug 可见、release 缺字，2026-10-28
+        # 实录）；关闭后字体全量 +1.6MB，换图标不再有静默消失风险。
+        & $flutter build windows --release --no-tree-shake-icons
         if ($LASTEXITCODE -ne 0) {
             Write-Fail2 "flutter build windows 失败（退出码 $LASTEXITCODE）。"
             exit 1
@@ -291,10 +294,11 @@ if (-not $SkipInstaller) {
 # ---------------------------------------------------------------------------
 if (-not $SkipAndroid) {
     $flutter = Get-FlutterExe
-    Write-Info "开始构建 Android：flutter build apk --release --split-per-abi"
+    Write-Info "开始构建 Android：flutter build apk --release --split-per-abi --no-tree-shake-icons"
     Push-Location $AppDir
     try {
-        & $flutter build apk --release --split-per-abi
+        # --no-tree-shake-icons：同 Windows 侧注释（图标裁剪误裁字形）。
+        & $flutter build apk --release --split-per-abi --no-tree-shake-icons
         if ($LASTEXITCODE -ne 0) {
             Write-Fail2 "flutter build apk 失败（退出码 $LASTEXITCODE）。"
             exit 1
