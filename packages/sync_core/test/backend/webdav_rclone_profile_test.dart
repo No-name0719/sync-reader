@@ -33,6 +33,9 @@ void main() {
     // rclone 后真实执行（R3 联调）。
     if (resolveRcloneExe() == null) {
       markTestSkipped('需本地 rclone，R3 联调用（未设置 SYNC_RCLONE_DIR）');
+      // markTestSkipped 只标记状态、不中断用例体，必须显式 return，
+      // 否则会继续跑探针并抛 StateError（用例变成失败而非跳过）。
+      return;
     }
     final summary = await runRcloneProbe();
 

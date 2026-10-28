@@ -4,6 +4,16 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 原则，版本号遵循[语义化版本（SemVer）](https://semver.org/lang/zh-CN/)。条目使用中文，新增条目写在文件顶部。
 
+## 未发布
+
+### Changed
+
+- 移除 GitHub Actions CI 流水线（`.github/workflows/ci.yml`）：推送与 PR 不再触发远端 analyze/test/构建，质量门改由本机承担（决策见 docs/07-A19）
+
+### Fixed
+
+- `sync_core` rclone 联调画像用例：未安装 rclone 的环境下正确跳过，不再因探针抛错而失败（`markTestSkipped` 后需显式中断用例体）
+
 ## 1.0.0 - 2026-10-28
 
 首个公开发布版本。
