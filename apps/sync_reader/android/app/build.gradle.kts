@@ -44,7 +44,10 @@ android {
 
     signingConfigs {
         create("release") {
-            val storeFileProp = signingProp("storeFile", "SYNCREADER_KEYSTORE_FILE")?.let { file(it) }
+            // storeFile 路径以 android/（gradle rootProject）为基准解析；
+            // 不能用本模块 file()——其基准是 android/app/，路径会错配回退 debug。
+            val storeFileProp =
+                signingProp("storeFile", "SYNCREADER_KEYSTORE_FILE")?.let { rootProject.file(it) }
             val storePasswordProp = signingProp("storePassword", "SYNCREADER_KEYSTORE_PASSWORD")
             val keyAliasProp = signingProp("keyAlias", "SYNCREADER_KEY_ALIAS")
             val keyPasswordProp = signingProp("keyPassword", "SYNCREADER_KEY_PASSWORD")
