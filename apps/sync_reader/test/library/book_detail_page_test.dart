@@ -157,7 +157,18 @@ void main() {
     await settleReal(tester);
   }
 
+  /// 加高测试视口：详情页 ListView 较长，折叠线下的按钮（继续阅读/
+  /// 下载正文/重新选择文件）位于默认 600px 以下（ListView 惰性构建，
+  /// 折叠下不进树）；按钮可见性/点击类用例须先调用。
+  void useTallViewport(WidgetTester tester) {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+  }
+
   testWidgets('展示元数据/进度/时长/目录数量', (tester) async {
+    useTallViewport(tester);
     await bootstrap(tester);
     await seedBook(tester);
     await pumpDetail(tester);
@@ -176,7 +187,39 @@ void main() {
     await shutdown(tester);
   });
 
+  testWidgets('按天统计（FR-208）：显示最近 7 天行与全期合计，超出 7 条截断', (tester) async {
+    await bootstrap(tester);
+    await seedBook(tester);
+    // 种 8 天 × 60 秒（2026-10-20 .. 10-27）：展示取 day DESC 前 7 条，
+    // 合计取 reading_days 全期（480 秒 → 8 分钟，含被截断的最旧一天）。
+    await tester.runAsync(() async {
+      for (var i = 0; i < 8; i++) {
+        await db!.readingDaysDao.addSeconds(bookId, '2026-10-${20 + i}', 60);
+      }
+    });
+    await pumpDetail(tester);
+
+    expect(find.text('10-27 · 1 分钟'), findsOneWidget); // 最新一天
+    expect(find.text('10-21 · 1 分钟'), findsOneWidget); // 第 7 条（截断边缘）
+    expect(find.text('10-20 · 1 分钟'), findsNothing); // 第 8 条被截断
+    expect(find.text('合计 · 8 分钟'), findsOneWidget);
+    await shutdown(tester);
+  });
+
+  testWidgets('按天统计（FR-208）：无按天记录显示空态文案，页面其余部分不受影响', (tester) async {
+    await bootstrap(tester);
+    await seedBook(tester); // 不种 reading_days（新装/老库升级常态）。
+    await pumpDetail(tester);
+
+    expect(find.text('暂无按天记录'), findsOneWidget);
+    expect(find.text('最近 7 天'), findsOneWidget);
+    expect(find.text('1 分钟'), findsOneWidget); // 累计阅读行不受影响
+    expect(find.textContaining('共 1 章'), findsOneWidget);
+    await shutdown(tester);
+  });
+
   testWidgets('打开按钮进入阅读器', (tester) async {
+    useTallViewport(tester);
     await bootstrap(tester);
     await seedBook(tester);
     await pumpDetail(tester);
@@ -187,6 +230,7 @@ void main() {
   });
 
   testWidgets('占位书（仅云端）：角标 + 主按钮分流为"下载正文"（FR-402）', (tester) async {
+    useTallViewport(tester);
     await bootstrap(tester);
     await seedBook(tester, withLocalFile: false);
     await pumpDetail(tester);
@@ -250,15 +294,6 @@ void main() {
     });
     await shutdown(tester);
   });
-
-  /// 加高测试视口：详情页 ListView 较长，"重新选择文件"按钮位于默认
-  /// 600px 折叠线以下（ListView 惰性构建，折叠下不进树）。
-  void useTallViewport(WidgetTester tester) {
-    tester.view.physicalSize = const Size(800, 1600);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-  }
 
   testWidgets('文件替换（FR-410）：按钮仅本地书显示，占位书不显示', (tester) async {
     useTallViewport(tester);

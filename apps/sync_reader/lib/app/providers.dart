@@ -13,6 +13,7 @@ import 'package:path_provider/path_provider.dart';
 import '../data/db/app_database.dart';
 import '../data/db/daos/books_dao.dart';
 import '../data/db/daos/progress_dao.dart';
+import '../data/db/daos/reading_days_dao.dart';
 import '../data/db/daos/reader_settings_dao.dart';
 import '../data/db/daos/sync_queue_dao.dart';
 import '../data/files/book_file_store.dart';
@@ -38,6 +39,11 @@ final booksDaoProvider = Provider<BooksDao>(
 /// 进度 DAO。
 final progressDaoProvider = Provider<ProgressDao>(
   (ref) => ref.watch(databaseProvider).progressDao,
+);
+
+/// 阅读日统计 DAO（FR-208 按天统计）。
+final readingDaysDaoProvider = Provider<ReadingDaysDao>(
+  (ref) => ref.watch(databaseProvider).readingDaysDao,
 );
 
 /// 阅读偏好 DAO。

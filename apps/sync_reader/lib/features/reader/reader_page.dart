@@ -9,8 +9,9 @@
 /// 宿主防抖 3s（trailing）落库 progress（dirty=true）+ 刷新 lastReadAt；
 /// 切后台（paused）与退出阅读页立即落库（取消挂起的防抖）。
 ///
-/// 阅读时长（FR-208 基础版）：页面就绪且 app resumed 时每秒累计；
-/// 切后台/退出时 `updateProgressInfo(addTotalSeconds)` 落库并刷新 lastReadAt。
+/// 阅读时长（FR-208）：页面就绪且 app resumed 时每秒累计；切后台/退出时
+/// `updateProgressInfo(addTotalSeconds)` 落库并刷新 lastReadAt，同时把各秒
+/// 按 tick 时刻的自然日拆分逐日写入 reading_days（按天统计，本地表）。
 ///
 /// 设置热应用（FR-206）：监听 ReaderSettingsRepository.changes，经渲染器的
 /// `applySettings` 约定扩展方法下发（契约之外的公开约定，三个真实渲染器均实现）。
@@ -33,6 +34,7 @@ import '../../core/app_logger.dart';
 import '../../data/db/app_database.dart' show Book;
 import '../../data/db/daos/books_dao.dart';
 import '../../data/db/daos/progress_dao.dart';
+import '../../data/db/daos/reading_days_dao.dart';
 import '../../features/sync/placeholder_download.dart';
 import '../../features/sync/sync_facade.dart';
 import '../../features/sync/sync_triggers.dart';
@@ -44,6 +46,7 @@ import 'contract/reader_settings.dart';
 import 'contract/reader_settings_repository.dart';
 import 'contract/toc_entry.dart';
 import 'contract/toc_fingerprint.dart';
+import 'reading_day.dart';
 import 'settings/settings_panel.dart';
 import 'volume_key_page_turn.dart';
 
@@ -120,6 +123,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   // DAO 与设置仓库在 initState 取好引用（dispose 中不允许再用 ref）。
   late final ProgressDao _progressDao;
   late final BooksDao _booksDao;
+  late final ReadingDaysDao _readingDaysDao;
   late final ReaderSettingsRepository _settingsRepo;
 
   /// M2 同步触发器（进度防抖推送的挂点；取引用避免 dispose 期再用 ref）。
@@ -141,9 +145,14 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   ProgressAnchor? _pendingAnchor;
   double _pendingPercent = 0;
 
-  // —— 阅读时长（FR-208 基础版）——
+  // —— 阅读时长（FR-208 基础版 + 按天归账）——
   Timer? _readingClock;
   int _readingSeconds = 0;
+
+  /// 本次会话各自然日的秒数账本（键为 [readingDayKey] 日键）：
+  /// 每 tick 记 1 秒到"该 tick 时刻"的日键，跨午夜的会话按秒自然拆分；
+  /// 结算时逐日写入 reading_days 后清空（与 [_readingSeconds] 同生共死）。
+  final Map<String, int> _secondsByDay = {};
 
   /// 当前打开成功的会话（防抖/退出结算用）。
   _ReaderSession? get _session => switch (_state) {
@@ -163,6 +172,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     WidgetsBinding.instance.addObserver(this);
     _progressDao = ref.read(progressDaoProvider);
     _booksDao = ref.read(booksDaoProvider);
+    _readingDaysDao = ref.read(readingDaysDaoProvider);
     _settingsRepo = ref.read(readerSettingsRepositoryProvider);
     _syncTriggers = ref.read(syncTriggersProvider);
     // 设置热应用（FR-206）：仓库广播 → 当前渲染器 applySettings。
@@ -403,21 +413,46 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   }
 
   // ============================================================================
-  // 阅读时长（FR-208 基础版）
+  // 阅读时长（FR-208 基础版 + 按天归账）
   // ============================================================================
 
   void _startReadingClock() {
     if (_readingClock != null) return;
     _readingClock = Timer.periodic(readingClockInterval, (_) {
-      _readingSeconds++;
+      _recordReadingTick(DateTime.now());
     });
   }
 
-  /// 结算阅读时长：累加进 books.totalSeconds 并刷新 lastReadAt。
+  /// 一次 tick：1 秒同时计入总会话时长与"该 tick 时刻"的自然日账本。
+  /// 生产 tick 与测试钩子 [debugTick] 共用此实现，避免两份逻辑。
+  void _recordReadingTick(DateTime now) {
+    _readingSeconds++;
+    final day = readingDayKey(now);
+    _secondsByDay[day] = (_secondsByDay[day] ?? 0) + 1;
+  }
+
+  /// 测试钩子（不进生产路径）：等价一次 tick，按传入时刻归日。
+  /// 配合 [debugFlushReadingDays] 可注入跨午夜时刻序列验证按日拆分。
+  @visibleForTesting
+  void debugTick(DateTime now) => _recordReadingTick(now);
+
+  /// 测试钩子（不进生产路径）：触发阅读时长结算（books.totalSeconds 与
+  /// reading_days 按日归账）并等待写库完成。
+  @visibleForTesting
+  Future<void> debugFlushReadingDays() => _flushReadingTime();
+
+  /// 结算阅读时长：先按原路径并入 books.totalSeconds 并刷新 lastReadAt
+  /// （行为不变），再把日账本逐日写入 reading_days（FR-208 按天统计）。
+  ///
+  /// 两条写路径各自 try/catch：按天记录失败只降级日志，不影响总时长落库
+  /// （本地优先，统计缺一天不伤主链路）。账本先快照清空再落库，防止结算
+  /// 重入（切后台 + dispose 交叠）造成重复计数。
   Future<void> _flushReadingTime() async {
     if (_readingSeconds <= 0) return;
     final seconds = _readingSeconds;
+    final byDay = Map<String, int>.of(_secondsByDay);
     _readingSeconds = 0;
+    _secondsByDay.clear();
     try {
       await _booksDao.updateProgressInfo(
         widget.bookId,
@@ -427,6 +462,15 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     } catch (e, s) {
       _log.warn('阅读时长落库失败');
       _log.error('阅读时长落库异常详情', e, s);
+    }
+    if (byDay.isEmpty) return;
+    try {
+      for (final MapEntry(key: day, value: daySeconds) in byDay.entries) {
+        await _readingDaysDao.addSeconds(widget.bookId, day, daySeconds);
+      }
+    } catch (e, s) {
+      _log.warn('按天阅读时长落库失败（不影响总时长）');
+      _log.error('按天阅读时长落库异常详情', e, s);
     }
   }
 

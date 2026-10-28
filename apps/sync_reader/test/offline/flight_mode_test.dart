@@ -90,9 +90,7 @@ void main() {
 
   // ── 用例 2：离线阅读与滚动翻书 ──────────────────────────────────────────
 
-  testWidgets('离线打开 txt 书滚动翻书：进度落库、退出回到书库，全程无报错弹窗', (
-    tester,
-  ) async {
+  testWidgets('离线打开 txt 书滚动翻书：进度落库、退出回到书库，全程无报错弹窗', (tester) async {
     final env = (await tester.runAsync(OfflineEnv.create))!;
     const bookId = 'offlinebook02';
     // 导入测试的文件写入手法（真实 IO 在 runAsync）：正文 + 预置封面
@@ -133,8 +131,17 @@ void main() {
     expectNoBlockingErrorUi(tester, reason: '（详情页打开时）');
 
     // 详情页 → 阅读页（默认设置 = 滚动模式）。
+    // 详情页含"最近 7 天"块后主按钮落到默认 600px 折叠线下（ListView 惰性
+    // 构建）：临时加高视口完成点击，进入阅读器后恢复原视口（阅读分页/滚动
+    // 断言仍按默认视口行为验证）。
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    await tester.pump(); // 新视口生效重建 ListView（折叠下按钮进入构建范围）。
     await tester.tap(find.text('开始阅读'));
     await pumpUntilReaderReady(tester);
+    tester.view.resetPhysicalSize();
+    tester.view.resetDevicePixelRatio();
+    await tester.pump();
     expect(find.text('离线阅读书'), findsOneWidget); // AppBar 书名
     expect(find.textContaining('第一章 开端'), findsWidgets); // 正文渲染
     expectNoBlockingErrorUi(tester, reason: '（阅读页打开时）');
@@ -183,9 +190,7 @@ void main() {
     await env.configureCredentials();
     // 配置齐全 + 必败适配器：引擎可构建，云端操作全部失败（tombstone 推送
     // 必然失败）——验证"失败静默重试语义"下 UI 无阻塞提示。
-    final failing = FailingBackendAdapter(
-      const NetworkUnreachable('网络不可达'),
-    );
+    final failing = FailingBackendAdapter(const NetworkUnreachable('网络不可达'));
     const bookId = 'offlinebook03';
     // 正文写入书库布局内（books/{bookId}/source.txt）——删除的游离语义
     // （moveToOrphans 整目录改名）依赖该布局。

@@ -33,6 +33,20 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
   /// 文件替换进行中（FR-410 防重入：期间按钮禁用）。
   bool _replacing = false;
 
+  /// 最近 7 天按天阅读统计（FR-208）：页面进入取一次即可（本地查询，
+  /// 不必 watch 实时刷新）；先取 daysByBook 再取全期合计。
+  late final Future<({List<ReadingDay> recent, int total})> _readingDaysFuture =
+      _loadReadingDays();
+
+  /// 拉取按天记录：最近 7 条（day DESC 已排序）+ reading_days 全期合计。
+  /// 失败向上抛给 FutureBuilder 静默降级空态，不影响页面其余部分。
+  Future<({List<ReadingDay> recent, int total})> _loadReadingDays() async {
+    final dao = ref.read(readingDaysDaoProvider);
+    final days = await dao.daysByBook(widget.bookId);
+    final total = await dao.totalSeconds(widget.bookId);
+    return (recent: days.take(7).toList(growable: false), total: total);
+  }
+
   @override
   Widget build(BuildContext context) {
     final bookId = widget.bookId;
@@ -144,6 +158,7 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
                     '累计阅读',
                     humanizeDuration(book.totalSeconds),
                   ),
+                  _metaReadingDays(context),
                   const Divider(),
                   _metaToc(context, ref),
                   const SizedBox(height: 4),
@@ -250,6 +265,53 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
                   ),
                   error: (_, _) => Text('—', style: theme.textTheme.bodyMedium),
                 ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 最近 7 天按天阅读统计（FR-208）：日行 `MM-DD · X 分钟` + 全期合计行。
+  /// 加载中不占位（避免闪空态）；无记录（新装/老库升级）与加载失败一律
+  /// 静默降级为一行灰字「暂无按天记录」，不影响页面其余部分。
+  Widget _metaReadingDays(BuildContext context) {
+    final theme = Theme.of(context);
+    final hintStyle = theme.textTheme.bodyMedium?.copyWith(
+      color: theme.colorScheme.outline,
+    );
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 84, child: Text('最近 7 天', style: hintStyle)),
+          Expanded(
+            child: FutureBuilder<({List<ReadingDay> recent, int total})>(
+              future: _readingDaysFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const SizedBox.shrink();
+                }
+                final data = snapshot.data;
+                if (data == null || data.recent.isEmpty) {
+                  return Text('暂无按天记录', style: hintStyle);
+                }
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final day in data.recent)
+                      Text(
+                        '${day.day.substring(5)} · ${humanizeDuration(day.seconds)}',
+                        style: theme.textTheme.bodyMedium,
+                      ),
+                    Text(
+                      '合计 · ${humanizeDuration(data.total)}',
+                      style: hintStyle,
+                    ),
+                  ],
+                );
+              },
+            ),
           ),
         ],
       ),
