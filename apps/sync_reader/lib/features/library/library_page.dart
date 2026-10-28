@@ -178,9 +178,9 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
 
     return Scaffold(
       appBar: AppBar(
-        // 无标题（应用名不在书库页展示，右上角让位给筛选入口）。
+        // 左上角筛选下拉（应用名不在书库页展示）：文本+下拉箭头提示可选。
+        title: const _FilterMenuButton(),
         actions: [
-          const _FilterMenuButton(),
           PopupMenuButton<BookSort>(
             tooltip: '排序方式',
             icon: const Icon(Icons.sort),
@@ -439,9 +439,9 @@ class _BookList extends StatelessWidget {
   }
 }
 
-/// 右上角筛选入口（FR-107/FR-402）：`筛选：当前值 ▾` 下拉菜单，四选一
-/// 互斥——全部 / 未分组 / 未下载 / 各分组；菜单底部带「管理分组…」。
-/// 选中分组被删除时自动回落「全部」，避免书列表停在空过滤视图。
+/// 左上角筛选入口（FR-107/FR-402）：AppBar 标题位「当前值 ▾」下拉菜单，
+/// 四选一互斥——全部 / 未分组 / 未下载 / 各分组；菜单底部带「管理分组…」。
+/// 箭头常显（下拉可点的可发现性）；选中分组被删除时自动回落「全部」。
 class _FilterMenuButton extends ConsumerWidget {
   const _FilterMenuButton();
 
@@ -511,12 +511,11 @@ class _FilterMenuButton extends ConsumerWidget {
         ),
       ],
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 4),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.filter_list, size: 20),
-            const SizedBox(width: 4),
+            // 继承 AppBar 标题字号；箭头常显提示可下拉。
             Text(labelFor(filter)),
             const Icon(Icons.arrow_drop_down),
           ],

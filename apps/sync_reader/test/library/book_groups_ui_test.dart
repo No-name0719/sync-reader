@@ -168,9 +168,11 @@ void main() {
     });
     await pumpLibrary(tester);
 
-    // 未开菜单：仅按钮标签「全部」（应用名标识已移除，筛选在右上角）。
+    // 未开菜单：仅按钮标签「全部」（应用名标识已移除，筛选在左上角标题位，
+    // 箭头常显提示可下拉）。
     expect(find.text('SyncReader'), findsNothing);
     expect(find.text('全部'), findsOneWidget);
+    expect(find.byIcon(Icons.arrow_drop_down), findsOneWidget);
     await tester.tap(find.byTooltip('筛选书库'));
     await tester.pumpAndSettle();
 
