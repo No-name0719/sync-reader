@@ -2,7 +2,7 @@ name: sync_reader
 description: "SyncReader：跨平台电子书进度同步阅读客户端（docs/00-总览.md）。"
 publish_to: 'none'
 
-version: 0.1.0+1
+version: 1.0.0+1
 
 environment:
   sdk: ^3.13.7

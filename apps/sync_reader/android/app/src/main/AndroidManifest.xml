@@ -3,7 +3,7 @@
          release APK 若缺失会以 DNS 解析失败（errno = 7）的形式暴露。 -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <application
-        android:label="sync_reader"
+        android:label="SyncReader"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
