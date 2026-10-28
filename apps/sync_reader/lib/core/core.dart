@@ -4,4 +4,5 @@ library;
 export 'errors.dart';
 export 'app_logger.dart';
 export 'content_hasher.dart';
+export 'startup_timer.dart';
 export 'ulid.dart';

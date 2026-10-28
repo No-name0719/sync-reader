@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/startup_timer.dart';
 import '../features/library/import/cover_generator.dart';
 import '../features/sync/sync_facade.dart';
 import 'router.dart';
@@ -63,6 +64,11 @@ final class _SyncTriggerHostState extends ConsumerState<SyncTriggerHost> {
     unawaited(
       ref.read(coverGeneratorProvider).backfillMissing().catchError((_) {}),
     );
+    // 首帧打点（NFR-05 口径 = 书库可交互）+ 汇总输出。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      startupTimer.mark(StartupTimer.kFirstFrame);
+      startupTimer.report();
+    });
   }
 
   @override

@@ -11,6 +11,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../data/db/app_database.dart';
 import '../../data/db/daos/books_dao.dart';
+import '../../core/startup_timer.dart';
 import '../sync/placeholder_download.dart';
 import '../sync/sync_status.dart';
 import '../sync/widgets/sync_status_banner.dart';
@@ -32,6 +33,13 @@ class LibraryPage extends ConsumerStatefulWidget {
 class _LibraryPageState extends ConsumerState<LibraryPage> {
   final _searchController = TextEditingController();
   Timer? _debounce;
+
+  @override
+  void initState() {
+    super.initState();
+    // 书库首建打点（NFR-05 辅助口径；同名点只记首次，重复进入不覆盖）。
+    startupTimer.mark('libraryFirstBuild');
+  }
 
   @override
   void dispose() {
