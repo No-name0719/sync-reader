@@ -55,7 +55,8 @@ void main() {
     await tester.pump();
 
     // 书库正常渲染：空态 + 导入引导。
-    expect(find.text('SyncReader'), findsOneWidget);
+    // 应用名不再作书库页标题（筛选入口移至右上角）。
+    expect(find.text('SyncReader'), findsNothing);
     expect(find.text('书库为空'), findsOneWidget);
     expect(find.textContaining('导入按钮'), findsOneWidget);
     // FR-406 状态横幅允许存在（非阻塞状态条是同步失败的合法表达形式）。

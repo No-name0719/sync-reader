@@ -1,5 +1,6 @@
-/// 分组 UI 测试（FR-107 本地分类）：分组过滤栏渲染与过滤、书卡长按拖拽
-/// 归组/移出、分组管理对话框（新建/重名拒绝/重命名/删除回未分组）。
+/// 分组 UI 测试（FR-107 本地分类）：右上角筛选下拉（全部/未分组/未下载/
+/// 分组单选）、书卡长按拖拽归组（落点栏拖拽中浮现）、未下载过滤、
+/// 分组管理对话框（新建/重名拒绝/重命名/删除回未分组）。
 /// 注入内存库 + 临时目录存储，沿用 library_page_test 的 pump 手法。
 ///
 /// 注意：testWidgets 的 fakeAsync 中真实 IO（临时目录/文件）必须经
@@ -64,6 +65,7 @@ void main() {
     String title = '书',
     int addedAt = 1000,
     String? groupId,
+    String? localPath = '/books/x',
   }) => BooksCompanion.insert(
     bookId: id,
     title: title,
@@ -73,7 +75,7 @@ void main() {
     sizeBytes: 1024,
     tocFingerprint: 'tfp:0000000000000000',
     addedAt: addedAt,
-    localPath: const Value('/books/x'),
+    localPath: Value(localPath),
     groupId: Value(groupId),
   );
 
@@ -108,18 +110,19 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  /// 长按拖拽（FR-107）：长按 [from] 超过阈值进入 Draggable 后，
-  /// 分步移动到 [to] 上方抬起落点。
+  /// 长按拖拽（FR-107）：长按 [from] 超过阈值进入 Draggable（落点栏随
+  /// onDragStarted 浮现）后，再定位 [to]（此时才存在于树中）分步移动抬起。
   Future<void> longPressDrag(
     WidgetTester tester,
     Finder from,
     Finder to,
   ) async {
     final start = tester.getCenter(from);
-    final end = tester.getCenter(to);
     final gesture = await tester.startGesture(start);
-    // 超过 kLongPressTimeout（500ms）触发 LongPressDraggable。
+    // 超过 kLongPressTimeout（500ms）触发 LongPressDraggable → 落点栏浮现。
     await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+    final end = tester.getCenter(to);
     const steps = 10;
     for (var i = 1; i <= steps; i++) {
       await gesture.moveBy(
@@ -128,6 +131,22 @@ void main() {
       await tester.pump(const Duration(milliseconds: 40));
     }
     await gesture.up();
+    await tester.pumpAndSettle();
+  }
+
+  /// 经右上角筛选下拉选择过滤项（菜单打开后取菜单内条目）。
+  Future<void> pickFilter(WidgetTester tester, String label) async {
+    await tester.tap(find.byTooltip('筛选书库'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(label).last);
+    await tester.pumpAndSettle();
+  }
+
+  /// 经筛选下拉打开分组管理对话框（ActionChip 已随筛选上移而移除）。
+  Future<void> openManageDialog(WidgetTester tester) async {
+    await tester.tap(find.byTooltip('筛选书库'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('管理分组…'));
     await tester.pumpAndSettle();
   }
 
@@ -140,7 +159,7 @@ void main() {
     expect(find.textContaining(title), visible ? findsWidgets : findsNothing);
   }
 
-  testWidgets('分组栏渲染：全部/未分组/管理常驻，建组后出现分组 chip', (tester) async {
+  testWidgets('筛选下拉：默认「全部」，菜单含全部/未分组/未下载/各分组/管理', (tester) async {
     await bootstrapSafely(tester);
     await tester.runAsync(() async {
       await db!.bookGroupsDao.createGroup('组A');
@@ -149,11 +168,42 @@ void main() {
     });
     await pumpLibrary(tester);
 
+    // 未开菜单：仅按钮标签「全部」（应用名标识已移除，筛选在右上角）。
+    expect(find.text('SyncReader'), findsNothing);
     expect(find.text('全部'), findsOneWidget);
+    await tester.tap(find.byTooltip('筛选书库'));
+    await tester.pumpAndSettle();
+
+    // 菜单：三个固定项 + 两个分组 + 管理入口（单选语义勾选当前项）。
+    expect(find.text('全部'), findsNWidgets(2)); // 按钮标签 + 菜单项
     expect(find.text('未分组'), findsOneWidget);
-    expect(find.text('管理'), findsOneWidget);
+    expect(find.text('未下载'), findsOneWidget);
     expect(find.text('组A'), findsOneWidget);
     expect(find.text('组B'), findsOneWidget);
+    expect(find.text('管理分组…'), findsOneWidget);
+    await shutdown(tester);
+  });
+
+  testWidgets('未下载过滤：占位书单独可见，切回全部恢复', (tester) async {
+    await bootstrapSafely(tester);
+    await tester.runAsync(() async {
+      await db!.booksDao.upsertCompanion(bookRow('B1', title: 'Alpha'));
+      await db!.booksDao.upsertCompanion(
+        bookRow('B2', title: 'Placeholder', localPath: null),
+      );
+    });
+    await pumpLibrary(tester);
+
+    await expectBookVisible('Alpha', true);
+    await expectBookVisible('Placeholder', true);
+
+    await pickFilter(tester, '未下载');
+    await expectBookVisible('Alpha', false);
+    await expectBookVisible('Placeholder', true);
+
+    await pickFilter(tester, '全部');
+    await expectBookVisible('Alpha', true);
+    await expectBookVisible('Placeholder', true);
     await shutdown(tester);
   });
 
@@ -172,21 +222,18 @@ void main() {
     await expectBookVisible('Alpha', true);
     await expectBookVisible('Beta', true);
 
-    // 未分组：只留 Beta。
-    await tester.tap(find.text('未分组'));
-    await tester.pumpAndSettle();
+    // 未分组：只留 Beta（按钮标签同步为当前过滤）。
+    await pickFilter(tester, '未分组');
     await expectBookVisible('Alpha', false);
     await expectBookVisible('Beta', true);
 
     // 组A：只留 Alpha。
-    await tester.tap(find.text('组A'));
-    await tester.pumpAndSettle();
+    await pickFilter(tester, '组A');
     await expectBookVisible('Alpha', true);
     await expectBookVisible('Beta', false);
 
     // 回到「全部」：恢复显示。
-    await tester.tap(find.text('全部'));
-    await tester.pumpAndSettle();
+    await pickFilter(tester, '全部');
     await expectBookVisible('Alpha', true);
     await expectBookVisible('Beta', true);
     await shutdown(tester);
@@ -218,14 +265,12 @@ void main() {
     expect(alphaGroupId, groupAId);
 
     // 切到「组A」视图：组内出现 Alpha（流重查生效）。
-    await tester.tap(find.text('组A'));
-    await tester.pumpAndSettle();
+    await pickFilter(tester, '组A');
     await expectBookVisible('Alpha', true);
     await expectBookVisible('Beta', true);
 
-    // 回「全部」，把 Alpha 拖到「未分组」→ 移出分组。
-    await tester.tap(find.text('全部'));
-    await tester.pumpAndSettle();
+    // 回「全部」，把 Alpha 拖到落点栏「未分组」→ 移出分组。
+    await pickFilter(tester, '全部');
     await longPressDrag(tester, find.text('Alpha').first, find.text('未分组'));
     expect(find.text('已移出分组'), findsOneWidget);
     await tester.runAsync(() async {
@@ -233,7 +278,7 @@ void main() {
     });
 
     // 「未分组」视图同时出现 Alpha 与未组书，组内书 Beta 不再显示。
-    await tester.tap(find.text('未分组'));
+    await pickFilter(tester, '未分组');
     await tester.pumpAndSettle();
     await expectBookVisible('Alpha', true);
     await expectBookVisible('Beta', false);
@@ -245,8 +290,7 @@ void main() {
     await pumpLibrary(tester);
 
     // 打开管理对话框并新建「组A」。
-    await tester.tap(find.byType(ActionChip));
-    await tester.pumpAndSettle();
+    await openManageDialog(tester);
     expect(find.text('管理分组'), findsOneWidget);
     final dialog = manageDialog(tester);
     final newField = find.descendant(
@@ -262,7 +306,8 @@ void main() {
     // 不保证排空：定长泵显式推进时间。
     await tester.pump(const Duration(seconds: 1));
     await tester.pumpAndSettle();
-    // 对话框列表与背后 chip 栏同步出现「组A」（drift watch 自动刷新）。
+    // 对话框列表出现「组A」（drift watch 自动刷新；筛选在右上角下拉，
+    // 未选中该组时按钮标签不显示组名）。
     expect(
       find.descendant(
         of: dialog,
@@ -270,7 +315,7 @@ void main() {
       ),
       findsOneWidget,
     );
-    expect(find.text('组A'), findsNWidgets(2));
+    expect(find.text('组A'), findsOneWidget);
 
     // 重名拒绝：SnackBar 提示，且列表中仍只有一个「组A」行。
     await tester.enterText(newField, '组A');
@@ -292,15 +337,14 @@ void main() {
     await shutdown(tester);
   });
 
-  testWidgets('管理对话框：重命名即时生效并同步 chip 栏', (tester) async {
+  testWidgets('管理对话框：重命名即时生效', (tester) async {
     await bootstrapSafely(tester);
     await tester.runAsync(() async {
       await db!.bookGroupsDao.createGroup('组A');
     });
     await pumpLibrary(tester);
 
-    await tester.tap(find.byType(ActionChip));
-    await tester.pumpAndSettle();
+    await openManageDialog(tester);
     await tester.tap(find.byTooltip('分组操作'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('重命名'));
@@ -328,7 +372,7 @@ void main() {
       find.descendant(of: manageDialog(tester), matching: find.text('组A')),
       findsNothing,
     );
-    expect(find.text('组C'), findsNWidgets(2)); // 对话框 + chip 栏
+    expect(find.text('组C'), findsOneWidget); // 对话框行
     await shutdown(tester);
   });
 
@@ -344,8 +388,7 @@ void main() {
     });
     await pumpLibrary(tester);
 
-    await tester.tap(find.byType(ActionChip));
-    await tester.pumpAndSettle();
+    await openManageDialog(tester);
     await tester.tap(find.byTooltip('分组操作'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('删除'));
@@ -356,7 +399,7 @@ void main() {
     await tester.tap(find.text('删除'));
     await tester.pumpAndSettle();
 
-    // 分组消失（chip 栏 + 对话框），组内书回未分组。
+    // 分组消失（对话框行 + 筛选菜单），组内书回未分组。
     expect(
       find.descendant(of: manageDialog(tester), matching: find.text('组A')),
       findsNothing,
@@ -365,11 +408,13 @@ void main() {
       expect((await db!.booksDao.getById('B1'))?.groupId, isNull);
     });
 
-    // 关闭对话框：书库页不再有「组A」chip，Alpha 归入未分组视图。
+    // 关闭对话框：筛选菜单不再有「组A」，Alpha 归入未分组视图。
     await tester.tap(find.text('完成'));
     await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('筛选书库'));
+    await tester.pumpAndSettle();
     expect(find.text('组A'), findsNothing);
-    await tester.tap(find.text('未分组'));
+    await tester.tap(find.text('未分组').last);
     await tester.pumpAndSettle();
     await expectBookVisible('Alpha', true);
     await shutdown(tester);

@@ -37,6 +37,14 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
   final _searchController = TextEditingController();
   Timer? _debounce;
 
+  /// 书卡拖拽进行中（拖拽归组落点栏的显隐开关，FR-107）。
+  bool _dragging = false;
+
+  void _setDragActive(bool active) {
+    if (_dragging == active) return;
+    setState(() => _dragging = active);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -170,8 +178,9 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('SyncReader'),
+        // 无标题（应用名不在书库页展示，右上角让位给筛选入口）。
         actions: [
+          const _FilterMenuButton(),
           PopupMenuButton<BookSort>(
             tooltip: '排序方式',
             icon: const Icon(Icons.sort),
@@ -245,37 +254,56 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
               ),
             ),
           ),
-          // 分组过滤栏（FR-107）：书卡可长按拖入 chip 归组。
-          const _GroupFilterBar(),
+          // 拖拽归组落点栏（FR-107）：仅书卡拖拽进行中浮现，平时不占版面；
+          // 筛选本身在右上角 AppBar（[_FilterMenuButton]）。
           Expanded(
-            child: booksAsync.when(
-              // 静态占位（不用不确定进度圈：本地库毫秒级加载，且避免
-              // 永续动画帧导致 pumpAndSettle 不收敛）。
-              // Riverpod 3：首帧即失败的流错误停留在
-              // AsyncLoading(error) 而非 AsyncError，两种状态都给提示。
-              loading: () => _EmptyView(
-                hint: booksAsync.hasError
-                    ? '书库加载失败：${booksAsync.error}\n请重启应用重试'
-                    : '正在加载书库…',
-              ),
-              // 数据库异常时保持空态标题并给出可操作提示。
-              error: (error, _) => _EmptyView(hint: '书库加载失败：$error\n请重启应用重试'),
-              data: (books) => books.isEmpty
-                  ? const _EmptyView()
-                  : switch (viewMode) {
-                      LibraryViewMode.grid => _BookGrid(
-                        books: books,
-                        progressMap: progressMap,
-                        syncStatusMap: syncStatusMap,
-                        onOpen: _openBook,
-                      ),
-                      LibraryViewMode.list => _BookList(
-                        books: books,
-                        progressMap: progressMap,
-                        syncStatusMap: syncStatusMap,
-                        onOpen: _openBook,
-                      ),
-                    },
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: booksAsync.when(
+                    // 静态占位（不用不确定进度圈：本地库毫秒级加载，且避免
+                    // 永续动画帧导致 pumpAndSettle 不收敛）。
+                    // Riverpod 3：首帧即失败的流错误停留在
+                    // AsyncLoading(error) 而非 AsyncError，两种状态都给提示。
+                    loading: () => _EmptyView(
+                      hint: booksAsync.hasError
+                          ? '书库加载失败：${booksAsync.error}\n请重启应用重试'
+                          : '正在加载书库…',
+                    ),
+                    // 数据库异常时保持空态标题并给出可操作提示。
+                    error: (error, _) =>
+                        _EmptyView(hint: '书库加载失败：$error\n请重启应用重试'),
+                    data: (books) => books.isEmpty
+                        ? const _EmptyView()
+                        : switch (viewMode) {
+                            LibraryViewMode.grid => _BookGrid(
+                              books: books,
+                              progressMap: progressMap,
+                              syncStatusMap: syncStatusMap,
+                              onOpen: _openBook,
+                              onDragActive: _setDragActive,
+                            ),
+                            LibraryViewMode.list => _BookList(
+                              books: books,
+                              progressMap: progressMap,
+                              syncStatusMap: syncStatusMap,
+                              onOpen: _openBook,
+                              onDragActive: _setDragActive,
+                            ),
+                          },
+                  ),
+                ),
+                if (_dragging)
+                  Positioned(
+                    left: 12,
+                    right: 12,
+                    bottom: 16,
+                    child: _GroupDropBar(
+                      onAcceptBook: (bookId, groupId, name) =>
+                          _setBookGroup(context, ref, bookId, groupId, name),
+                    ),
+                  ),
+              ],
             ),
           ),
         ],
@@ -329,6 +357,7 @@ class _BookGrid extends StatelessWidget {
     required this.progressMap,
     required this.syncStatusMap,
     required this.onOpen,
+    required this.onDragActive,
   });
 
   final List<Book> books;
@@ -337,6 +366,9 @@ class _BookGrid extends StatelessWidget {
 
   /// 点开回调（书库页分流：占位书下载 / 普通书进详情）。
   final void Function(Book book) onOpen;
+
+  /// 拖拽起止回调（落点栏显隐，FR-107）。
+  final void Function(bool active) onDragActive;
 
   @override
   Widget build(BuildContext context) {
@@ -353,6 +385,7 @@ class _BookGrid extends StatelessWidget {
         final book = books[index];
         return _DraggableBook(
           book: book,
+          onDragActive: onDragActive,
           child: BookGridCard(
             book: book,
             percent: progressMap?[book.bookId]?.percent,
@@ -371,6 +404,7 @@ class _BookList extends StatelessWidget {
     required this.progressMap,
     required this.syncStatusMap,
     required this.onOpen,
+    required this.onDragActive,
   });
 
   final List<Book> books;
@@ -379,6 +413,9 @@ class _BookList extends StatelessWidget {
 
   /// 点开回调（书库页分流：占位书下载 / 普通书进详情）。
   final void Function(Book book) onOpen;
+
+  /// 拖拽起止回调（落点栏显隐，FR-107）。
+  final void Function(bool active) onDragActive;
 
   @override
   Widget build(BuildContext context) {
@@ -389,6 +426,7 @@ class _BookList extends StatelessWidget {
         final book = books[index];
         return _DraggableBook(
           book: book,
+          onDragActive: onDragActive,
           child: BookListTile(
             book: book,
             percent: progressMap?[book.bookId]?.percent,
@@ -401,17 +439,19 @@ class _BookList extends StatelessWidget {
   }
 }
 
-/// 分组过滤栏（FR-107）：`[全部][未分组][分组A…] [管理]` 横向滚动一行，
-/// 位于搜索栏与书列表之间。分组 chip 兼作拖拽落点（书卡长按拖入归组，
-/// 拖入「未分组」移出分组；「全部」不接收拖拽）。
-class _GroupFilterBar extends ConsumerWidget {
-  const _GroupFilterBar();
+/// 右上角筛选入口（FR-107/FR-402）：`筛选：当前值 ▾` 下拉菜单，四选一
+/// 互斥——全部 / 未分组 / 未下载 / 各分组；菜单底部带「管理分组…」。
+/// 选中分组被删除时自动回落「全部」，避免书列表停在空过滤视图。
+class _FilterMenuButton extends ConsumerWidget {
+  const _FilterMenuButton();
+
+  /// 管理分组菜单项的哨兵值（与 LibraryGroupFilter 值共用 Object 载体）。
+  static const _manageSentinel = '_manage_groups';
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final filter = ref.watch(libraryGroupFilterProvider);
     final groups = ref.watch(groupsProvider).value ?? const <BookGroup>[];
-    // 选中分组被删除时回落「全部」，避免书列表停在空过滤视图。
     ref.listen(groupsProvider, (_, next) {
       final list = next.value;
       if (list == null) return;
@@ -423,57 +463,130 @@ class _GroupFilterBar extends ConsumerWidget {
             .set(LibraryGroupFilter.all);
       }
     });
-    return SizedBox(
-      height: 56,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        children: [
-          ChoiceChip(
-            label: const Text('全部'),
-            selected: filter == LibraryGroupFilter.all,
-            onSelected: (_) => ref
-                .read(libraryGroupFilterProvider.notifier)
-                .set(LibraryGroupFilter.all),
-          ),
-          const SizedBox(width: 6),
-          _GroupDropChip(
-            label: '未分组',
-            selected: filter == LibraryGroupFilter.ungrouped,
-            onSelect: () => ref
-                .read(libraryGroupFilterProvider.notifier)
-                .set(LibraryGroupFilter.ungrouped),
-            onAcceptBook: (bookId) =>
-                _setBookGroup(context, ref, bookId, null, null),
-          ),
-          const SizedBox(width: 6),
-          for (final group in groups) ...[
-            _GroupDropChip(
-              key: ValueKey(group.groupId),
-              label: group.name,
-              selected:
+
+    String labelFor(LibraryGroupFilter f) => switch (f) {
+      LibraryGroupFilter.all => '全部',
+      LibraryGroupFilter.ungrouped => '未分组',
+      LibraryGroupFilter.undownloaded => '未下载',
+      GroupFilterSelected(:final groupId) =>
+        groups.any((g) => g.groupId == groupId)
+            ? '分组：${groups.firstWhere((g) => g.groupId == groupId).name}'
+            : '全部',
+      // 面常量已命中全部取值，通配兜底仅满足 sealed 穷尽性。
+      _ => '全部',
+    };
+    return PopupMenuButton<Object>(
+      tooltip: '筛选书库',
+      onSelected: (value) {
+        if (value is LibraryGroupFilter) {
+          ref.read(libraryGroupFilterProvider.notifier).set(value);
+        } else if (value == _manageSentinel) {
+          showGroupManageDialog(context);
+        }
+      },
+      itemBuilder: (context) => [
+        _filterItem('全部', LibraryGroupFilter.all, filter),
+        _filterItem('未分组', LibraryGroupFilter.ungrouped, filter),
+        _filterItem('未下载', LibraryGroupFilter.undownloaded, filter),
+        if (groups.isNotEmpty) ...[
+          const PopupMenuDivider(),
+          for (final group in groups)
+            CheckedPopupMenuItem<Object>(
+              value: GroupFilterSelected(group.groupId),
+              checked:
                   filter is GroupFilterSelected &&
                   filter.groupId == group.groupId,
-              onSelect: () => ref
-                  .read(libraryGroupFilterProvider.notifier)
-                  .set(GroupFilterSelected(group.groupId)),
-              onAcceptBook: (bookId) => _setBookGroup(
-                context,
-                ref,
-                bookId,
-                group.groupId,
-                group.name,
+              child: Text(group.name),
+            ),
+        ],
+        const PopupMenuDivider(),
+        const PopupMenuItem<Object>(
+          value: _manageSentinel,
+          child: ListTile(
+            leading: Icon(Icons.folder_open),
+            title: Text('管理分组…'),
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+      ],
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.filter_list, size: 20),
+            const SizedBox(width: 4),
+            Text(labelFor(filter)),
+            const Icon(Icons.arrow_drop_down),
+          ],
+        ),
+      ),
+    );
+  }
+
+  PopupMenuItem<Object> _filterItem(
+    String label,
+    LibraryGroupFilter value,
+    LibraryGroupFilter current,
+  ) => CheckedPopupMenuItem<Object>(
+    value: value,
+    checked: current == value,
+    child: Text(label),
+  );
+}
+
+/// 拖拽归组落点栏（FR-107）：书卡拖拽进行中浮现于书库底部，横排各分组
+/// 与「未分组」落点 chip；书卡移入即归组，移入「未分组」移出分组。
+class _GroupDropBar extends ConsumerWidget {
+  const _GroupDropBar({required this.onAcceptBook});
+
+  /// [groupId] 为 null = 移出分组。
+  final void Function(String bookId, String? groupId, String? name)
+  onAcceptBook;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final groups = ref.watch(groupsProvider).value ?? const <BookGroup>[];
+    return Material(
+      elevation: 6,
+      borderRadius: BorderRadius.circular(12),
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: SizedBox(
+        height: 56,
+        child: Row(
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(left: 12),
+              child: Icon(Icons.drag_indicator, size: 18),
+            ),
+            const SizedBox(width: 4),
+            Text('拖到分组归组', style: Theme.of(context).textTheme.bodySmall),
+            const SizedBox(width: 8),
+            Expanded(
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                children: [
+                  for (final group in groups) ...[
+                    _GroupDropChip(
+                      key: ValueKey(group.groupId),
+                      label: group.name,
+                      onAcceptBook: (bookId) =>
+                          onAcceptBook(bookId, group.groupId, group.name),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  _GroupDropChip(
+                    label: '未分组',
+                    onAcceptBook: (bookId) => onAcceptBook(bookId, null, null),
+                  ),
+                  const SizedBox(width: 6),
+                ],
               ),
             ),
-            const SizedBox(width: 6),
           ],
-          ActionChip(
-            avatar: const Icon(Icons.folder_open, size: 18),
-            label: const Text('管理'),
-            tooltip: '管理分组',
-            onPressed: () => showGroupManageDialog(context),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -504,21 +617,17 @@ Future<void> _setBookGroup(
   }
 }
 
-/// 分组 chip + 拖拽落点（FR-107）：拖拽悬停时 chip 呈选中态高亮提示
-/// 可放下，落下触发 [onAcceptBook]。
+/// 落点 chip（拖拽归组栏内，FR-107）：拖拽悬停高亮提示可放下，落下触发
+/// [onAcceptBook]；无筛选语义（筛选在右上角下拉）。
 class _GroupDropChip extends StatefulWidget {
   const _GroupDropChip({
     super.key,
     required this.label,
-    required this.selected,
-    required this.onSelect,
     required this.onAcceptBook,
   });
 
   final String label;
-  final bool selected;
-  final VoidCallback onSelect;
-  final Future<void> Function(String bookId) onAcceptBook;
+  final void Function(String bookId) onAcceptBook;
 
   @override
   State<_GroupDropChip> createState() => _GroupDropChipState();
@@ -544,9 +653,9 @@ class _GroupDropChipState extends State<_GroupDropChip> {
       },
       builder: (context, _, _) => ChoiceChip(
         label: Text(widget.label),
-        // 悬停即借用选中态高亮（ChoiceChip 默认视觉）。
-        selected: widget.selected || _hovering,
-        onSelected: (_) => widget.onSelect(),
+        // 悬停高亮提示落点（ChoiceChip 选中态视觉）。
+        selected: _hovering,
+        onSelected: (_) {},
       ),
     );
   }
@@ -554,12 +663,18 @@ class _GroupDropChipState extends State<_GroupDropChip> {
 
 /// 长按拖拽书卡（FR-107）：data 为 bookId，feedback 为缩小带阴影封面。
 /// Draggable 不拦截短按（点开详情不受影响），长按阈值也保证列表滚动
-/// 不误触发；childWhenDragging 半透明标记"已拿起"。
+/// 不误触发；childWhenDragging 半透明标记"已拿起"。拖拽起止经
+/// [onDragActive] 通知书库页显隐落点栏。
 class _DraggableBook extends StatelessWidget {
-  const _DraggableBook({required this.book, required this.child});
+  const _DraggableBook({
+    required this.book,
+    required this.child,
+    required this.onDragActive,
+  });
 
   final Book book;
   final Widget child;
+  final void Function(bool active) onDragActive;
 
   @override
   Widget build(BuildContext context) {
@@ -568,6 +683,9 @@ class _DraggableBook extends StatelessWidget {
       // feedback 随手指，起点即卡片原位附近（默认 pointer 锚点即可）。
       feedback: _DragFeedback(book: book),
       childWhenDragging: Opacity(opacity: 0.4, child: child),
+      onDragStarted: () => onDragActive(true),
+      onDragEnd: (_) => onDragActive(false),
+      onDraggableCanceled: (_, _) => onDragActive(false),
       child: child,
     );
   }

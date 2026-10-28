@@ -41,6 +41,7 @@ class BooksDao extends DatabaseAccessor<AppDatabase> with _$BooksDaoMixin {
     String? query,
     String? groupFilterId,
     bool ungroupedOnly = false,
+    bool undownloadedOnly = false,
   }) {
     final statement = select(books);
     final trimmed = query?.trim() ?? '';
@@ -53,6 +54,11 @@ class BooksDao extends DatabaseAccessor<AppDatabase> with _$BooksDaoMixin {
       statement.where((b) => b.groupId.isNull());
     } else if (groupFilterId != null) {
       statement.where((b) => b.groupId.equals(groupFilterId));
+    }
+    // 未下载过滤（FR-402 占位书：云端有元数据、本地无正文；与分组过滤
+    // 的互斥由调用方保证，本层独立叠加）。
+    if (undownloadedOnly) {
+      statement.where((b) => b.localPath.isNull());
     }
     switch (sort) {
       case BookSort.lastRead:

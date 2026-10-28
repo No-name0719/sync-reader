@@ -378,7 +378,8 @@ void main() {
     await tester.tap(find.text('批量导入（文件夹）'));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('批量导入'), findsNothing);
-    expect(find.text('SyncReader'), findsOneWidget);
+    // 应用名不再作书库页标题（右上角让位筛选入口）。
+    expect(find.text('SyncReader'), findsNothing);
     await shutdown(tester);
   });
 

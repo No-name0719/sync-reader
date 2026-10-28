@@ -112,9 +112,10 @@ final groupsProvider = StreamProvider<List<BookGroup>>((ref) {
   return query.watch();
 });
 
-/// 书库分组过滤状态（FR-107）：all = 不过滤；ungrouped = 只看未分组；
-/// selected(id) = 只看该分组。三种视图互斥（ungrouped 与 group(id) 映射到
-/// `watchBooks` 的两个互斥参数，ungroupedOnly 优先）。
+/// 书库过滤状态（FR-107/FR-402）：all = 不过滤；ungrouped = 只看未分组；
+/// undownloaded = 只看未下载（占位书，本地无正文）；selected(id) = 只看该
+/// 分组。四种视图互斥（右上角筛选下拉单选，映射到 `watchBooks` 的互斥
+/// 参数组合）。
 sealed class LibraryGroupFilter {
   const LibraryGroupFilter();
 
@@ -124,13 +125,31 @@ sealed class LibraryGroupFilter {
   /// 仅未分组。
   static const LibraryGroupFilter ungrouped = _UngroupedGroupFilter();
 
-  /// 映射到 `BooksDao.watchBooks` 的分组过滤参数。
-  ({String? groupFilterId, bool ungroupedOnly}) get queryArgs => switch (this) {
-    _AllGroupFilter() => (groupFilterId: null, ungroupedOnly: false),
-    _UngroupedGroupFilter() => (groupFilterId: null, ungroupedOnly: true),
+  /// 仅未下载（占位书）。
+  static const LibraryGroupFilter undownloaded = _UndownloadedGroupFilter();
+
+  /// 映射到 `BooksDao.watchBooks` 的过滤参数（互斥由本 sealed 类型保证）。
+  ({String? groupFilterId, bool ungroupedOnly, bool undownloadedOnly})
+  get queryArgs => switch (this) {
+    _AllGroupFilter() => (
+      groupFilterId: null,
+      ungroupedOnly: false,
+      undownloadedOnly: false,
+    ),
+    _UngroupedGroupFilter() => (
+      groupFilterId: null,
+      ungroupedOnly: true,
+      undownloadedOnly: false,
+    ),
+    _UndownloadedGroupFilter() => (
+      groupFilterId: null,
+      ungroupedOnly: false,
+      undownloadedOnly: true,
+    ),
     final GroupFilterSelected s => (
       groupFilterId: s.groupId,
       ungroupedOnly: false,
+      undownloadedOnly: false,
     ),
   };
 }
@@ -157,6 +176,10 @@ final class _UngroupedGroupFilter extends LibraryGroupFilter {
   const _UngroupedGroupFilter();
 }
 
+final class _UndownloadedGroupFilter extends LibraryGroupFilter {
+  const _UndownloadedGroupFilter();
+}
+
 /// 书库分组过滤状态：默认「全部」；仅会话内记忆，不持久化。
 final libraryGroupFilterProvider =
     NotifierProvider<LibraryGroupFilterNotifier, LibraryGroupFilter>(
@@ -180,6 +203,7 @@ final booksStreamProvider = StreamProvider<List<Book>>((ref) {
     query: ref.watch(libraryQueryProvider),
     groupFilterId: args.groupFilterId,
     ungroupedOnly: args.ungroupedOnly,
+    undownloadedOnly: args.undownloadedOnly,
   );
 });
 
