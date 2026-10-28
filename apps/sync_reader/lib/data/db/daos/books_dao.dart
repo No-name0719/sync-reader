@@ -28,18 +28,31 @@ enum BookSort {
 class BooksDao extends DatabaseAccessor<AppDatabase> with _$BooksDaoMixin {
   BooksDao(super.db);
 
-  /// 监听书库列表：支持排序（FR-105）与书名/作者模糊搜索（FR-106）。
+  /// 监听书库列表：支持排序（FR-105）、书名/作者模糊搜索（FR-106）与
+  /// 分组过滤（FR-107）。
   ///
   /// [query]：去首尾空白后为空则不过滤；命中 `title LIKE %q% OR author LIKE %q%`。
+  /// [groupFilterId]：非空则只保留该分组的书；
+  /// [ungroupedOnly]：true 则只保留未分组（group_id 为 NULL）的书。
+  /// 两者同时传入以 [ungroupedOnly] 为准（UI 上为互斥的两种视图），
+  /// 均不传 = 不做分组过滤（向后兼容原行为）。
   Stream<List<Book>> watchBooks({
     BookSort sort = BookSort.lastRead,
     String? query,
+    String? groupFilterId,
+    bool ungroupedOnly = false,
   }) {
     final statement = select(books);
     final trimmed = query?.trim() ?? '';
     if (trimmed.isNotEmpty) {
       final pattern = '%$trimmed%';
       statement.where((b) => b.title.like(pattern) | b.author.like(pattern));
+    }
+    // 分组过滤（FR-107 本地列；不影响搜索与排序语义）。
+    if (ungroupedOnly) {
+      statement.where((b) => b.groupId.isNull());
+    } else if (groupFilterId != null) {
+      statement.where((b) => b.groupId.equals(groupFilterId));
     }
     switch (sort) {
       case BookSort.lastRead:
@@ -102,6 +115,13 @@ class BooksDao extends DatabaseAccessor<AppDatabase> with _$BooksDaoMixin {
   Future<void> updateCoverPath(String bookId, String coverPath) {
     return (update(books)..where((b) => b.bookId.equals(bookId))).write(
       BooksCompanion(coverPath: Value(coverPath)),
+    );
+  }
+
+  /// 设置书所属分组（FR-107 本地列）；[groupId] 传 null = 移出分组（未分组）。
+  Future<void> setGroup(String bookId, String? groupId) {
+    return (update(books)..where((b) => b.bookId.equals(bookId))).write(
+      BooksCompanion(groupId: Value(groupId)),
     );
   }
 

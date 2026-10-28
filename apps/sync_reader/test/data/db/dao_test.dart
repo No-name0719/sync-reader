@@ -157,6 +157,68 @@ void main() {
       expect((await db.booksDao.watchBooks(query: '不存在').first), isEmpty);
     });
 
+    test('watchBooks 分组过滤 + setGroup（FR-107）', () async {
+      final g1 = await db.bookGroupsDao.createGroup('技术');
+      final g2 = await db.bookGroupsDao.createGroup('小说');
+      // addedAt 各不相同：默认 lastRead 排序（都未读）退化为 addedAt 倒序，
+      // 断言顺序才稳定。
+      await db.booksDao.upsertCompanion(
+        bookRow('01A', title: '三体', addedAt: 300),
+      );
+      await db.booksDao.upsertCompanion(
+        bookRow('01B', title: '球状闪电', addedAt: 200),
+      );
+      await db.booksDao.upsertCompanion(
+        bookRow('01C', title: '活着', addedAt: 100),
+      );
+      await db.booksDao.setGroup('01A', g1.groupId);
+      await db.booksDao.setGroup('01B', g1.groupId);
+      await db.booksDao.setGroup('01C', g2.groupId);
+
+      // 指定分组：只保留该组的书。
+      expect(
+        (await db.booksDao
+                .watchBooks(groupFilterId: g1.groupId)
+                .first)
+            .map((b) => b.bookId)
+            .toList(),
+        ['01A', '01B'],
+      );
+      // 未分组视图：无书命中。
+      expect(await db.booksDao.watchBooks(ungroupedOnly: true).first, isEmpty);
+      // 移出分组（null = 未分组）后进入未分组视图。
+      await db.booksDao.setGroup('01B', null);
+      expect(
+        (await db.booksDao.watchBooks(ungroupedOnly: true).first)
+            .map((b) => b.bookId)
+            .toList(),
+        ['01B'],
+      );
+      // 分组过滤可与搜索叠加。
+      expect(
+        (await db.booksDao
+                .watchBooks(groupFilterId: g1.groupId, query: '三体')
+                .first)
+            .single
+            .bookId,
+        '01A',
+      );
+      // 两者同时传入以 ungroupedOnly 为准（互斥视图，文档化语义）。
+      expect(
+        (await db.booksDao
+                .watchBooks(
+                  groupFilterId: g1.groupId,
+                  ungroupedOnly: true,
+                )
+                .first)
+            .map((b) => b.bookId)
+            .toList(),
+        ['01B'],
+      );
+      // 不传 = 不过滤（向后兼容）。
+      expect((await db.booksDao.watchBooks().first), hasLength(3));
+    });
+
     test('updateProgressInfo 覆盖与累加', () async {
       await db.booksDao.upsertCompanion(bookRow('01A', addedAt: 1));
       await db.booksDao.updateProgressInfo(
@@ -266,5 +328,5 @@ void main() {
     });
   });
 
-  test('schemaVersion == 1（docs/05 §6）', () => expect(db.schemaVersion, 1));
+  test('schemaVersion == 2（docs/05 §6，M4 只增不删）', () => expect(db.schemaVersion, 2));
 }

@@ -52,6 +52,10 @@ class Books extends Table {
   /// 累计阅读秒数（冲突时求和合并，docs/04 §6.3）。
   IntColumn get totalSeconds => integer().withDefault(const Constant(0))();
 
+  /// 所属分组（FR-107 本地列，不参与同步、不入云端 meta）；NULL = 未分组。
+  /// 分组删除时由外键置回未分组。
+  TextColumn get groupId => text().references(BookGroups, #groupId, onDelete: KeyAction.setNull).nullable()();
+
   @override
   Set<Column> get primaryKey => {bookId};
 }
@@ -177,4 +181,40 @@ class SyncQueue extends Table {
 
   /// 重试次数。
   IntColumn get attempts => integer().withDefault(const Constant(0))();
+}
+
+/// 阅读时长按天统计（FR-208，M4 补做）：每书 × 每自然日一行，秒数累加。
+/// 仅本地表，不参与云端同步；schemaVersion 2 新增（迁移只增不删，docs/05 §6）。
+@DataClassName('ReadingDay')
+class ReadingDays extends Table {
+  /// 所属书籍（级联删除）。
+  TextColumn get bookId => text().references(Books, #bookId, onDelete: KeyAction.cascade)();
+
+  /// 本地自然日，格式 'YYYY-MM-DD'（设备时区）。
+  TextColumn get day => text()();
+
+  /// 当天累计阅读秒数。
+  IntColumn get seconds => integer().withDefault(const Constant(0))();
+
+  @override
+  Set<Column> get primaryKey => {bookId, day};
+}
+
+/// 书籍分组（FR-107，本地分类，v1 不参与同步、不入云端 meta）。
+@DataClassName('BookGroup')
+class BookGroups extends Table {
+  /// ULID 主键（复用 lib/core/ulid.dart）。
+  TextColumn get groupId => text()();
+
+  /// 分组名（非空；重名校验在 DAO/UI 层做）。
+  TextColumn get name => text()();
+
+  /// 排序权重（按创建顺序递增）。
+  IntColumn get sortOrder => integer().withDefault(const Constant(0))();
+
+  /// 创建时间（epoch ms）。
+  IntColumn get createdAt => integer()();
+
+  @override
+  Set<Column> get primaryKey => {groupId};
 }

@@ -182,7 +182,9 @@ CREATE TABLE books (
   toc_fingerprint TEXT NOT NULL,
   added_at       INTEGER NOT NULL,            -- epoch ms
   last_read_at   INTEGER,
-  total_seconds  INTEGER NOT NULL DEFAULT 0
+  total_seconds  INTEGER NOT NULL DEFAULT 0,
+  group_id       TEXT REFERENCES book_groups(group_id) ON DELETE SET NULL
+                                              -- 分组（FR-107）；本地列，不入云端 meta JSON，v1 不参与同步
 );
 CREATE INDEX idx_books_last_read ON books(last_read_at DESC);
 CREATE INDEX idx_books_title ON books(title);
@@ -237,6 +239,22 @@ CREATE TABLE sync_queue (
   enqueued_at INTEGER NOT NULL,
   attempts INTEGER NOT NULL DEFAULT 0
 );
+
+-- 阅读时长按天统计（FR-208，M4 补做；仅本地表，不参与云端同步；schemaVersion 2 新增）
+CREATE TABLE reading_days (
+  book_id TEXT NOT NULL REFERENCES books(book_id) ON DELETE CASCADE,
+  day     TEXT NOT NULL,                       -- 本地自然日 'YYYY-MM-DD'（设备时区）
+  seconds INTEGER NOT NULL DEFAULT 0,          -- 当天累计阅读秒数
+  PRIMARY KEY (book_id, day)
+);
+
+-- 书籍分组（FR-107 本地分类；仅本地表，v1 不参与同步、不入云端 meta；schemaVersion 2 新增）
+CREATE TABLE book_groups (
+  group_id   TEXT PRIMARY KEY,                 -- ULID
+  name       TEXT NOT NULL,                    -- 重名校验在 DAO/UI 层做
+  sort_order INTEGER NOT NULL DEFAULT 0,       -- 排序权重（按创建顺序递增）
+  created_at INTEGER NOT NULL                  -- epoch ms
+);
 ```
 
 ### 云端 JSON ↔ 本地表映射
@@ -254,7 +272,8 @@ CREATE TABLE sync_queue (
 
 | 版本 | 变更类型 | 规则 |
 | --- | --- | --- |
-| 1（当前） | 初版 | — |
+| 1 | 初版 | — |
+| 2（当前，2026-10-28，M4） | 本地库新增 `reading_days` / `book_groups` 表与 `books.group_id` 列 | drift `schemaVersion` 1→2，**只增不删**；三者均为本地列/表，不入云端 meta JSON，v1 不参与同步 |
 | 次版本演进（1 → 2） | **只允许**：新增可选字段、新增 `extra` 键、locator 新增 `type` | 旧客户端读到新版本：按已知字段使用 + `percent` 兜底，**不得报错**；写回时保留原 `schemaVersion` 不变，避免降级破坏 |
 | 破坏性演进（大版本） | 字段改名/类型变更/语义变更 | 客户端内置迁移器：读到旧版本 → 迁移到当前版本再写回并升 `schemaVersion`；迁移矩阵与用例纳入 `sync_core` 单元测试 |
 | 校验 | — | `sync_core` 中 `BookMeta.fromJson` 执行严格校验（必填/类型/枚举），失败 → 该书标记 `Corruption` 并跳过，不阻塞全库同步 |

@@ -4,6 +4,7 @@ part of 'books_dao.dart';
 
 // ignore_for_file: type=lint
 mixin _$BooksDaoMixin on DatabaseAccessor<AppDatabase> {
+  $BookGroupsTable get bookGroups => attachedDatabase.bookGroups;
   $BooksTable get books => attachedDatabase.books;
   $ProgressTable get progress => attachedDatabase.progress;
   $DeletedBooksTable get deletedBooks => attachedDatabase.deletedBooks;
@@ -13,6 +14,8 @@ mixin _$BooksDaoMixin on DatabaseAccessor<AppDatabase> {
 class BooksDaoManager {
   final _$BooksDaoMixin _db;
   BooksDaoManager(this._db);
+  $$BookGroupsTableTableManager get bookGroups =>
+      $$BookGroupsTableTableManager(_db.attachedDatabase, _db.bookGroups);
   $$BooksTableTableManager get books =>
       $$BooksTableTableManager(_db.attachedDatabase, _db.books);
   $$ProgressTableTableManager get progress =>
