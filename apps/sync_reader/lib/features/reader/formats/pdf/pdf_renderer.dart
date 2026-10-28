@@ -232,6 +232,27 @@ class PdfReaderController implements ReaderController {
   /// 页码跳转（0 起页码；页码指示对话框与目录跳转共用）。
   Future<void> jumpToPageIndex(int pageIndex) => _jumpToPageIndex(pageIndex, 0);
 
+  /// 翻到下一页（音量键翻页 FR-209）：经 [_jumpToPageIndex] 走 pdfrx
+  /// 相邻页接口（goToPage 落下一页页顶）；已是末页（或退化文档）为边界
+  /// 返回 false。视图未就绪时按既有挂起跳转机制排队。
+  @override
+  Future<bool> nextPage() async {
+    if (_disposed) return false;
+    final count = _pageCount;
+    if (count <= 0 || _currentPageIndex >= count - 1) return false;
+    await _jumpToPageIndex(_currentPageIndex + 1, 0);
+    return true;
+  }
+
+  /// 翻到上一页：语义同 [nextPage]，方向相反；已是首页返回 false。
+  @override
+  Future<bool> previousPage() async {
+    if (_disposed) return false;
+    if (_pageCount <= 0 || _currentPageIndex <= 0) return false;
+    await _jumpToPageIndex(_currentPageIndex - 1, 0);
+    return true;
+  }
+
   @override
   void dispose() {
     if (_disposed) return;

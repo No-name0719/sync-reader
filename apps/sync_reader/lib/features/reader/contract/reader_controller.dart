@@ -34,6 +34,13 @@ abstract class ReaderController {
   /// 跳转到目录条目（书内跳转）。
   Future<void> jumpTo(TocEntry entry);
 
+  /// 翻到下一页：分页模式翻一页；滚动模式滚动一屏。
+  /// 返回是否发生实际移动（已在边界为 false，供音量键翻页与测试断言）。
+  Future<bool> nextPage();
+
+  /// 翻到上一页：语义同 [nextPage]，方向相反。
+  Future<bool> previousPage();
+
   /// 释放资源（停计时器、关流；宿主在页面 dispose 时调用）。
   void dispose();
 }

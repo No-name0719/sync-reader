@@ -22,6 +22,7 @@ export 'formats/common/file_name_parser.dart';
 export 'formats/common/text_decoder.dart';
 export 'formats/handler_base.dart';
 export 'stub_renderer.dart';
+export 'volume_key_page_turn.dart';
 
 // ---- 四个基线 handler（后续代理整文件重写）----
 export 'formats/epub/epub_format_handler.dart';

@@ -21,6 +21,7 @@ class ReaderSettings {
     this.fontFamily,
     this.pageMode = ReaderPageMode.scroll,
     this.txtEncodingOverride = ReaderTextEncoding.auto,
+    this.volumeKeyPageTurn = false,
   });
 
   /// 出厂默认。
@@ -47,6 +48,10 @@ class ReaderSettings {
   /// txt 编码覆盖。
   final ReaderTextEncoding txtEncodingOverride;
 
+  /// 音量键翻页（FR-209，Android 专属）：开启后按音量键翻页、不再调节
+  /// 音量（音量上键 = 上一页，音量下键 = 下一页）；其他平台该设置无效。
+  final bool volumeKeyPageTurn;
+
   /// JSON 序列化（存 reader_settings 表；演进只增不删，读方容忍未知键）。
   Map<String, Object?> toJson() => {
     'fontSize': fontSize,
@@ -56,6 +61,7 @@ class ReaderSettings {
     'fontFamily': fontFamily,
     'pageMode': pageMode.name,
     'txtEncodingOverride': txtEncodingOverride.name,
+    'volumeKeyPageTurn': volumeKeyPageTurn,
   };
 
   /// JSON 反序列化；未知枚举值/缺字段一律回落默认，保证向后兼容。
@@ -86,6 +92,10 @@ class ReaderSettings {
       txtEncodingOverride:
           enumByName(ReaderTextEncoding.values, json['txtEncodingOverride']) ??
           defaults.txtEncodingOverride,
+      volumeKeyPageTurn: switch (json['volumeKeyPageTurn']) {
+        final bool b => b,
+        _ => defaults.volumeKeyPageTurn, // 旧 JSON 无该键 → 默认关闭（向后兼容）
+      },
     );
   }
 
@@ -99,6 +109,7 @@ class ReaderSettings {
     bool clearFontFamily = false,
     ReaderPageMode? pageMode,
     ReaderTextEncoding? txtEncodingOverride,
+    bool? volumeKeyPageTurn,
   }) => ReaderSettings(
     fontSize: fontSize ?? this.fontSize,
     lineHeight: lineHeight ?? this.lineHeight,
@@ -107,6 +118,7 @@ class ReaderSettings {
     fontFamily: clearFontFamily ? null : (fontFamily ?? this.fontFamily),
     pageMode: pageMode ?? this.pageMode,
     txtEncodingOverride: txtEncodingOverride ?? this.txtEncodingOverride,
+    volumeKeyPageTurn: volumeKeyPageTurn ?? this.volumeKeyPageTurn,
   );
 
   @override
@@ -119,7 +131,8 @@ class ReaderSettings {
           theme == other.theme &&
           fontFamily == other.fontFamily &&
           pageMode == other.pageMode &&
-          txtEncodingOverride == other.txtEncodingOverride;
+          txtEncodingOverride == other.txtEncodingOverride &&
+          volumeKeyPageTurn == other.volumeKeyPageTurn;
 
   @override
   int get hashCode => Object.hash(
@@ -130,6 +143,7 @@ class ReaderSettings {
     fontFamily,
     pageMode,
     txtEncodingOverride,
+    volumeKeyPageTurn,
   );
 
   @override

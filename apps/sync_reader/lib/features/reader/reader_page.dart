@@ -1,4 +1,4 @@
-/// 阅读页（FR-201/206/207/208 基础版 + FR-108 目录抽屉）。
+/// 阅读页（FR-201/206/207/208 基础版 + FR-108 目录抽屉 + FR-209 音量键翻页）。
 ///
 /// 完整打开链路：取 Book 行（无 localPath → 占位提示页；书不存在 → 自动
 /// pop 返回）→ handler.parseMetadata（取 toc，与渲染器创建并行）→
@@ -14,6 +14,10 @@
 ///
 /// 设置热应用（FR-206）：监听 ReaderSettingsRepository.changes，经渲染器的
 /// `applySettings` 约定扩展方法下发（契约之外的公开约定，三个真实渲染器均实现）。
+///
+/// 音量键翻页（FR-209，Android 专属）：设置开启且会话就绪时启用平台通道
+/// 拦截并订阅按键事件（音量上键 = 上一页，音量下键 = 下一页）；dispose/
+/// 会话切换时一律停用，恢复系统音量键默认行为。
 library;
 
 import 'dart:async';
@@ -41,6 +45,7 @@ import 'contract/reader_settings_repository.dart';
 import 'contract/toc_entry.dart';
 import 'contract/toc_fingerprint.dart';
 import 'settings/settings_panel.dart';
+import 'volume_key_page_turn.dart';
 
 /// 进度落库防抖窗口（docs/03 §3.1：翻页/滚动后 3s）。
 const Duration progressDebounceInterval = Duration(seconds: 3);
@@ -121,6 +126,10 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   late final SyncTriggers _syncTriggers;
   StreamSubscription<ReaderSettings>? _settingsSub;
 
+  // —— 音量键翻页（FR-209，Android 专属）——
+  late final VolumeKeyPageTurn _volumeKeys = VolumeKeyPageTurn();
+  StreamSubscription<String>? _volumeKeySub;
+
   _PageState _state = const _OpeningState();
 
   /// 页面是否已进入 dispose（dispose 期的兜底落库不再触发同步防抖）。
@@ -187,6 +196,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     unawaited(_flushReadingTime());
     session?.renderer.dispose();
     unawaited(_updateWindowTitle('SyncReader'));
+    // 音量键翻页（FR-209）：任何退出路径都恢复系统音量键默认行为
+    // （先停用、后释放服务，保证 disable 请求先于通道释放完成）。
+    unawaited(_disableVolumeKeys().then((_) => _volumeKeys.dispose()));
     _settingsSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -212,6 +224,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   Future<void> _open() async {
     if (!mounted) return;
     setState(() => _state = const _OpeningState());
+    // 会话切换（重试/占位下载后重开）：先恢复系统音量键默认行为，
+    // 新会话就绪后再按设置重新启用（FR-209）。
+    unawaited(_disableVolumeKeys());
     Book? book;
     try {
       book = await _booksDao.getById(widget.bookId);
@@ -315,6 +330,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
       });
       unawaited(_updateWindowTitle(book.title));
       if (_isAppResumed) _startReadingClock();
+      // 音量键翻页（FR-209）：会话就绪后按设置启用（Android 重建约定：
+      // 原生状态随引擎重建重置，此处由 Dart 主动 enable 一次恢复）。
+      unawaited(_syncVolumeKeys(settings.volumeKeyPageTurn));
     } catch (e, s) {
       renderer?.dispose();
       _log.error('打开书籍失败', e, s);
@@ -420,11 +438,53 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   /// 未实现的渲染器（如 epub 基线占位）静默跳过）。
   void _applySettings(ReaderSettings settings) {
     final renderer = _session?.renderer;
-    if (renderer == null) return;
+    if (renderer != null) {
+      try {
+        (renderer as dynamic).applySettings(settings);
+      } on NoSuchMethodError {
+        _log.info('渲染器不支持设置热应用，跳过');
+      }
+    }
+    // 音量键翻页开关热应用（FR-209）：设置面板改动立即生效/停用。
+    unawaited(_syncVolumeKeys(settings.volumeKeyPageTurn));
+  }
+
+  // ============================================================================
+  // 音量键翻页（FR-209，Android 专属）
+  // ============================================================================
+
+  /// 按设置同步音量键拦截：仅 Android 且设置开启且会话就绪时启用；
+  /// 启用时先确保事件订阅挂上（服务内部也是先订阅后 enable，顺序兜底）。
+  Future<void> _syncVolumeKeys(bool settingEnabled) async {
+    final enabled = Platform.isAndroid && settingEnabled && _session != null;
     try {
-      (renderer as dynamic).applySettings(settings);
-    } on NoSuchMethodError {
-      _log.info('渲染器不支持设置热应用，跳过');
+      await _volumeKeys.setEnabled(enabled);
+      if (!enabled) return;
+      _volumeKeySub ??= _volumeKeys.events.listen(_onVolumeKeyEvent);
+    } catch (e, s) {
+      _log.warn('音量键翻页启用失败（不影响阅读）');
+      _log.error('音量键翻页异常详情', e, s);
+    }
+  }
+
+  /// 音量键事件 → 翻页。语义冻结：音量上键 = 上一页，音量下键 = 下一页。
+  void _onVolumeKeyEvent(String event) {
+    final controller = _session?.renderer.controller;
+    if (controller == null) return;
+    unawaited(
+      event == 'up' ? controller.previousPage() : controller.nextPage(),
+    );
+  }
+
+  /// 停用音量键拦截并取消事件订阅（dispose / 会话切换共用）：try/finally
+  /// 保证订阅取消失败也不影响恢复系统音量键默认行为。
+  Future<void> _disableVolumeKeys() async {
+    final sub = _volumeKeySub;
+    _volumeKeySub = null;
+    try {
+      await sub?.cancel();
+    } finally {
+      await _volumeKeys.setEnabled(false);
     }
   }
 

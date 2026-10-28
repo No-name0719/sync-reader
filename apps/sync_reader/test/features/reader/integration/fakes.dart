@@ -23,6 +23,9 @@ class FakeReaderController extends ReaderController {
   /// jumpTo 收到的目录条目序列。
   final List<TocEntry> jumpCalls = [];
 
+  /// 翻页调用序列（+1 = nextPage / -1 = previousPage，FR-209）。
+  final List<int> turnCalls = [];
+
   /// dispose 次数。
   int disposeCount = 0;
 
@@ -51,6 +54,18 @@ class FakeReaderController extends ReaderController {
 
   @override
   Future<void> jumpTo(TocEntry entry) async => jumpCalls.add(entry);
+
+  @override
+  Future<bool> nextPage() async {
+    turnCalls.add(1);
+    return true;
+  }
+
+  @override
+  Future<bool> previousPage() async {
+    turnCalls.add(-1);
+    return true;
+  }
 
   @override
   void dispose() => disposeCount++;

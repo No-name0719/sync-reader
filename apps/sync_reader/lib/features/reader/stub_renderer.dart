@@ -35,6 +35,12 @@ class StubReaderController extends ReaderController {
   Future<void> jumpTo(TocEntry entry) async {}
 
   @override
+  Future<bool> nextPage() async => false; // 占位：无可翻内容
+
+  @override
+  Future<bool> previousPage() async => false; // 占位：无可翻内容
+
+  @override
   void dispose() {}
 }
 

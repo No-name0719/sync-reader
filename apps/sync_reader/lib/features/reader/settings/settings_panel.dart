@@ -1,10 +1,13 @@
-/// 阅读设置面板（FR-206）：字号/行距/页边距/主题/字体/翻页模式/txt 编码。
+/// 阅读设置面板（FR-206）：字号/行距/页边距/主题/字体/翻页模式/txt 编码，
+/// 另含 Android 专属的音量键翻页开关（FR-209）。
 ///
 /// 由阅读页经 `showModalBottomSheet` 底部拖出；所有变更即时
 /// `repository.save` 持久化（排版设置仅本地保存、不同步，docs/07 记录），
 /// 阅读页监听 `repository.changes` 后经渲染器 `applySettings` 热应用。
 /// 面板初始值消费 `repository.current`，并在 open 后与持久化值对齐一次。
 library;
+
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -87,6 +90,11 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
               _buildPageMode(context),
               const SizedBox(height: 8),
               _buildEncoding(context),
+              // 音量键翻页（FR-209）为 Android 专属能力，其他平台不显示该行。
+              if (Platform.isAndroid) ...[
+                const SizedBox(height: 8),
+                _buildVolumeKeyPageTurn(context),
+              ],
             ],
           ),
         ),
@@ -303,6 +311,21 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
         const SizedBox(height: 4),
         Text('编码切换仅对 txt 生效', style: Theme.of(context).textTheme.bodySmall),
       ],
+    );
+  }
+
+  /// 音量键翻页开关（FR-209，Android 专属）：开启后阅读页启用平台通道
+  /// 拦截音量键（音量上键 = 上一页，音量下键 = 下一页）。
+  Widget _buildVolumeKeyPageTurn(BuildContext context) {
+    return SwitchListTile(
+      key: const ValueKey('settings-volume-key-page-turn'),
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      title: const Text('音量键翻页'),
+      subtitle: const Text('按下音量键翻页，不再调节音量'),
+      value: _settings.volumeKeyPageTurn,
+      onChanged: (value) =>
+          _update(_settings.copyWith(volumeKeyPageTurn: value)),
     );
   }
 }

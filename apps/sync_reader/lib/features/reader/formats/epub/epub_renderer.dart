@@ -406,6 +406,31 @@ class EpubRenderer extends BookRenderer {
     _scheduleProgressReport();
   }
 
+  // —— 翻页（音量键翻页 FR-209，契约 nextPage/previousPage）——
+
+  /// 翻到下一页：沿全书滚动位置按视口高度前进（page 模式的
+  /// PageScrollPhysics 吸附单位即视口高度，jumpTo 落点与 snap 页一致；
+  /// scroll 模式即滚动一屏）；视图未挂载或已在文档末尾返回 false。
+  Future<bool> nextPage() => _turnPage(1);
+
+  /// 翻到上一页：语义同 [nextPage]，方向相反。
+  Future<bool> previousPage() => _turnPage(-1);
+
+  Future<bool> _turnPage(int delta) {
+    if (_disposed || _blocks.isEmpty) return Future.value(false);
+    final ctrl = _scrollController;
+    if (!ctrl.hasClients) return Future.value(false); // 视图未挂载
+    final position = ctrl.position;
+    // 一页/一屏 = 视口高度；clamp 后与当前位置相同即为文档端头（边界）。
+    final target = (ctrl.offset + delta * position.viewportDimension).clamp(
+      0.0,
+      position.maxScrollExtent,
+    );
+    if ((target - ctrl.offset).abs() < 0.5) return Future.value(false);
+    ctrl.jumpTo(target); // 触发 _handleScroll → 位置更新 + 节流上报
+    return Future.value(true);
+  }
+
   // —— 设置变更（宿主经 dynamic 调用，FR-206）——
 
   /// 应用新设置：字号/行距/页边距/字体/主题/翻页模式全部生效。
@@ -711,6 +736,12 @@ class EpubReaderController extends ReaderController {
 
   @override
   Future<void> jumpTo(TocEntry entry) => _r.jumpToTocEntry(entry);
+
+  @override
+  Future<bool> nextPage() => _r.nextPage();
+
+  @override
+  Future<bool> previousPage() => _r.previousPage();
 
   @override
   void dispose() {

@@ -65,9 +65,15 @@ void main() {
       fontFamily: '黑体',
       pageMode: ReaderPageMode.page,
       txtEncodingOverride: ReaderTextEncoding.utf8,
+      volumeKeyPageTurn: true,
     );
     final restored = ReaderSettings.fromJson(settings.toJson());
     expect(restored, settings);
+    expect(
+      restored.volumeKeyPageTurn,
+      isTrue,
+      reason: 'FR-209 音量键翻页 roundtrip',
+    );
     // 未知枚举值/缺字段回落默认（docs/05 §6 演进规则）。
     final tolerant = ReaderSettings.fromJson({
       'theme': '未来新主题',
@@ -77,6 +83,11 @@ void main() {
     expect(tolerant.theme, ReaderTheme.light);
     expect(tolerant.pageMode, ReaderPageMode.page);
     expect(tolerant.fontSize, ReaderSettings.defaults.fontSize);
+    expect(
+      tolerant.volumeKeyPageTurn,
+      isFalse,
+      reason: '旧 JSON 无 volumeKeyPageTurn 键 → 默认 false',
+    );
   });
 
   test('copyWith 覆盖与 clearFontFamily', () {

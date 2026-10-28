@@ -91,9 +91,14 @@ class TxtRenderer extends BookRenderer {
   final Map<int, double> _scrollHeights = {};
   final Map<int, double> _scrollTops = {};
 
-  /// 学习到的"像素/字符"高度系数（0 = 未学习，用字号估算）。
+  // —— 学习到的"像素/字符"高度系数（0 = 未学习，用字号估算）——
   double _pxPerChar = 0;
   List<double>? _docTopCache;
+
+  /// 音量键翻页委托（FR-209）：由当前激活的视图面板注册——page 模式驱动
+  /// PageView 相邻页（含章间衔接），scroll 模式滚动一屏；参数 delta = +1
+  /// 下一页 / -1 上一页。未挂视图（headless）时为 null，翻页返回 false。
+  Future<bool> Function(int delta)? _turnDelegate;
 
   // —— 节流上报 ——
   Timer? _pendingReport;
@@ -254,6 +259,21 @@ class TxtRenderer extends BookRenderer {
       _scheduleProgressReport();
     }
     return Future.value();
+  }
+
+  // —— 翻页（音量键翻页 FR-209，契约 nextPage/previousPage）——
+
+  /// 翻到下一页：委托给激活面板执行（page 模式翻一页 / scroll 模式滚一屏，
+  /// 机制见各面板 `_turnPage`）；视图未挂载（headless）或面板加载中返回 false。
+  Future<bool> nextPage() => _turnPage(1);
+
+  /// 翻到上一页：语义同 [nextPage]，方向相反。
+  Future<bool> previousPage() => _turnPage(-1);
+
+  Future<bool> _turnPage(int delta) {
+    final delegate = _turnDelegate;
+    if (_disposed || delegate == null) return Future.value(false);
+    return delegate(delta);
   }
 
   void _bumpRevision() {
@@ -506,6 +526,12 @@ class TxtReaderController extends ReaderController {
   Future<void> jumpTo(TocEntry entry) => _r.jumpToTocEntry(entry);
 
   @override
+  Future<bool> nextPage() => _r.nextPage();
+
+  @override
+  Future<bool> previousPage() => _r.previousPage();
+
+  @override
   void dispose() {
     onProgressChanged = null;
     _r._pendingReport?.cancel();
@@ -578,6 +604,8 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
   @override
   void initState() {
     super.initState();
+    // 注册音量键翻页委托（FR-209）：page 模式驱动 PageView 相邻页。
+    widget.renderer._turnDelegate = _turnPage;
     _syncWithRenderer();
   }
 
@@ -672,6 +700,31 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
     widget.renderer.reportPosition(_pagesChapter, _syncedOffset);
   }
 
+  /// 音量键翻页委托（FR-209）：delta = +1 下一页 / -1 上一页。
+  ///
+  /// 跳相邻全局页（含滑入首尾章间页触发章间衔接，复用 [_onPageChanged]
+  /// 的位置上报）；jumpToPage 即时跳转不做动画（音量键连按即时响应）。
+  /// 已在全书画廊边界（首章首页向前 / 末章末页向后）返回 false 不动。
+  Future<bool> _turnPage(int delta) async {
+    final pages = _pages;
+    final ctrl = _pageCtrl;
+    if (pages == null || ctrl == null || _switching) return false;
+    // 首帧构建时 PageView 尚未 attach：页码取语义值 1（与页脚读取一致）。
+    var global = 1;
+    if (ctrl.hasClients && ctrl.position.hasContentDimensions) {
+      global = ctrl.page?.round() ?? 1;
+    }
+    final atBookStart = _pagesChapter == 0 && global <= 1;
+    final atBookEnd =
+        _pagesChapter == widget.renderer.chapterCount - 1 &&
+        global >= pages.length;
+    if ((delta < 0 && atBookStart) || (delta > 0 && atBookEnd)) {
+      return false; // 已是全书边界，无实际移动
+    }
+    ctrl.jumpToPage((global + delta).clamp(0, pages.length + 1));
+    return true;
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = widget.renderer.themeColors;
@@ -742,6 +795,9 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
 
   @override
   void dispose() {
+    if (identical(widget.renderer._turnDelegate, _turnPage)) {
+      widget.renderer._turnDelegate = null;
+    }
     _pageCtrl?.dispose();
     super.dispose();
   }
@@ -770,6 +826,8 @@ class _TxtScrollPaneState extends State<_TxtScrollPane> {
   @override
   void initState() {
     super.initState();
+    // 注册音量键翻页委托（FR-209）：scroll 模式滚动一屏。
+    widget.renderer._turnDelegate = _turnPage;
     final r = widget.renderer;
     _syncedChapter = r.positionChapter;
     _syncedOffset = r.positionOffset;
@@ -874,6 +932,21 @@ class _TxtScrollPaneState extends State<_TxtScrollPane> {
     r.reportPosition(chapter, offset);
   }
 
+  /// 音量键翻页委托（FR-209）：delta = +1 下一页 / -1 上一页，滚动一屏
+  /// （视口高度），clamp 到文档端头；已在端头（无实际位移）返回 false。
+  Future<bool> _turnPage(int delta) async {
+    final ctrl = _ctrl;
+    if (ctrl == null || !ctrl.hasClients) return false;
+    final position = ctrl.position;
+    final target = (ctrl.offset + delta * position.viewportDimension).clamp(
+      0.0,
+      position.maxScrollExtent,
+    );
+    if ((target - ctrl.offset).abs() < 0.5) return false; // 已在文档端头
+    ctrl.jumpTo(target);
+    return true;
+  }
+
   @override
   Widget build(BuildContext context) {
     final r = widget.renderer;
@@ -893,6 +966,9 @@ class _TxtScrollPaneState extends State<_TxtScrollPane> {
 
   @override
   void dispose() {
+    if (identical(widget.renderer._turnDelegate, _turnPage)) {
+      widget.renderer._turnDelegate = null;
+    }
     _ctrl?.dispose();
     super.dispose();
   }

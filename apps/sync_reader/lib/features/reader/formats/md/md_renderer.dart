@@ -50,6 +50,12 @@ class MdReaderController extends ReaderController {
   Future<void> jumpTo(TocEntry entry) => _renderer.jumpToEntry(entry);
 
   @override
+  Future<bool> nextPage() => _renderer.nextPage();
+
+  @override
+  Future<bool> previousPage() => _renderer.previousPage();
+
+  @override
   void dispose() => _renderer.dispose();
 }
 
@@ -301,6 +307,33 @@ class MdRenderer extends BookRenderer {
       ],
     ),
   );
+
+  // ---- 翻页（音量键翻页 FR-209，契约 nextPage/previousPage）----
+
+  /// 翻到下一页：滚动一屏（视口高度），clamp 到文档末尾；视图未挂载或
+  /// 已在文档末尾（无实际位移）返回 false。md 暂无分页模式（pageMode ==
+  /// page 按滚动处理，见文件头说明），两种模式下均为滚一屏。
+  Future<bool> nextPage() => _scrollScreen(1);
+
+  /// 翻到上一页：语义同 [nextPage]，方向相反。
+  Future<bool> previousPage() => _scrollScreen(-1);
+
+  Future<bool> _scrollScreen(int delta) {
+    if (_disposed) return Future.value(false);
+    final ctrl = _scrollController;
+    if (!ctrl.hasClients) return Future.value(false); // 视图未挂载
+    final position = ctrl.position;
+    final target = (ctrl.offset + delta * position.viewportDimension).clamp(
+      0.0,
+      position.maxScrollExtent,
+    );
+    if ((target - ctrl.offset).abs() < 0.5) {
+      return Future.value(false); // 已在文档端头
+    }
+    // 触发 _handleScroll → currentLocator/percent 刷新 + 节流上报。
+    ctrl.jumpTo(target);
+    return Future.value(true);
+  }
 
   // ---- 进度定位与恢复 ----
 
