@@ -1,4 +1,4 @@
-package com.example.sync_reader
+package com.syncreader.app
 
 import io.flutter.embedding.android.FlutterActivity
 

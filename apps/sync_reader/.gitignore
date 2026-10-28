@@ -46,3 +46,7 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Release 签名材料（本地保管，绝不入库——CLAUDE.md M4 约定）
+/android/key.properties
+/android/key/

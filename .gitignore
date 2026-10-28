@@ -20,3 +20,10 @@ testdata/
 
 # 本地凭据（坚果云联调 R3，绝不入库）
 .secrets/
+
+# Release 签名材料（本地保管，绝不入库——CLAUDE.md M4 约定）
+apps/sync_reader/android/key.properties
+apps/sync_reader/android/key/
+
+# 发布产物（package_release.ps1 输出，不入库）
+/dist/
