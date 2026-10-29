@@ -4129,6 +4129,9 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     this as AppDatabase,
   );
   late final BookGroupsDao bookGroupsDao = BookGroupsDao(this as AppDatabase);
+  late final LocalOnlyBooksDao localOnlyBooksDao = LocalOnlyBooksDao(
+    this as AppDatabase,
+  );
   late final AppSettingsDao appSettingsDao = AppSettingsDao(
     this as AppDatabase,
   );

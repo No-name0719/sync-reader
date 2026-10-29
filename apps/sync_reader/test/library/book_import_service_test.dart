@@ -1,5 +1,6 @@
 /// 导入流水线单测（FR-101/102）：内存库 + 临时目录 + 假 handler，
-/// 不依赖真实格式 handler（避免被并行重写波及）。
+/// 不依赖真实格式 handler（避免被并行重写波及）；
+/// 含「同时上传到云端」开关（docs/10 §4.7c）的标记落库行为。
 library;
 
 import 'dart:convert';
@@ -137,5 +138,54 @@ void main() {
     final summary = await service.importFiles([]);
     expect(summary.total, 0);
     expect(summary.toMessage(), '没有选择任何文件');
+  });
+
+  group('「同时上传到云端」开关（docs/10 §4.7c / Q18）', () {
+    /// 带仅本地标记 DAO 的服务（生产装配同款）。
+    BookImportService buildService() => BookImportService(
+      booksDao: db.booksDao,
+      registry: FormatRegistry()..register(FakeHandler(coverBytes: tinyPng)),
+      fileStore: Future.value(store),
+      localOnlyDao: db.localOnlyBooksDao,
+    );
+
+    test('默认勾选（上传）：不写仅本地标记', () async {
+      final path = await source('默认.txt', [1, 2, 3]);
+      final summary = await buildService().importFiles([path]);
+      expect(summary.imported, hasLength(1));
+      expect(
+        await db.localOnlyBooksDao.isLocalOnly(summary.imported.single.bookId),
+        isFalse,
+      );
+    });
+
+    test('取消勾选（不上传）：写入仅本地标记', () async {
+      final path = await source('不上传.txt', [4, 5, 6]);
+      final summary = await buildService().importFiles([
+        path,
+      ], uploadToCloud: false);
+      expect(summary.imported, hasLength(1));
+      final bookId = summary.imported.single.bookId;
+      expect(await db.localOnlyBooksDao.isLocalOnly(bookId), isTrue);
+      expect(await db.localOnlyBooksDao.localOnlyBookIds(), {bookId});
+    });
+
+    test('重复导入：勾选状态落到已有书上', () async {
+      final path = await source('重复.txt', [7, 7, 7]);
+      final svc = buildService();
+      final first = await svc.importFiles([path], uploadToCloud: false);
+      final bookId = first.imported.single.bookId;
+      expect(await db.localOnlyBooksDao.isLocalOnly(bookId), isTrue);
+
+      // 再导入同一文件且勾选「上传」→ 解除已有书的标记。
+      final again = await svc.importFiles([path], uploadToCloud: true);
+      expect(again.imported, isEmpty);
+      expect(again.duplicates, hasLength(1));
+      expect(await db.localOnlyBooksDao.isLocalOnly(bookId), isFalse);
+
+      // 再导入且取消勾选 → 写回标记。
+      await svc.importFiles([path], uploadToCloud: false);
+      expect(await db.localOnlyBooksDao.isLocalOnly(bookId), isTrue);
+    });
   });
 }

@@ -6,9 +6,14 @@
 /// - rev/baseRev 不落书表（以 sync_state 为准，由 [DriftSyncStore] 持有），
 ///   快照里的 baseRev 视图从 sync_state 表读出供 Diff 兜底。
 ///
-/// 删除语义（docs/04 §7.1.2）：应用 tombstone = 记 deleted_books 已确认 +
-/// 移出书库视图（删除 books 行，进度级联清除）；**正文文件保留在原处**
-/// （转游离，M4 提供游离面板 UI；保留原路径以便未来按 bookId/hash 重关联）。
+/// 删除语义（docs/10 §4.7b，v1.1 变更）：
+/// - **本端删除** = 删正文/封面文件 + 保留 `books` 行（`local_path` 置 NULL，
+///   落进书库「未下载」区）+ 写 `deleted_books` 墓碑；带墓碑的书**不参与
+///   diff**（否则会被当正常书推回云端，与刚推上去的 tombstone 打架）；
+/// - **收到远端墓碑**：本端已有墓碑（= 本端自己删的）→ 幂等，不动 books 行、
+///   不覆盖已有的 deletedAt/pushed/contentHash（否则下次同步会把保留的
+///   元数据抹掉，书就从书库消失了）；本端未发起的（其它设备删的）→ 沿用
+///   docs/04 §7.1.2 既有行为：删 books 行（正文文件保留为游离文件）。
 library;
 
 import 'dart:convert';
@@ -54,9 +59,18 @@ final class DriftLocalLibrary implements LocalLibrary {
       for (final p in await _db.select(_db.progress).get()) p.bookId: p,
     };
     final states = await _statesByBookId();
+    // 排除两类书（docs/10 §4.7b / §4.7c）：
+    // 1. 有墓碑的书（本地已删除）——否则同步引擎会把它当正常书推回云端，
+    //    与刚推上去的 tombstone 打架；
+    // 2. 仅本地的书（local_only_books）——它们永不进 diff，既不推 meta
+    //    也不传正文（用户明确选择"不上传"）。
+    final tombstoned = await _tombstonedBookIds();
+    final localOnly = await _localOnlyBookIds();
     return [
       for (final book in rows)
-        _snapshotFor(book, progressRows[book.bookId], states[book.bookId]),
+        if (!tombstoned.contains(book.bookId) &&
+            !localOnly.contains(book.bookId))
+          _snapshotFor(book, progressRows[book.bookId], states[book.bookId]),
     ];
   }
 
@@ -75,6 +89,16 @@ final class DriftLocalLibrary implements LocalLibrary {
   Future<void> applyRemoteMeta(BookMeta meta) async {
     if (meta.isTombstone) {
       await _db.transaction(() async {
+        // 幂等（docs/10 §4.7b 实施要点 3）：本端已有该书的墓碑 ⇒ 本端自己
+        // 删的（本地删除保留 books 行、只置空 local_path）。再次收到该墓碑
+        // 时**不能删 books 行**——否则下次同步会把保留的元数据抹掉，书就从
+        // 书库消失了；也不覆盖已有的 deletedAt / pushed / contentHash。
+        final existing = await (_db.select(
+          _db.deletedBooks,
+        )..where((d) => d.bookId.equals(meta.bookId))).getSingleOrNull();
+        if (existing != null) {
+          return; // 本端已处理过该墓碑：保持幂等，不动本地书库视图。
+        }
         // 记 tombstone 已确认（docs/04 §7.1.2：sync_state 记录删除已确认）。
         await _db
             .into(_db.deletedBooks)
@@ -88,7 +112,9 @@ final class DriftLocalLibrary implements LocalLibrary {
                 contentHash: Value(meta.book.contentHash),
               ),
             );
-        // 移出书库视图：books 行删除，progress 级联清除；正文文件保留（游离）。
+        // 本端未发起的删除（其它设备删的）→ 沿用 docs/04 §7.1.2 既有行为：
+        // 移出书库视图（books 行删除，progress 级联清除）；正文文件保留
+        // （游离，docs/04 §7.1.2 不变）。
         await (_db.delete(
           _db.books,
         )..where((b) => b.bookId.equals(meta.bookId))).go();
@@ -357,6 +383,18 @@ final class DriftLocalLibrary implements LocalLibrary {
 
   BooksDao get _booksDao => _db.booksDao;
   ProgressDao get _progressDao => _db.progressDao;
+
+  /// 有墓碑的 bookId 集合（本地已删除的书；不参与 diff）。
+  Future<Set<String>> _tombstonedBookIds() async {
+    final rows = await _db.select(_db.deletedBooks).get();
+    return rows.map((row) => row.bookId).toSet();
+  }
+
+  /// 仅本地的 bookId 集合（用户选择"不上传"的书；不参与 diff）。
+  Future<Set<String>> _localOnlyBookIds() async {
+    final rows = await _db.select(_db.localOnlyBooks).get();
+    return rows.map((row) => row.bookId).toSet();
+  }
 
   Future<Map<String, BookSyncState>> _statesByBookId() async {
     final rows = await (_db.select(

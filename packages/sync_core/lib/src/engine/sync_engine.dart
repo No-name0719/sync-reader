@@ -274,6 +274,22 @@ class SyncEngine {
     return report;
   }
 
+  /// 从云端移除本书的副本（docs/10 §4.7c / §4.8「从云端移除」）。
+  ///
+  /// 语义边界（与 [deleteBook] 严格区分）：
+  /// - 只调 `_adapter.deleteMeta(bookId)` 删掉云端 meta 文件；
+  /// - **不写 tombstone**（不是全局删除：其它设备的书不从书库移除）；
+  /// - **不动本地书库**（books 行、正文文件、进度全部保留，各端照常可读）；
+  /// - 本地 `sync_state` 的 baseRev **保持不变**——这正是让各端后续 diff 落
+  ///   第 7b 行（云端缺失 → 保留本地、不再上传）的关键；要恢复需显式
+  ///   「重新上架」（清 baseRev 后走第 7a 行）。
+  ///
+  /// 失败（网络/权限）时抛出底层异常，由调用方（app 门面）转成用户提示；
+  /// 与引擎内"永不抛出"的同步入口不同——本方法是用户显式操作，需要知道成败。
+  Future<void> removeCloudCopy(String bookId) => _withLock(() async {
+    await _adapter.deleteMeta(bookId);
+  });
+
   /// 云端孤儿清单（docs/04 §7.1 规则 4）：列出 `books/` 下**无 meta 引用**
   /// 的正文文件。判定 = 文件名主干（去掉最后一个 `.ext`）不在 meta 清单的
   /// bookId 集合中；tombstone meta 同样算引用（FR-408：删除不删云端正文，

@@ -10,6 +10,7 @@ import 'package:drift_flutter/drift_flutter.dart';
 import 'daos/app_settings_dao.dart';
 import 'daos/book_groups_dao.dart';
 import 'daos/books_dao.dart';
+import 'daos/local_only_books_dao.dart';
 import 'daos/progress_dao.dart';
 import 'daos/reading_days_dao.dart';
 import 'daos/reader_settings_dao.dart';
@@ -39,6 +40,7 @@ part 'app_database.g.dart';
     SyncQueueDao,
     ReadingDaysDao,
     BookGroupsDao,
+    LocalOnlyBooksDao,
     AppSettingsDao,
   ],
 )
@@ -79,4 +81,13 @@ class AppDatabase extends _$AppDatabase {
       await customStatement('PRAGMA foreign_keys=ON');
     },
   );
+
+  /// 清除指定书籍的同步状态（baseRev/etag/公共祖先副本一并清除）。
+  ///
+  /// 「上传到云端」的前置动作（docs/10 §4.7c 实施要点 6）：diff 第 7a 行要求
+  /// 「从未推送过（无 baseRev）」；曾同步过、后来被「从云端移除」的书仍有
+  /// baseRev，不清就会落第 7b 行（保留本地、不推），上架不了。
+  Future<void> clearBookSyncState(String bookId) async {
+    await (delete(syncState)..where((s) => s.bookId.equals(bookId))).go();
+  }
 }

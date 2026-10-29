@@ -255,7 +255,29 @@ CREATE TABLE book_groups (
   sort_order INTEGER NOT NULL DEFAULT 0,       -- 排序权重（按创建顺序递增）
   created_at INTEGER NOT NULL                  -- epoch ms
 );
+
+-- 仅本地书籍标记（docs/10 §4.7c「仅本地 / 未上传」；仅本地表，不参与同步；schemaVersion 3 新增）
+CREATE TABLE local_only_books (
+  book_id    TEXT PRIMARY KEY,                 -- 对应 books.book_id；命中即永不参与 diff
+  created_at INTEGER NOT NULL DEFAULT 0        -- 标记时间（epoch ms）
+);
+
+-- 应用级本地设置（accent 持久化等；仅本地表，不参与同步；schemaVersion 3 新增）
+CREATE TABLE app_settings (
+  key        TEXT PRIMARY KEY,                 -- 设置键（如 'accent'）
+  value      TEXT NOT NULL                     -- JSON 文本或纯字符串
+);
 ```
+
+> **books 表不允许加列**（本文 §5 的 DDL 是同步语义的一部分）。需要新字段时
+> 一律新表——`book_groups`（分组）、`local_only_books`（仅本地标记）、
+> `app_settings`（通用设置）都是这样演进的先例。
+>
+> **`local_only_books` 的语义**：命中本表的书**永不参与 diff**（既不推 meta
+> 也不传正文）。两种来源在 UI 上是同一个状态「仅本地」：导入时取消勾选
+> 「同时上传到云端」；或「从云端移除」后各端因仍有 baseRev 落 diff 第 7b 行
+> （云端缺失）。反向操作「上传到云端」= 删除本行 + **清除该书 `sync_state`
+> 的 baseRev**（否则落第 7b 行上架不了，docs/10 §4.7c 实施要点 6）。
 
 ### 云端 JSON ↔ 本地表映射
 
@@ -273,8 +295,9 @@ CREATE TABLE book_groups (
 | 版本 | 变更类型 | 规则 |
 | --- | --- | --- |
 | 1 | 初版 | — |
-| 2（当前，2026-10-28，M4） | 本地库新增 `reading_days` / `book_groups` 表与 `books.group_id` 列 | drift `schemaVersion` 1→2，**只增不删**；三者均为本地列/表，不入云端 meta JSON，v1 不参与同步 |
-| 次版本演进（1 → 2） | **只允许**：新增可选字段、新增 `extra` 键、locator 新增 `type` | 旧客户端读到新版本：按已知字段使用 + `percent` 兜底，**不得报错**；写回时保留原 `schemaVersion` 不变，避免降级破坏 |
+| 2（2026-10-28，M4） | 本地库新增 `reading_days` / `book_groups` 表与 `books.group_id` 列 | drift `schemaVersion` 1→2，**只增不删**；三者均为本地列/表，不入云端 meta JSON，v1 不参与同步 |
+| 3（当前，2026-10-28，v1.1 重设计批 1） | 本地库新增 `local_only_books` / `app_settings` 表 | drift `schemaVersion` 2→3，**只增不删**（两张新表均为纯本地表，不入云端 meta JSON，不参与同步）；`local_only_books` 承载「仅本地 / 未上传」状态（docs/10 §4.7c），`app_settings` 承载应用级本地设置（如 accent 持久化） |
+| 次版本演进（云端 meta 的 1 → 2） | **只允许**：新增可选字段、新增 `extra` 键、locator 新增 `type` | 旧客户端读到新版本：按已知字段使用 + `percent` 兜底，**不得报错**；写回时保留原 `schemaVersion` 不变，避免降级破坏 |
 | 破坏性演进（大版本） | 字段改名/类型变更/语义变更 | 客户端内置迁移器：读到旧版本 → 迁移到当前版本再写回并升 `schemaVersion`；迁移矩阵与用例纳入 `sync_core` 单元测试 |
 | 校验 | — | `sync_core` 中 `BookMeta.fromJson` 执行严格校验（必填/类型/枚举），失败 → 该书标记 `Corruption` 并跳过，不阻塞全库同步 |
 

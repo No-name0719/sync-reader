@@ -1,4 +1,7 @@
-/// 书籍 DAO：书库查询 / 去重 / 软删除（FR-101/102/105/106）。
+/// 书籍 DAO：书库查询 / 去重 / 软删除（FR-101/102/105/106/408）。
+///
+/// 删除语义（docs/10 §4.7b）：本地删除 = **删正文文件 + 保留元数据 + 写墓碑**
+/// ——`books` 行保留、`local_path` 置 NULL，该书自然落进书库的「未下载」区。
 library;
 
 import 'package:drift/drift.dart';
@@ -57,6 +60,8 @@ class BooksDao extends DatabaseAccessor<AppDatabase> with _$BooksDaoMixin {
     }
     // 未下载过滤（FR-402 占位书：云端有元数据、本地无正文；与分组过滤
     // 的互斥由调用方保证，本层独立叠加）。
+    // 注：本地已删除的书 `local_path` 同为 NULL（docs/10 §4.7b 新删除语义），
+    // 因此天然落进这一桶——书库视图不再区分「已删除」与「未下载」（Q21）。
     if (undownloadedOnly) {
       statement.where((b) => b.localPath.isNull());
     }
@@ -195,23 +200,85 @@ class BooksDao extends DatabaseAccessor<AppDatabase> with _$BooksDaoMixin {
     )..where((b) => b.bookId.equals(bookId))).write(companion);
   }
 
-  /// 软删除：写 tombstone 账本（deleted_books）+ 从 books 移除（进度级联清除）。
+  /// 软删除（FR-408 / docs/10 §4.7b 新删除语义）：
+  /// **删正文文件 + 保留元数据 + 写墓碑**。
   ///
-  /// 正文文件不在此删除——调用方决定交给 [BookFileStore.deleteBookFiles]
-  /// 或移入游离目录（docs/04 §7：永不自动删正文的语义由上层把握）。
-  Future<void> softDelete(String bookId, {DateTime? deletedAt}) {
+  /// - `books` 行**保留**，`local_path` / `cover_path` 置 NULL → 该书自然落进
+  ///   书库的「未下载」区（占位书视图），无需新增筛选维度（books 表不允许
+  ///   加列，docs/05 §5 DDL 是同步语义的一部分）；
+  /// - 写 `deleted_books` 墓碑账本（供同步引擎排除与 tombstone 推送）；
+  /// - **进度行保留**（books 行不删 → `progress` 的 `ON DELETE CASCADE` 不
+  ///   触发）：同文件重新导入后可恢复阅读位置；
+  /// - 正文/封面文件由调用方删除：DAO 不持有 file store，通过 [removeFiles]
+  ///   回调串起来（传 `store.deleteBookFiles` 即可）。回调在事务提交后执行，
+  ///   失败不回滚 DB 变更（文件删除是幂等的，可重试）。
+  ///
+  /// 幂等：重复删除同一本书不报错（墓碑按首次删除时间保留）。
+  Future<void> softDelete(
+    String bookId, {
+    DateTime? deletedAt,
+    Future<void> Function(String bookId)? removeFiles,
+  }) async {
     final now = (deletedAt ?? DateTime.now()).millisecondsSinceEpoch;
-    return transaction(() async {
+    final removed = await transaction(() async {
       final book = await getById(bookId);
-      if (book == null) return;
-      await into(deletedBooks).insertOnConflictUpdate(
-        DeletedBooksCompanion.insert(
-          bookId: bookId,
-          deletedAt: now,
-          contentHash: book.contentHash,
-        ),
+      if (book == null) return false;
+      // 墓碑账本：已存在（重复删除）时保留首次删除时间，不覆盖。
+      final existing = await (select(
+        deletedBooks,
+      )..where((d) => d.bookId.equals(bookId))).getSingleOrNull();
+      if (existing == null) {
+        await into(deletedBooks).insert(
+          DeletedBooksCompanion.insert(
+            bookId: bookId,
+            deletedAt: now,
+            contentHash: book.contentHash,
+          ),
+        );
+      }
+      // 保留 books 行，只置空文件指征列 → 落进「未下载」区。
+      await (update(books)..where((b) => b.bookId.equals(bookId))).write(
+        const BooksCompanion(localPath: Value(null), coverPath: Value(null)),
       );
-      await (delete(books)..where((b) => b.bookId.equals(bookId))).go();
+      return true;
     });
+    if (removed && removeFiles != null) {
+      // 正文/封面真正删盘（释放磁盘空间，不可恢复）。
+      await removeFiles(bookId);
+    }
+  }
+
+  /// 该书是否有本地墓碑（本地删除或已确认的远端 tombstone）。
+  ///
+  /// UI 的「已删除」判定入口（docs/10 §4.7b：书库视图一律显示「未下载」，
+  /// 差异只留在数据层）。未删除的书返回 false。
+  Future<bool> hasTombstone(String bookId) async {
+    final query = selectOnly(deletedBooks)
+      ..addColumns([deletedBooks.bookId])
+      ..where(deletedBooks.bookId.equals(bookId));
+    return (await query.getSingleOrNull()) != null;
+  }
+
+  /// 墓碑 bookId 集合流（v1.1 书库重设计 A18 的只读数据源之一；
+  /// 语义与 [hasTombstone] 一致，仅提供 watch 形态，不改任何写语义）。
+  Stream<Set<String>> watchTombstonedBookIds() {
+    final query = selectOnly(deletedBooks)..addColumns([deletedBooks.bookId]);
+    return query.watch().map(
+      (rows) => rows.map((row) => row.read(deletedBooks.bookId)!).toSet(),
+    );
+  }
+
+  /// `sync_state` 中有行（= 云端有 baseRev）的 bookId 集合流。
+  ///
+  /// v1.1 书库重设计（A18）只读数据源：「云端有」的近似判定 = 本表有该书
+  /// 的行且不在本轮 cloudMissingMarks 里（docs/10 §4.2，Q20 四态分区）。
+  /// 通过 `attachedDatabase` 引用 SyncState 表（本 DAO 未声明该表，
+  /// 避免为此重新生成代码）；只读查询，不改任何写语义。
+  Stream<Set<String>> watchSyncStateBookIds() {
+    final table = attachedDatabase.syncState;
+    final query = selectOnly(table)..addColumns([table.bookId]);
+    return query.watch().map(
+      (rows) => rows.map((row) => row.read(table.bookId)!).toSet(),
+    );
   }
 }

@@ -1,4 +1,5 @@
-/// ReadingDaysDao 单元测试（FR-208）：按天累加 / 跨日隔离 / 排序 / 汇总 / 书删级联。
+/// ReadingDaysDao 单元测试（FR-208）：按天累加 / 跨日隔离 / 排序 / 汇总 /
+/// 本地删除后的留存（新删除语义：books 行不删 → 不触发级联）。
 library;
 
 import 'package:drift/drift.dart' show Value;
@@ -87,13 +88,17 @@ void main() {
       expect(await db.readingDaysDao.totalSeconds('不存在'), 0);
     });
 
-    test('书删除后按天记录级联清空（ON DELETE CASCADE）', () async {
+    test('本地删除后按天记录保留（新删除语义：books 行不删，不触发级联）', () async {
       await seedBook('01A');
       await db.readingDaysDao.addSeconds('01A', '2026-10-27', 30);
       await db.readingDaysDao.addSeconds('01A', '2026-10-28', 12);
+      // 新删除语义（docs/10 §4.7b）：books 行保留（只置空 local_path），
+      // 因此 `ON DELETE CASCADE` 不触发——按天阅读统计随书保留，重新下载
+      // 同一文件后统计不丢。
       await db.booksDao.softDelete('01A');
-      expect(await db.readingDaysDao.daysByBook('01A'), isEmpty);
-      expect(await db.readingDaysDao.totalSeconds('01A'), 0);
+      expect(await db.booksDao.getById('01A'), isNotNull);
+      expect(await db.readingDaysDao.daysByBook('01A'), hasLength(2));
+      expect(await db.readingDaysDao.totalSeconds('01A'), 42);
     });
   });
 }

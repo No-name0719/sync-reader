@@ -5,7 +5,9 @@
 /// - 全程异步（流式哈希 + IO 复制），不阻塞 UI；元数据解析的降级由
 ///   handler 基类保证（解析失败也有文件名元数据），本层不再兜底解析异常；
 /// - 单文件失败不中断整批：异常计入 [ImportSummary.failures] 后继续；
-/// - 去重双保险：库内按 contentHash 查询 + 同批次内存 Set（FR-101）。
+/// - 去重双保险：库内按 contentHash 查询 + 同批次内存 Set（FR-101）；
+/// - 「同时上传到云端」开关（docs/10 §4.7c / Q18）：默认勾选＝现行为；
+///   取消勾选的书写入 `local_only_books`，同步引擎完全看不见它。
 library;
 
 import 'dart:io';
@@ -17,6 +19,7 @@ import '../../../core/content_hasher.dart';
 import '../../../core/ulid.dart';
 import '../../../data/db/app_database.dart';
 import '../../../data/db/daos/books_dao.dart';
+import '../../../data/db/daos/local_only_books_dao.dart';
 import '../../../data/files/book_file_store.dart';
 import '../../reader/contract/book_file.dart';
 import '../../reader/contract/format_registry.dart';
@@ -96,17 +99,32 @@ class BookImportService {
     required this._booksDao,
     required this._registry,
     required this._fileStore,
+    this.localOnlyDao,
   });
 
   final BooksDao _booksDao;
   final FormatRegistry _registry;
   final Future<BookFileStore> _fileStore;
 
+  /// 仅本地标记表（docs/10 §4.7c）：未注入时「不上传」开关退化为旧行为
+  /// （照常参与同步），生产装配必须注入。
+  final LocalOnlyBooksDao? localOnlyDao;
+
   /// 导入一批本地文件（路径来自文件选择器）。返回汇总；
   /// [onProgress] 在每个文件处理完后回调一次。
+  ///
+  /// [uploadToCloud] 对应导入弹窗的「同时上传到云端」勾选（默认 true）：
+  /// - `true`（默认，现行为）：导入的书**不**标记为仅本地 → 下次全量同步走
+  ///   diff 第 7a 行（本地新书从未推送过）自动上架（推 meta + 传正文）；
+  /// - `false`：导入完成后把该书写入 `local_only_books` → 同步引擎完全
+  ///   看不见它（既不推 meta 也不传正文），书库角标显示「仅本地」。
+  ///
+  /// 重复导入（同 contentHash 命中已有书）时的语义：**勾选状态落到已有书上**
+  /// ——勾选则清除该书的仅本地标记（恢复为可上架），取消则写入标记。
   Future<ImportSummary> importFiles(
     List<String> paths, {
     void Function(ImportProgress progress)? onProgress,
+    bool uploadToCloud = true,
   }) async {
     final summary = ImportSummary();
     final store = await _fileStore;
@@ -121,6 +139,7 @@ class BookImportService {
           store: store,
           batchHashes: batchHashes,
           summary: summary,
+          uploadToCloud: uploadToCloud,
         );
       } catch (e) {
         summary.failures[name] = e.toString();
@@ -139,6 +158,7 @@ class BookImportService {
     required BookFileStore store,
     required Set<String> batchHashes,
     required ImportSummary summary,
+    required bool uploadToCloud,
   }) async {
     final bookFile = await BookFile.fromPath(path);
 
@@ -156,6 +176,8 @@ class BookImportService {
     final contentHash = await ContentHasher.hashFile(bookFile.file);
     final existing = await _booksDao.getByContentHash(contentHash);
     if (existing != null) {
+      // 重复导入：勾选状态落到已有书上（勾选 → 解除仅本地；取消 → 标记仅本地）。
+      await _applyLocalOnlyMark(existing.bookId, uploadToCloud);
       summary.duplicates[name] = existing.title;
       return;
     }
@@ -194,7 +216,20 @@ class BookImportService {
       totalSeconds: 0,
     );
     await _booksDao.upsert(book);
+    // 「不上传」：标记为仅本地（同步引擎看不见它，docs/10 §4.7c）。
+    await _applyLocalOnlyMark(bookId, uploadToCloud);
     summary.imported.add(book);
+  }
+
+  /// 落实「同时上传到云端」勾选状态到本地标记表。
+  Future<void> _applyLocalOnlyMark(String bookId, bool uploadToCloud) async {
+    final dao = localOnlyDao;
+    if (dao == null) return;
+    if (uploadToCloud) {
+      await dao.clearLocalOnly(bookId);
+    } else {
+      await dao.markLocalOnly(bookId);
+    }
   }
 
   /// 游离正文文件挂回书库（FR-408 游离文件面板，docs/04 §7.1.3 重关联）。

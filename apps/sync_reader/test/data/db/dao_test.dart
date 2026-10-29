@@ -230,24 +230,53 @@ void main() {
       expect((await db.booksDao.getById('01A'))!.totalSeconds, 7);
     });
 
-    test('softDelete：写 tombstone 账本 + books 移除 + 进度级联清除', () async {
-      await db.booksDao.upsertCompanion(
-        bookRow('01A', contentHash: 'sha256:del'),
+    test(
+      'softDelete：写 tombstone 账本 + 保留 books 行（localPath 置 NULL）+ 进度保留',
+      () async {
+        await db.booksDao.upsertCompanion(
+          bookRow('01A', contentHash: 'sha256:del'),
+        );
+        await db.progressDao.upsert(
+          bookId: '01A',
+          locatorJson: '{"type":"raw","ratio":0.5}',
+          percent: 0.5,
+        );
+        await db.booksDao.softDelete('01A');
+        // 新删除语义（docs/10 §4.7b）：books 行保留，local_path 置 NULL
+        // → 该书落进书库的「未下载」区。
+        final book = await db.booksDao.getById('01A');
+        expect(book, isNotNull);
+        expect(book!.localPath, isNull);
+        expect(book.contentHash, 'sha256:del');
+        // 进度行保留（同文件重新导入后可恢复位置）。
+        final progress = await db.progressDao.getByBookId('01A');
+        expect(progress, isNotNull);
+        expect(progress!.percent, 0.5);
+        // 墓碑账本入账。
+        final tombstone = await db.select(db.deletedBooks).getSingle();
+        expect(tombstone.bookId, '01A');
+        expect(tombstone.contentHash, 'sha256:del');
+        expect(tombstone.pushed, isFalse);
+        // 墓碑判定（UI「已删除」入口）。
+        expect(await db.booksDao.hasTombstone('01A'), isTrue);
+        expect(await db.booksDao.hasTombstone('不存在'), isFalse);
+        // 重复软删除同一本不炸（幂等，墓碑时间保留首次值）。
+        await db.booksDao.softDelete('01A');
+        final again = await db.select(db.deletedBooks).getSingle();
+        expect(again.deletedAt, tombstone.deletedAt);
+      },
+    );
+
+    test('softDelete：removeFiles 回调被调用（正文/封面真删盘）', () async {
+      await db.booksDao.upsertCompanion(bookRow('01A'));
+      final removed = <String>[];
+      await db.booksDao.softDelete(
+        '01A',
+        removeFiles: (bookId) async => removed.add(bookId),
       );
-      await db.progressDao.upsert(
-        bookId: '01A',
-        locatorJson: '{"type":"raw","ratio":0.5}',
-        percent: 0.5,
-      );
-      await db.booksDao.softDelete('01A');
-      expect(await db.booksDao.getById('01A'), isNull);
-      expect(await db.progressDao.getByBookId('01A'), isNull);
-      final tombstone = await db.select(db.deletedBooks).getSingle();
-      expect(tombstone.bookId, '01A');
-      expect(tombstone.contentHash, 'sha256:del');
-      expect(tombstone.pushed, isFalse);
-      // 重复软删除同一本不炸（幂等）。
-      await db.booksDao.softDelete('01A');
+      expect(removed, ['01A']);
+      // 未传回调时不报错（DAO 不持有 file store）。
+      await db.booksDao.softDelete('01B');
     });
   });
 
@@ -324,7 +353,7 @@ void main() {
   });
 
   test(
-    'schemaVersion == 2（docs/05 §6，M4 只增不删）',
-    () => expect(db.schemaVersion, 2),
+    'schemaVersion == 3（docs/05 §6，只增不删）',
+    () => expect(db.schemaVersion, 3),
   );
 }

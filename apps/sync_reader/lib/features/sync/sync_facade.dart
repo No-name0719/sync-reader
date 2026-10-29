@@ -22,11 +22,13 @@ import 'package:sync_core/sync_core.dart';
 import '../../app/providers.dart';
 import '../../core/app_logger.dart';
 import '../../core/ulid.dart';
+import '../../data/db/app_database.dart';
 import '../../data/secure/secure_credential_store.dart';
 import '../../data/sync/drift_local_library.dart';
 import '../../data/sync/drift_sync_store.dart';
 import '../library/library_providers.dart' show bookDetailProvider;
 import 'connection_test.dart';
+import 'credential_normalizer.dart';
 import 'quota_gate.dart';
 import 'sync_preferences.dart';
 import 'sync_status.dart';
@@ -91,9 +93,11 @@ final class SyncFacade {
     required this._onOutcome,
     SyncQuotaGate? quotaGate,
     Future<bool> Function()? wifiOnlyBlocked,
+    AppDatabase? db,
   }) {
     _quotaGate = quotaGate ?? SyncQuotaGate(store: _store);
     _wifiOnlyBlocked = wifiOnlyBlocked;
+    _db = db;
   }
 
   final SyncAdapterProvider _adapterProvider;
@@ -104,6 +108,10 @@ final class SyncFacade {
   final void Function(SyncStatusOutcome outcome) _onOutcome;
   late final SyncQuotaGate _quotaGate;
   late final Future<bool> Function()? _wifiOnlyBlocked;
+
+  /// 本地库（可选）：仅本地标记、墓碑查询与「上传到云端」的前置动作
+  /// 需要它；未注入时相关动作安全 no-op（返回 false）。
+  AppDatabase? _db;
 
   final _log = AppLogger();
 
@@ -194,21 +202,37 @@ final class SyncFacade {
   // ── 配置读取（设置页展示 / 引擎构建共用；不含密码明文对外）─────────────
 
   /// 读当前后端配置；账号或应用密码缺失 → null（未配置）。
-  Future<BackendConfig?> readConfig() async {
-    final account = await _credentials.read(SecureKeys.webdavAccount);
-    final secret = await _credentials.read(SecureKeys.webdavPassword);
-    if (account == null || account.isEmpty) return null;
-    if (secret == null || secret.isEmpty) return null;
+  ///
+  /// 读取侧做**防御性规范化**（去首尾空白 + 去零宽字符，baseUrl 另去尾
+  /// 斜杠）：旧版本写入的凭据可能带空格/换行/零宽字符（复制粘贴残留），
+  /// 这些字符会让坚果云按字节比对失败 → 401。写入侧（向导页落凭据）也
+  /// 同样规范化，两侧都做才能覆盖"历史脏数据 + 新写入"两种来源。
+  Future<BackendConfig?> readConfig() => readConfigFrom(_credentials);
+
+  /// 从任意凭据存储读后端配置（静态版本；未配置 → null）。
+  ///
+  /// 与实例方法 [readConfig] 语义完全一致，拆成静态方法是为了让**不装配
+  /// 门面**的场景复用同一套规范化与默认值规则（向导页的「使用已保存的
+  /// 配置测试」只需凭据，不必构建引擎/存储/库）。
+  static Future<BackendConfig?> readConfigFrom(CredentialStore store) async {
+    final account = normalizeCredentialValue(
+      await store.read(SecureKeys.webdavAccount) ?? '',
+    );
+    final secret = normalizeCredentialValue(
+      await store.read(SecureKeys.webdavPassword) ?? '',
+    );
+    if (account.isEmpty) return null;
+    if (secret.isEmpty) return null;
+    final rawBaseUrl = await store.read(SecureKeys.webdavBaseUrl);
+    final rawRootPath = await store.read(SecureKeys.webdavRootPath);
+    final baseUrl = normalizeBaseUrlValue(rawBaseUrl ?? '');
+    final rootPath = normalizeRootPathValue(rawRootPath ?? '');
     return BackendConfig(
       kind: BackendKind.webdav,
-      baseUrl:
-          await _credentials.read(SecureKeys.webdavBaseUrl) ??
-          ConnectionTester.defaultBaseUrl,
+      baseUrl: baseUrl.isEmpty ? ConnectionTester.defaultBaseUrl : baseUrl,
       username: account,
       password: secret,
-      rootPath:
-          await _credentials.read(SecureKeys.webdavRootPath) ??
-          ConnectionTester.defaultRootPath,
+      rootPath: rootPath.isEmpty ? ConnectionTester.defaultRootPath : rootPath,
     );
   }
 
@@ -249,7 +273,14 @@ final class SyncFacade {
   }
 
   /// 单书 meta 直达推送（进度防抖/退出阅读页的触发路径，docs/04 §3）。
+  ///
+  /// 跳过两类书（docs/10 §4.7b / §4.7c）：
+  /// - **仅本地**的书：用户明确选择"不上传"，读进度时也不能顺手推上云；
+  /// - **本地已删除且正文已删**的书：推送正常 meta 会与刚推上去的 tombstone
+  ///   打架（云端复活一本书）。已删除但正文已重新下载的书不在此列——它按
+  ///   docs/04 §7.2 的既有语义走"正常 meta 胜出即复活"。
   Future<SyncReport?> pushBookMeta(String bookId) async {
+    if (await _skipPush(bookId)) return null;
     final engine = await _ensureEngine();
     if (engine == null) {
       _onOutcome(const SyncStatusOutcome(stateId: SyncStateId.unconfigured));
@@ -267,6 +298,22 @@ final class SyncFacade {
     return report;
   }
 
+  /// 该书是否应跳过推送（仅本地 / 本地已删除且正文已删）。
+  Future<bool> _skipPush(String bookId) async {
+    final db = _db;
+    if (db == null) return false;
+    try {
+      if (await db.localOnlyBooksDao.isLocalOnly(bookId)) return true;
+      if (!await db.booksDao.hasTombstone(bookId)) return false;
+      // 已删除：正文仍在本地（重新下载过）时允许复活推送。
+      final book = await db.booksDao.getById(bookId);
+      return book == null || (book.localPath ?? '').isEmpty;
+    } catch (e, s) {
+      _log.error('推送前置检查异常', e, s);
+      return false; // 检查失败不阻断推送（本地优先：宁可多推一次）。
+    }
+  }
+
   /// 删除同步（FR-408，docs/04 §7.1）：在本地删除之后调用，推送 tombstone
   /// 到云端。用户显式操作，不受 autoSyncEnabled 门控；失败（离线/冲突）
   /// 由引擎记入 tombstone 账本，下次 fullSync 补推收敛——故静默不提示。
@@ -280,6 +327,121 @@ final class SyncFacade {
       _log.error('删除推送外层异常', e, s);
     }
     return report;
+  }
+
+  // ── v1.1：「仅本地」状态的两条动作（docs/10 §4.7c / §4.8）─────────────
+
+  /// 「上传到云端」：把一本仅本地的书上架到云端。
+  ///
+  /// 流程（docs/10 §4.7c 实施要点 4、6）：
+  /// 1. 删除 `local_only_books` 标记（解除"不上传"）；
+  /// 2. **清除该书的 `sync_state` 行（清 baseRev）**——diff 第 7a 行要求
+  ///    「从未推送过（无 baseRev）」；曾同步过、后来被「从云端移除」的书仍
+  ///    有 baseRev，不清就会落第 7b 行（保留本地、不推），上架不了；
+  /// 3. 触发一次全量同步 → 走第 7a 行自动上架（推 meta + 传正文）。
+  ///
+  /// 未配置同步（无后端）→ false（安全 no-op，本地优先）；同步未全部成功 →
+  /// false（UI 可提示重试）。
+  Future<bool> uploadToCloud(String bookId) async {
+    final db = _db;
+    if (db == null) return false;
+    // 本地已删除的书不上架（墓碑语义优先）。
+    if (await db.booksDao.hasTombstone(bookId)) return false;
+    await db.localOnlyBooksDao.clearLocalOnly(bookId);
+    await db.clearBookSyncState(bookId);
+    final report = await fullSync(source: SyncTriggerSource.manual);
+    return report?.success ?? false;
+  }
+
+  /// 「从云端移除」：只删掉云端副本，各端本地副本保留且照常可读。
+  ///
+  /// 与 [deleteBook] 的区别（docs/10 §4.7c / §4.8）：
+  /// - [deleteBook] = **全局删除**：写 tombstone 推云端，其它设备的书也会
+  ///   从书库移除；
+  /// - 本方法 = `BackendAdapter.deleteMeta`：**不写 tombstone**、不动本地
+  ///   `books` 行、不动本地正文。本地 `sync_state` 的 baseRev 保持不变——
+  ///   这正是让各端后续落 diff 第 7b 行（云端缺失 → 保留本地、不再上传）
+  ///   的关键。
+  ///
+  /// 未配置同步 → false（安全 no-op）。
+  Future<bool> removeFromCloud(String bookId) async {
+    final engine = await _ensureEngine();
+    if (engine == null) return false;
+    try {
+      await engine.removeCloudCopy(bookId);
+      return true;
+    } catch (e, s) {
+      _log.error('从云端移除外层异常', e, s);
+      return false;
+    }
+  }
+
+  /// 云端书数量（v1.1 同步设置页「云端书库」卡展示，docs/10 §4.5）。
+  ///
+  /// 只读动作：走适配器 `listMetas` 计数（不建 diff、不传正文）；未配置
+  /// （引擎未构建）→ null；清单失败折算 null（UI 显示「—」）。WebDAV/内存
+  /// 实现的清单一次拉全（hasMore 恒 false），仅统计未删除的 meta 桩。
+  Future<int?> countCloudBooks() async {
+    final engine = await _ensureEngine();
+    final adapter = _adapter;
+    if (engine == null || adapter == null) return null;
+    try {
+      final listing = await adapter.listMetas();
+      return listing.stubs.values.where((stub) => !stub.deleted).length;
+    } catch (e, s) {
+      _log.error('云端书目计数异常', e, s);
+      return null;
+    }
+  }
+
+  /// 云端书目清单（v1.1 云端书库管理页，docs/10 §4.8）。
+  ///
+  /// 只读动作：`listMetas` 取桩 → 逐条 `getMeta` 投影出书名 / 格式 / 大小
+  /// （桩本身只有 bookId/rev，不含展示字段）。tombstone 排除做两层：
+  /// 桩级 `deleted`（REST 后端直报）+ 内容级 `isTombstone`（WebDAV 的
+  /// PROPFIND 看不到删除标记，必须拉内容判定，docs/04 §7.3）。
+  ///
+  /// 未配置 → null；`listMetas` 失败 → null（UI 显示失败态）；单条 meta
+  /// 读取失败（损坏 / 中途消失）跳过该条不阻塞整页；全部单条都失败时
+  /// 折算 null（大概率是网络问题，避免误报「云端书库为空」）。
+  Future<List<CloudBookSummary>?> listCloudBooks() async {
+    final engine = await _ensureEngine();
+    final adapter = _adapter;
+    if (engine == null || adapter == null) return null;
+    try {
+      final listing = await adapter.listMetas();
+      final summaries = <CloudBookSummary>[];
+      var failed = 0;
+      for (final stub in listing.stubs.values) {
+        if (stub.deleted) continue; // 桩级 tombstone（REST 直报）。
+        final BookMeta? meta;
+        try {
+          meta = await adapter.getMeta(stub.bookId);
+        } catch (e, s) {
+          failed++;
+          _log.error('云端单本 meta 读取异常（${stub.bookId}）', e, s);
+          continue;
+        }
+        // 内容级 tombstone（WebDAV 桩恒 not-deleted，以内容为准）。
+        if (meta == null || meta.isTombstone) continue;
+        summaries.add(
+          CloudBookSummary(
+            bookId: meta.bookId,
+            title: meta.book.title,
+            format: meta.book.format,
+            sizeBytes: meta.book.sizeBytes,
+          ),
+        );
+      }
+      if (summaries.isEmpty && failed > 0) return null;
+      summaries.sort(
+        (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
+      );
+      return summaries;
+    } catch (e, s) {
+      _log.error('云端书目清单异常', e, s);
+      return null;
+    }
   }
 
   // ── M3：云端孤儿清理与文件替换（docs/04 §7.1 规则 4 / FR-410）─────────
@@ -481,6 +643,8 @@ final syncFacadeProvider = Provider<SyncFacade>((ref) {
     credentials: ref.watch(secureCredentialStoreProvider),
     store: ref.watch(driftSyncStoreProvider),
     library: ref.watch(driftLocalLibraryProvider),
+    // 本地库：仅本地标记 / 墓碑判定 / 「上传到云端」的前置动作。
+    db: ref.watch(databaseProvider),
     readPreferences: () async {
       final prefs = ref.read(syncPreferencesProvider);
       return SyncPreferencesSnapshot(
@@ -522,6 +686,26 @@ final syncFacadeProvider = Provider<SyncFacade>((ref) {
   ref.onDispose(facade.dispose);
   return facade;
 });
+
+/// 云端书目摘要（云端书库管理页行模型，docs/10 §4.8）。
+///
+/// 由云端 meta 的 `BookInfo` 投影而来，不含本地字段；「本地已下载 / 仅云端」
+/// 的本地状态由页面用 books 表比对（`localPath` 非空 = 已下载），不进本类。
+class CloudBookSummary {
+  const CloudBookSummary({
+    required this.bookId,
+    required this.title,
+    required this.format,
+    required this.sizeBytes,
+  });
+
+  final String bookId;
+  final String title;
+
+  /// `txt | epub | md | pdf`（徽标展示用，转大写显示）。
+  final String format;
+  final int sizeBytes;
+}
 
 /// 后端配置摘要（设置页后端卡片展示；不含密码）。
 class SyncConfigSummary {
