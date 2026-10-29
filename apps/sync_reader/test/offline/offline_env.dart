@@ -31,6 +31,7 @@ import 'package:go_router/go_router.dart';
 import 'package:sync_core/sync_core.dart';
 import 'package:sync_reader/app/app.dart' show SyncTriggerHost;
 import 'package:sync_reader/app/providers.dart';
+import 'package:sync_reader/core/design_tokens.dart';
 import 'package:sync_reader/data/db/app_database.dart';
 import 'package:sync_reader/data/files/book_file_store.dart';
 import 'package:sync_reader/data/secure/secure_credential_store.dart';
@@ -299,17 +300,24 @@ final class OfflineEnv {
 /// 挂载完整应用骨架：注入环境 + 触发器宿主 + 全部真实页面路由
 /// （书库 / 详情 / 阅读器；不复用全局 router 单例，避免用例间导航串扰，
 /// 手法同 test/library/library_page_test.dart）。
+///
+/// [mountTriggers] = false 时跳过触发器宿主（v1.1 书库流程变长后，个别
+/// 用例的断言窗口会越过启动 2s 全量定时器，需要隔离定时同步的干扰）。
+/// 书库页自 v1.1 起消费设计令牌（A2）：App 骨架必须挂 AppTheme。
 Future<void> pumpOfflineApp(
   WidgetTester tester,
   OfflineEnv env, {
   SyncAdapterProvider? adapterProvider,
+  bool mountTriggers = true,
 }) async {
+  final app = MaterialApp.router(
+    theme: AppTheme.light(AppAccent.terracotta),
+    routerConfig: offlineRouter(),
+  );
   await tester.pumpWidget(
     ProviderScope(
       overrides: [...env._injection(adapterProvider: adapterProvider)],
-      child: SyncTriggerHost(
-        child: MaterialApp.router(routerConfig: offlineRouter()),
-      ),
+      child: mountTriggers ? SyncTriggerHost(child: app) : app,
     ),
   );
 }

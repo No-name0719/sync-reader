@@ -22,6 +22,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:sync_core/sync_core.dart';
+
+import 'dart:convert';
+
+import 'package:sync_reader/features/library/library_page.dart';
+import 'package:sync_reader/features/reader/contract/reader_settings.dart';
+import 'package:sync_reader/features/reader/contract/reader_settings_repository.dart';
 import 'package:sync_reader/features/reader/formats/txt/txt_paginator.dart';
 import 'package:sync_reader/features/sync/sync_status.dart';
 import 'package:sync_reader/features/sync/widgets/sync_status_banner.dart';
@@ -55,13 +61,14 @@ void main() {
     await tester.pump();
 
     // 书库正常渲染：空态 + 导入引导。
-    // 应用名不再作书库页标题（筛选入口移至右上角）。
+    // 应用名不再作书库页标题（v1.1 外壳品牌区承载）。
     expect(find.text('SyncReader'), findsNothing);
     expect(find.text('书库为空'), findsOneWidget);
     expect(find.textContaining('导入按钮'), findsOneWidget);
-    // FR-406 状态横幅允许存在（非阻塞状态条是同步失败的合法表达形式）。
-    expect(find.byType(SyncStatusBanner), findsOneWidget);
-    expect(find.textContaining('云端同步未配置'), findsOneWidget);
+    // v1.1 A3：常驻状态横幅移出书库内容区（未配置态只进外壳左下角胶囊，
+    // 本骨架无外壳 → 不出现），内容区仅在配额超限/同步失败时才出提示条。
+    expect(find.byType(SyncStatusBanner), findsNothing);
+    expect(find.textContaining('云端同步未配置'), findsNothing);
     // 核心断言：全程无阻塞式报错弹窗 / SnackBar。
     expectNoBlockingErrorUi(tester);
 
@@ -83,7 +90,7 @@ void main() {
 
     // 有书显示书：书名出现在网格卡片。
     expect(find.text('飞行模式藏书'), findsWidgets);
-    expect(find.byType(SyncStatusBanner), findsOneWidget);
+    expect(find.byType(SyncStatusBanner), findsNothing); // A3：移出内容区
     expectNoBlockingErrorUi(tester);
 
     await shutdownOfflineApp(tester, env);
@@ -119,31 +126,26 @@ void main() {
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     });
 
+    // Q9 后出厂默认为分页；本用例验证「滚动翻书」，预置滚动模式设置。
+    await env.db.readerSettingsDao.setValue(
+      ReaderSettingsRepository.storageKey,
+      jsonEncode(
+        ReaderSettings.defaults
+            .copyWith(pageMode: ReaderPageMode.scroll)
+            .toJson(),
+      ),
+    );
+
     await pumpOfflineApp(tester, env);
     await tester.pump();
     env.connectivity.add(const [ConnectivityResult.none]);
     await settleReal(tester);
     expect(find.text('离线阅读书'), findsWidgets);
 
-    // 书库 → 详情页。
+    // 书库 → 阅读页（v1.1 Q15：点封面直接开书，不再经详情页中转）。
     await tester.tap(find.text('离线阅读书').first);
-    await settleReal(tester);
-    expect(find.text('书籍详情'), findsOneWidget);
-    expectNoBlockingErrorUi(tester, reason: '（详情页打开时）');
-
-    // 详情页 → 阅读页（默认设置 = 滚动模式）。
-    // 详情页含"最近 7 天"块后主按钮落到默认 600px 折叠线下（ListView 惰性
-    // 构建）：临时加高视口完成点击，进入阅读器后恢复原视口（阅读分页/滚动
-    // 断言仍按默认视口行为验证）。
-    tester.view.physicalSize = const Size(800, 1600);
-    tester.view.devicePixelRatio = 1.0;
-    await tester.pump(); // 新视口生效重建 ListView（折叠下按钮进入构建范围）。
-    await tester.tap(find.text('开始阅读'));
     await pumpUntilReaderReady(tester);
-    tester.view.resetPhysicalSize();
-    tester.view.resetDevicePixelRatio();
-    await tester.pump();
-    expect(find.text('离线阅读书'), findsOneWidget); // AppBar 书名
+    expect(find.text('离线阅读书'), findsOneWidget); // 顶条书名（沉浸态仍在树中）
     expect(find.textContaining('第一章 开端'), findsWidgets); // 正文渲染
     expectNoBlockingErrorUi(tester, reason: '（阅读页打开时）');
 
@@ -162,11 +164,14 @@ void main() {
     expect(progress.percent, lessThanOrEqualTo(1));
     expect(progress.dirty, isTrue, reason: '离线期间进度应为待同步（dirty）');
 
-    // 退出阅读页（AppBar 返回；PopScope 先落库再退出）。
-    await tester.tap(find.byType(BackButton));
+    // 退出阅读页（Q10 沉浸态：先点正文中部唤出控制条，再点顶条返回；
+    // PopScope 先落库再退出）→ 回书库（点封面直接开书后无详情页中转）。
+    await tester.tap(find.byKey(const ValueKey('reader-hot-mid')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byIcon(Icons.arrow_back));
     await tester.pumpAndSettle();
     await settleReal(tester, windows: 4);
-    expect(find.text('书籍详情'), findsOneWidget, reason: '已退出阅读页回详情');
+    expect(find.text('离线阅读书'), findsWidgets, reason: '已退出阅读页回书库');
     expectNoBlockingErrorUi(tester, reason: '（退出阅读页后）');
 
     // 退出立即结算的进度仍在（退出不丢进度）。
@@ -174,11 +179,10 @@ void main() {
     expect(afterExit, isNotNull);
     expect(afterExit!.percent, greaterThan(0));
 
-    // 返回书库：书目仍在，卡片进度徽标可见（本地优先的端到端印证）。
-    await tester.tap(find.byType(BackButton));
-    await tester.pumpAndSettle();
-    expect(find.text('离线阅读书'), findsWidgets);
-    expect(find.textContaining('%'), findsWidgets);
+    // 回到书库：进度胶囊可见（本地优先的端到端印证）。本书从未同步过
+    //（云端无 baseRev → Q20 落「仅本地」桶）且进度 dirty → 胶囊按优先级
+    // 显示「待上传」而非百分比（A5 胶囊语义）。
+    expect(find.text('待上传'), findsWidgets);
     expectNoBlockingErrorUi(tester, reason: '（回到书库后）');
 
     await shutdownOfflineApp(tester, env);
@@ -193,8 +197,8 @@ void main() {
     // 必然失败）——验证"失败静默重试语义"下 UI 无阻塞提示。
     final failing = FailingBackendAdapter(const NetworkUnreachable('网络不可达'));
     const bookId = 'offlinebook03';
-    // 正文写入书库布局内（books/{bookId}/source.txt）——删除的游离语义
-    // （moveToOrphans 整目录改名）依赖该布局。
+    // 正文写入书库布局内（books/{bookId}/source.txt）——删除语义（正文真删盘）
+    // 依赖该布局。
     final localPath = (await tester.runAsync(() async {
       final path = env.store.resolveBookPath(bookId, 'txt');
       final file = File(path);
@@ -217,29 +221,36 @@ void main() {
       tester,
       env,
       adapterProvider: FixedAdapterProvider(failing),
+      // 不挂触发器宿主：v1.1 书库流程（长按菜单）耗时越过启动 2s 全量
+      // 定时器后，定时同步的失败会污染全局状态断言（deleteBook 本身
+      // 必须完全静默——这是本用例要验证的）。
+      mountTriggers: false,
     );
     await tester.pump();
     env.connectivity.add(const [ConnectivityResult.none]);
     await settleReal(tester);
 
-    // 书库 → 详情页 → 删除。
-    await tester.tap(find.text('离线待删书').first);
+    // 书库 → 长按书卡 → 上下文菜单 → 删除本书（v1.1 A20 菜单路径）。
+    await tester.longPress(find.text('离线待删书').first);
     await settleReal(tester);
-    await tester.tap(find.byIcon(Icons.delete_outline));
+    expect(find.text('删除本书'), findsOneWidget);
+    await tester.tap(find.text('删除本书'));
     await tester.pumpAndSettle();
     // 删除确认框是用户显式操作（允许存在），确认后不得再有任何报错弹窗。
     expect(find.text('删除《离线待删书》？'), findsOneWidget);
     await tester.tap(find.text('删除'));
     await settleReal(tester);
 
-    // 已返回书库，书目消失（空态）。
-    expect(find.text('离线待删书'), findsNothing);
-    expect(find.text('书库为空'), findsOneWidget);
+    // 已返回书库。新删除语义（docs/10 §4.7b）：书目**保留**在书库（落进
+    // 「未下载」区），只有正文文件被删盘。（标题在卡片封面与文字行各出现一次。）
+    expect(find.text('离线待删书'), findsWidgets);
     expectNoBlockingErrorUi(tester, reason: '（删除完成后——tombstone 推送失败必须静默）');
 
-    // 本地删除真实生效：书目行删除 + 回收区账本 + 正文移游离区。
+    // 本地删除真实生效：书目行保留（localPath 置 NULL）+ 墓碑账本 + 正文删盘。
     await tester.runAsync(() async {
-      expect(await env.db.booksDao.getById(bookId), isNull);
+      final book = await env.db.booksDao.getById(bookId);
+      expect(book, isNotNull);
+      expect(book!.localPath, isNull);
       final ledger = await env.db.select(env.db.deletedBooks).get();
       expect(ledger, hasLength(1));
       expect(ledger.single.bookId, bookId);
@@ -248,15 +259,16 @@ void main() {
         isFalse,
         reason: '飞行模式下 tombstone 推送失败，账本保留待网络恢复补推',
       );
-      expect(File(localPath).existsSync(), isFalse, reason: '正文移入游离区');
-      expect(await env.store.listOrphans(), hasLength(1));
+      expect(File(localPath).existsSync(), isFalse, reason: '正文已删盘');
+      expect(await env.store.listOrphans(), isEmpty);
     });
     // 删除推送确实尝试过并失败（静默 ≠ 未发生）。
     expect(failing.connectCalls, greaterThanOrEqualTo(1));
     expect(failing.getMetaCalls, greaterThanOrEqualTo(1));
-    // 失败未进全局状态（deleteBook 语义 = 完全静默，FR-408）。
+    // 失败未进全局状态（deleteBook 语义 = 完全静默，FR-408；容器取自
+    // 书库页元素——v1.1 A3 状态横幅已移出内容区）。
     final memory = ProviderScope.containerOf(
-      tester.element(find.byType(SyncStatusBanner)),
+      tester.element(find.byType(LibraryPage)),
     ).read(syncMemoryStatusProvider);
     expect(memory.id, isNot(SyncStateId.failed));
     expect(memory.failureText, isNull);

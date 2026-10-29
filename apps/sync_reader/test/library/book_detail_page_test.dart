@@ -1,6 +1,9 @@
-/// 书籍详情页 widget 测试（FR-104/FR-408/FR-410）：元数据/进度/时长展示、
-/// 打开阅读器导航、删除确认对话框与 softDelete+游离语义、文件替换入口
-/// （按钮可见性/确认文案/替换成功反馈与刷新）、缺书空态。
+/// 书籍详情页 widget 测试（FR-104/FR-408/FR-410/v1.1 A7）：Hero 区（进度条
+/// 与百分比文案）、阅读数据卡（4 统计块 + 近 7 天柱状图）、文件信息卡
+/// （定义列表）、目录预览卡（解析/降级/截断/当前章高亮），以及打开阅读器
+/// 导航、删除确认对话框与新删除语义（删正文留元数据，docs/10 §4.7b）、
+/// 文件替换入口（按钮可见性/确认文案/替换成功反馈与刷新）、缺书空态、
+/// 三档宽度溢出冒烟。
 /// 注入内存库 + 临时目录存储 + 假 handler 注册表 + 假文件选择器。
 ///
 /// 真实 IO（临时目录/种子文件）经 `tester.runAsync` 执行（fakeAsync 限制）。
@@ -17,6 +20,7 @@ import 'package:path/path.dart' as p;
 import 'package:sync_core/sync_core.dart';
 import 'package:sync_reader/app/providers.dart';
 import 'package:sync_reader/core/content_hasher.dart';
+import 'package:sync_reader/core/design_tokens.dart';
 import 'package:sync_reader/data/db/app_database.dart';
 import 'package:sync_reader/data/files/book_file_store.dart';
 import 'package:sync_reader/data/secure/secure_credential_store.dart';
@@ -24,6 +28,7 @@ import 'package:sync_reader/features/sync/sync_facade.dart';
 import 'package:sync_reader/features/library/book_detail_page.dart';
 import 'package:sync_reader/features/library/replace/book_replace_service.dart';
 import 'package:sync_reader/features/reader/contract/format_registry.dart';
+import 'package:sync_reader/features/reader/contract/toc_entry.dart';
 import 'package:sync_reader/shared/format_utils.dart';
 
 import 'fake_handler.dart';
@@ -32,6 +37,8 @@ void main() {
   final addedAtMs = DateTime(2026, 10, 26, 8, 30).millisecondsSinceEpoch;
   const contentHash = 'sha256:0123456789abcdef0123456789abcdef';
   const bookId = '01ATESTBOOK0000000000000001';
+  // 浅色赭石令牌（与测试骨架挂载的主题一致），柱状图颜色断言用。
+  final tokens = AppDesignTokens.light(AppAccent.terracotta);
 
   AppDatabase? db;
   Directory? tmp;
@@ -55,6 +62,7 @@ void main() {
   Future<void> seedBook(
     WidgetTester tester, {
     bool withLocalFile = true,
+    bool withProgress = true,
   }) async {
     await tester.runAsync(
       () => seedBookData(
@@ -64,6 +72,7 @@ void main() {
         contentHash: contentHash,
         addedAtMs: addedAtMs,
         withLocalFile: withLocalFile,
+        withProgress: withProgress,
       ),
     );
   }
@@ -119,6 +128,7 @@ void main() {
     WidgetTester tester, {
     ReplaceFilePicker? picker,
     Future<SyncReport?> Function(String bookId)? pushToCloud,
+    FakeHandler? handler,
   }) async {
     await tester.pumpWidget(
       ProviderScope(
@@ -126,7 +136,8 @@ void main() {
           databaseProvider.overrideWithValue(db!),
           bookFileStoreProvider.overrideWith((ref) async => store!),
           formatRegistryProvider.overrideWith(
-            (ref) => FormatRegistry()..register(FakeHandler()),
+            // 目录预览与章节数都走 handler.parseMetadata（复用阅读器解析管线）。
+            (ref) => FormatRegistry()..register(handler ?? FakeHandler()),
           ),
           // 占位书"下载正文"按钮（FR-402）与替换确认对话框（FR-410）会触碰
           // 同步门面：注入内存凭据存储（未存凭据 → readConfig 返回 null →
@@ -149,7 +160,11 @@ void main() {
               ),
             ),
         ],
-        child: MaterialApp.router(routerConfig: buildRouter()),
+        // 详情页消费设计令牌（A7）：测试骨架必须挂 AppTheme。
+        child: MaterialApp.router(
+          routerConfig: buildRouter(),
+          theme: AppTheme.light(AppAccent.terracotta),
+        ),
       ),
     );
     // 详情 + 进度 + 目录解析（真实文件读取在 runAsync 间隙完成）。
@@ -157,9 +172,9 @@ void main() {
     await settleReal(tester);
   }
 
-  /// 加高测试视口：详情页 ListView 较长，折叠线下的按钮（继续阅读/
-  /// 下载正文/重新选择文件）位于默认 600px 以下（ListView 惰性构建，
-  /// 折叠下不进树）；按钮可见性/点击类用例须先调用。
+  /// 加高测试视口：v1.1 四卡布局比旧版长（Hero 252px 封面 + 三张卡），
+  /// 折叠线下的内容（目录卡/下方统计块）在默认 600px 视口里不进树
+  /// （ListView 惰性构建）；涉及折叠线下内容的用例须先调用。
   void useTallViewport(WidgetTester tester) {
     tester.view.physicalSize = const Size(800, 1600);
     tester.view.devicePixelRatio = 1.0;
@@ -175,46 +190,257 @@ void main() {
 
     expect(find.text('三体'), findsWidgets); // 封面 + 标题
     expect(find.text('刘慈欣'), findsWidgets);
-    expect(find.text('TXT'), findsOneWidget);
-    expect(find.text('1.21 KB'), findsOneWidget); // humanizeBytes(1234)
-    expect(find.text(shortenHash(contentHash)), findsOneWidget);
+    expect(find.text('TXT'), findsOneWidget); // 格式胶囊
+    expect(find.text('1.21 KB'), findsOneWidget); // 文件信息卡 humanizeBytes(1234)
+    expect(find.text(shortenHash(contentHash)), findsOneWidget); // 哈希截断
     expect(find.text('2026-10-26 08:30'), findsOneWidget); // 添加时间
-    expect(find.text('2026-10-26 09:30'), findsOneWidget); // 上次阅读
-    expect(find.textContaining('42%'), findsOneWidget); // 阅读进度
+    expect(find.text('2026-10-26 09:30'), findsOneWidget); // 上次阅读（统计块）
+    // 42% 出现两处：Hero 进度行 + 「阅读进度」统计块（原型两处都有）。
+    expect(find.textContaining('42%'), findsWidgets);
     expect(find.text('1 分钟'), findsOneWidget); // 累计阅读 90 秒
-    expect(find.textContaining('共 1 章'), findsOneWidget); // 假 handler 目录
+    expect(find.textContaining('共 1 章'), findsOneWidget); // 目录卡头部胶囊
     expect(find.text('继续阅读'), findsOneWidget); // 有进度
     await shutdown(tester);
   });
 
-  testWidgets('按天统计（FR-208）：显示最近 7 天行与全期合计，超出 7 条截断', (tester) async {
+  testWidgets('Hero 进度：locator 带章节坐标 → 「62% · 第 128 章」+ 填充宽度', (tester) async {
+    useTallViewport(tester);
     await bootstrap(tester);
     await seedBook(tester);
-    // 种 8 天 × 60 秒（2026-10-20 .. 10-27）：展示取 day DESC 前 7 条，
-    // 合计取 reading_days 全期（480 秒 → 8 分钟，含被截断的最旧一天）。
+    // 覆写进度：txt locator chapterIndex 127 → 第 128 章。
     await tester.runAsync(() async {
-      for (var i = 0; i < 8; i++) {
-        await db!.readingDaysDao.addSeconds(bookId, '2026-10-${20 + i}', 60);
-      }
+      await db!.progressDao.upsert(
+        bookId: bookId,
+        locatorJson: '{"type":"txt","chapterIndex":127,"charOffset":1204}',
+        percent: 0.62,
+        dirty: false,
+      );
     });
     await pumpDetail(tester);
 
-    expect(find.text('10-27 · 1 分钟'), findsOneWidget); // 最新一天
-    expect(find.text('10-21 · 1 分钟'), findsOneWidget); // 第 7 条（截断边缘）
-    expect(find.text('10-20 · 1 分钟'), findsNothing); // 第 8 条被截断
-    expect(find.text('合计 · 8 分钟'), findsOneWidget);
+    expect(find.text('62% · 第 128 章'), findsOneWidget);
+    final fill = tester.widget<FractionallySizedBox>(
+      find.byKey(const Key('detail_progress_fill')),
+    );
+    expect(fill.widthFactor, closeTo(0.62, 0.001));
     await shutdown(tester);
   });
 
-  testWidgets('按天统计（FR-208）：无按天记录显示空态文案，页面其余部分不受影响', (tester) async {
+  testWidgets('Hero 进度：无进度 → 「尚未开始」+ 零宽进度条', (tester) async {
+    useTallViewport(tester);
+    await bootstrap(tester);
+    await seedBook(tester, withProgress: false);
+    await pumpDetail(tester);
+
+    expect(find.text('尚未开始'), findsOneWidget);
+    final fill = tester.widget<FractionallySizedBox>(
+      find.byKey(const Key('detail_progress_fill')),
+    );
+    expect(fill.widthFactor, 0);
+    // 主按钮为「开始阅读」（无进度）。
+    expect(find.text('开始阅读'), findsOneWidget);
+    await shutdown(tester);
+  });
+
+  testWidgets('Hero 进度：locator 无章节坐标（pdf/空对象）→ 只显示百分比', (tester) async {
+    useTallViewport(tester);
+    await bootstrap(tester);
+    await seedBook(tester);
+    await tester.runAsync(() async {
+      await db!.progressDao.upsert(
+        bookId: bookId,
+        locatorJson: '{"type":"pdf","pageIndex":3,"yRatio":0.5}',
+        percent: 0.42,
+        dirty: false,
+      );
+    });
+    await pumpDetail(tester);
+
+    // Hero 进度行是精确的「42%」（无「· 第 N 章」后缀）。
+    final progressText = tester.widget<Text>(
+      find.byKey(const Key('detail_progress_text')),
+    );
+    expect(progressText.data, '42%');
+    await shutdown(tester);
+  });
+
+  testWidgets('阅读数据卡：近 7 天柱状图（7 柱、缺口零柱、最高柱高亮）', (tester) async {
+    useTallViewport(tester);
+    await bootstrap(tester);
+    await seedBook(tester);
+    // 种 6 天（2026-10-24 缺 = 零高柱）：窗口终点取最近记录日 10-27，
+    // 窗口 = 10-21..10-27。10-22 的 120 秒为最高柱。
+    await tester.runAsync(() async {
+      final dao = db!.readingDaysDao;
+      await dao.addSeconds(bookId, '2026-10-21', 60);
+      await dao.addSeconds(bookId, '2026-10-22', 120);
+      await dao.addSeconds(bookId, '2026-10-23', 30);
+      await dao.addSeconds(bookId, '2026-10-25', 90);
+      await dao.addSeconds(bookId, '2026-10-26', 45);
+      await dao.addSeconds(bookId, '2026-10-27', 75);
+    });
+    await pumpDetail(tester);
+
+    const days = [
+      '2026-10-21',
+      '2026-10-22',
+      '2026-10-23',
+      '2026-10-24',
+      '2026-10-25',
+      '2026-10-26',
+      '2026-10-27',
+    ];
+    // 柱数：7 根（含缺口日的零柱）。
+    for (final day in days) {
+      expect(
+        find.byKey(Key('detail_spark_bar_$day')),
+        findsOneWidget,
+        reason: day,
+      );
+    }
+    Color barColor(String day) =>
+        (tester
+                    .widget<Container>(find.byKey(Key('detail_spark_bar_$day')))
+                    .decoration!
+                as BoxDecoration)
+            .color!;
+    double barHeight(String day) => tester
+        .widget<Container>(find.byKey(Key('detail_spark_bar_$day')))
+        .constraints!
+        .minHeight;
+    // 最高柱品牌色高亮，其余品牌浅底。
+    expect(barColor('2026-10-22'), tokens.brand);
+    expect(barColor('2026-10-21'), tokens.brandSoft2);
+    expect(barColor('2026-10-27'), tokens.brandSoft2);
+    // 高度：最高柱顶满 56；90/120 → 42；缺口日零柱 = 3px 最小可见高度。
+    expect(barHeight('2026-10-22'), 56.0);
+    expect(barHeight('2026-10-25'), closeTo(42, 0.01));
+    expect(barHeight('2026-10-24'), 3.0);
+    // 横轴标签 MM-DD。
+    expect(find.text('10-21'), findsOneWidget);
+    expect(find.text('10-27'), findsOneWidget);
+    await shutdown(tester);
+  });
+
+  testWidgets('阅读数据卡：无按天记录显示空态文案，页面其余部分不受影响', (tester) async {
+    useTallViewport(tester);
     await bootstrap(tester);
     await seedBook(tester); // 不种 reading_days（新装/老库升级常态）。
     await pumpDetail(tester);
 
     expect(find.text('暂无按天记录'), findsOneWidget);
     expect(find.text('最近 7 天'), findsOneWidget);
-    expect(find.text('1 分钟'), findsOneWidget); // 累计阅读行不受影响
+    expect(find.text('1 分钟'), findsOneWidget); // 累计阅读块不受影响
     expect(find.textContaining('共 1 章'), findsOneWidget);
+    await shutdown(tester);
+  });
+
+  testWidgets('目录预览（A7）：渲染 handler 解析的目录条目并按层级缩进', (tester) async {
+    useTallViewport(tester);
+    await bootstrap(tester);
+    await seedBook(tester);
+    await pumpDetail(
+      tester,
+      handler: FakeHandler(
+        toc: [
+          TocEntry(title: '第一卷 · 江湖', level: 0, anchor: 0),
+          TocEntry(title: '第一章 风起青萍', level: 1, anchor: 1),
+          TocEntry(title: '第二章 落雁堡', level: 1, anchor: 2),
+        ],
+      ),
+    );
+
+    expect(find.textContaining('共 3 章'), findsOneWidget);
+    expect(find.text('第一卷 · 江湖'), findsOneWidget);
+    expect(find.text('第一章 风起青萍'), findsOneWidget);
+    expect(find.text('第二章 落雁堡'), findsOneWidget);
+    // 层级缩进：lv0 → s3，lv1 → s5（原型 .toc-item / .lv1）。
+    EdgeInsets itemPad(String key) =>
+        tester.widget<Container>(find.byKey(Key(key))).padding! as EdgeInsets;
+    expect(itemPad('detail_toc_item_0').left, AppSpacing.s3);
+    expect(itemPad('detail_toc_item_1').left, AppSpacing.s5);
+    expect(itemPad('detail_toc_item_2').left, AppSpacing.s5);
+    await shutdown(tester);
+  });
+
+  testWidgets('目录预览（A7）：locator 命中章 → 该条目高亮 + 「当前」胶囊', (tester) async {
+    useTallViewport(tester);
+    await bootstrap(tester);
+    await seedBook(tester);
+    await tester.runAsync(() async {
+      await db!.progressDao.upsert(
+        bookId: bookId,
+        locatorJson: '{"type":"txt","chapterIndex":1,"charOffset":0}',
+        percent: 0.5,
+      );
+    });
+    await pumpDetail(
+      tester,
+      handler: FakeHandler(
+        toc: [
+          TocEntry(title: '第一章', level: 0, anchor: 0),
+          TocEntry(title: '第二章', level: 0, anchor: 1),
+          TocEntry(title: '第三章', level: 0, anchor: 2),
+        ],
+      ),
+    );
+
+    expect(find.text('当前'), findsOneWidget);
+    // 高亮落在第二章（locator chapterIndex 1 → 目录序 1）。
+    final current =
+        tester
+                .widget<Container>(find.byKey(const Key('detail_toc_item_1')))
+                .decoration!
+            as BoxDecoration;
+    expect(current.color, tokens.brandSoft);
+    final other =
+        tester
+                .widget<Container>(find.byKey(const Key('detail_toc_item_0')))
+                .decoration!
+            as BoxDecoration;
+    expect(other.color, isNull);
+    await shutdown(tester);
+  });
+
+  testWidgets('目录预览（A7）：超 20 条截断并提示在阅读器内查看', (tester) async {
+    useTallViewport(tester);
+    await bootstrap(tester);
+    await seedBook(tester);
+    await pumpDetail(
+      tester,
+      handler: FakeHandler(
+        toc: [
+          for (var i = 0; i < 25; i++)
+            TocEntry(title: '第${i + 1}章', level: 0, anchor: i),
+        ],
+      ),
+    );
+
+    expect(find.textContaining('共 25 章'), findsOneWidget);
+    expect(find.byKey(const Key('detail_toc_item_19')), findsOneWidget);
+    expect(find.byKey(const Key('detail_toc_item_20')), findsNothing);
+    expect(find.text('在阅读器内查看完整目录'), findsOneWidget);
+    await shutdown(tester);
+  });
+
+  testWidgets('目录预览（A7）：占位书优雅降级为「暂不可得」', (tester) async {
+    useTallViewport(tester);
+    await bootstrap(tester);
+    await seedBook(tester, withLocalFile: false);
+    await pumpDetail(tester);
+
+    expect(find.text('暂不可得（占位书或文件缺失）'), findsOneWidget);
+    expect(find.textContaining('共'), findsNothing); // 头部无章数胶囊
+    await shutdown(tester);
+  });
+
+  testWidgets('目录预览（A7）：无目录结构（txt 章节切分失败等）优雅降级', (tester) async {
+    useTallViewport(tester);
+    await bootstrap(tester);
+    await seedBook(tester);
+    await pumpDetail(tester, handler: FakeHandler(toc: const []));
+
+    expect(find.text('无目录信息'), findsOneWidget);
     await shutdown(tester);
   });
 
@@ -248,32 +474,46 @@ void main() {
     await shutdown(tester);
   });
 
-  testWidgets('删除：确认对话框说明语义 → 软删 + 正文移游离 + 返回书库', (tester) async {
+  testWidgets('删除：确认对话框说明语义 → 软删（删正文留元数据）+ 返回书库', (tester) async {
     await bootstrap(tester);
     await seedBook(tester);
     final localPath = p.join(store!.booksDir.path, bookId, 'source.txt');
+    final coverPath = store!.resolveCoverPath(bookId);
+    // 补一个封面文件：新删除语义要求正文与封面一并删除。
+    await tester.runAsync(() async {
+      await File(coverPath).writeAsBytes(tinyPng, flush: true);
+      await db!.booksDao.updateCoverPath(bookId, coverPath);
+    });
     await pumpDetail(tester);
 
     await tester.tap(find.byIcon(Icons.delete_outline));
     await tester.pumpAndSettle();
     expect(find.text('删除《三体》？'), findsOneWidget);
-    expect(find.textContaining('游离'), findsOneWidget); // 语义说明
-    expect(find.textContaining('回收区'), findsOneWidget);
+    expect(find.textContaining('立即删除'), findsOneWidget); // 语义说明
+    expect(find.textContaining('未下载'), findsOneWidget);
 
     await tester.tap(find.text('删除'));
     await settleReal(tester);
 
     // 已返回书库路由。
     expect(find.text('书库-stub'), findsOneWidget);
-    // 数据库：行删除 + tombstone 入账；正文文件移入游离区。
+    // 新删除语义（docs/10 §4.7b）：books 行保留（localPath 置 NULL）+ 墓碑
+    // 入账 + 正文/封面文件真删盘（不进游离区）。
     await tester.runAsync(() async {
-      expect(await db!.booksDao.getById(bookId), isNull);
+      final book = await db!.booksDao.getById(bookId);
+      expect(book, isNotNull);
+      expect(book!.localPath, isNull);
+      expect(book.coverPath, isNull);
+      expect(book.title, '三体');
       final tombstone = await db!.select(db!.deletedBooks).getSingle();
       expect(tombstone.bookId, bookId);
       expect(tombstone.contentHash, contentHash);
+      // 进度行保留（同文件重新导入后可恢复位置）。
+      expect(await db!.progressDao.getByBookId(bookId), isNotNull);
+      // 正文与封面文件都不在磁盘上，且没有进游离区。
       expect(File(localPath).existsSync(), isFalse);
-      final orphans = await store!.listOrphans();
-      expect(orphans, hasLength(1));
+      expect(File(coverPath).existsSync(), isFalse);
+      expect(await store!.listOrphans(), isEmpty);
     });
     await shutdown(tester);
   });
@@ -291,6 +531,7 @@ void main() {
       expect(await db!.booksDao.getById(bookId), isNotNull);
       expect(File(localPath).existsSync(), isTrue);
       expect(await store!.listOrphans(), isEmpty);
+      expect(await db!.select(db!.deletedBooks).get(), isEmpty);
     });
     await shutdown(tester);
   });
@@ -469,12 +710,62 @@ void main() {
           databaseProvider.overrideWithValue(db!),
           bookFileStoreProvider.overrideWith((ref) async => store!),
         ],
-        child: MaterialApp.router(routerConfig: buildRouter()),
+        child: MaterialApp.router(
+          routerConfig: buildRouter(),
+          theme: AppTheme.light(AppAccent.terracotta),
+        ),
       ),
     );
     await tester.pumpAndSettle();
     expect(find.text('书籍不存在或已删除'), findsOneWidget);
     await shutdown(tester);
+  });
+
+  group('三档宽度无溢出冒烟（v1.1 A7 布局）', () {
+    for (final (width, height) in const [
+      (1440.0, 900.0),
+      (860.0, 900.0),
+      (390.0, 844.0),
+    ]) {
+      testWidgets('宽度 $width', (tester) async {
+        tester.view.physicalSize = Size(width, height);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+        await bootstrap(tester);
+        await seedBook(tester);
+        await pumpDetail(tester);
+        expect(tester.takeException(), isNull);
+        await shutdown(tester);
+      });
+    }
+  });
+
+  test('locatorChapterNumber：txt/md/epub 坐标取章序（1 起），pdf/空/损坏取不到', () {
+    expect(
+      locatorChapterNumber('{"type":"txt","chapterIndex":127,"charOffset":0}'),
+      128,
+    );
+    expect(
+      locatorChapterNumber(
+        '{"type":"md","headingIndex":0,"blockIndex":0,"charOffset":0}',
+      ),
+      1,
+    );
+    expect(
+      locatorChapterNumber(
+        '{"type":"epub","spineIndex":11,"href":"c12.xhtml","blockIndex":0,"charOffset":0}',
+      ),
+      12,
+    );
+    expect(
+      locatorChapterNumber('{"type":"pdf","pageIndex":3,"yRatio":0.5}'),
+      isNull,
+    );
+    expect(locatorChapterNumber('{}'), isNull);
+    expect(locatorChapterNumber(null), isNull);
+    expect(locatorChapterNumber(''), isNull);
+    expect(locatorChapterNumber('not-json'), isNull);
   });
 
   tearDown(() async {
@@ -497,6 +788,7 @@ Future<void> seedBookData({
   required String contentHash,
   required int addedAtMs,
   required bool withLocalFile,
+  bool withProgress = true,
 }) async {
   String? localPath;
   if (withLocalFile) {
@@ -522,12 +814,14 @@ Future<void> seedBookData({
       totalSeconds: 90,
     ),
   );
-  await db.progressDao.upsert(
-    bookId: bookId,
-    locatorJson: '{}',
-    percent: 0.42,
-    dirty: false,
-  );
+  if (withProgress) {
+    await db.progressDao.upsert(
+      bookId: bookId,
+      locatorJson: '{}',
+      percent: 0.42,
+      dirty: false,
+    );
+  }
 }
 
 /// 假文件选择器（FR-410）：返回预置路径（null = 模拟用户取消），

@@ -15,12 +15,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sync_core/sync_core.dart';
+import 'package:sync_reader/core/design_tokens.dart';
 import 'package:sync_reader/features/library/library_page.dart';
 import 'package:sync_reader/features/reader/contract/format_registry.dart';
 import 'package:sync_reader/features/reader/reader_page.dart';
 import 'package:sync_reader/features/sync/sync_status.dart';
 import 'package:sync_reader/features/sync/sync_facade.dart';
-import 'package:sync_reader/features/sync/widgets/sync_status_banner.dart';
 
 import 'offline_env.dart';
 
@@ -57,8 +57,10 @@ void main() {
     expect(failing.connectCalls, greaterThanOrEqualTo(1));
     expect(failing.ensureLayoutCalls, 1);
     // 结果落状态：failed + 分类文案（FR-406），不弹任何阻塞 UI。
+    // （v1.1 A3：常驻状态横幅移出书库内容区，容器取自书库页元素；
+    // 失败态由书库顶部的可关闭提示条呈现。）
     final memory = ProviderScope.containerOf(
-      tester.element(find.byType(SyncStatusBanner)),
+      tester.element(find.byType(LibraryPage)),
     ).read(syncMemoryStatusProvider);
     expect(memory.id, SyncStateId.failed);
     expect(memory.failureText, '网络不可达，请检查网络连接');
@@ -83,7 +85,11 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: const MaterialApp(home: LibraryPage()),
+        // v1.1 A2/A3：书库页消费设计令牌，测试骨架挂 AppTheme。
+        child: MaterialApp(
+          theme: AppTheme.light(AppAccent.terracotta),
+          home: const LibraryPage(),
+        ),
       ),
     );
     await tester.pump();
@@ -94,7 +100,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 200));
 
-    // 失败落状态横幅（非阻塞），ScaffoldMessenger 计数 = 0，无对话框。
+    // 失败落书库顶部提示条（非阻塞，A3），无对话框无 SnackBar。
     expect(find.textContaining('同步失败'), findsOneWidget);
     expect(find.textContaining('网络不可达'), findsOneWidget);
     expectNoBlockingErrorUi(tester, reason: '（书库页 + 网络不可达）');
