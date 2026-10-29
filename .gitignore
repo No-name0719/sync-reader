@@ -27,3 +27,19 @@ apps/sync_reader/android/key/
 
 # 发布产物（package_release.ps1 输出，不入库）
 /dist/
+
+# UI 原型（本地生成，不入库）
+/ui_prototype
+
+# v1.1 界面重设计的截图基线与截图用字体（本地比对材料，不入库；
+# 重建步骤见 docs/10-界面重设计方案.md §9.4）
+/ui_audit/v11/
+/.shot_fonts/
+
+# 应用图标母版（本地生成，不入库；重建步骤见 scripts/gen_app_icons.py）
+/ui_audit/tmp/
+
+# Flutter/Dart 构建产物（不入库）
+**/build/
+.dart_tool/
+.packages
