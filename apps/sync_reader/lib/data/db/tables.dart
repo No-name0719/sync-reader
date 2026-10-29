@@ -221,3 +221,42 @@ class BookGroups extends Table {
   @override
   Set<Column> get primaryKey => {groupId};
 }
+
+/// 仅本地书籍标记（docs/10 §4.7c「仅本地 / 未上传」状态）。
+///
+/// 心智模型：「这台设备自己导入过一次，但没有上传」。命中本表的书
+/// **永不参与 diff**（既不推 meta 也不传正文），同步引擎完全看不见它。
+///
+/// 两种来源在 UI 上是同一个状态：
+/// - 导入时取消勾选「同时上传到云端」；
+/// - 「从云端移除」后各端因仍有 baseRev 落 diff 第 7b 行（云端缺失）。
+///
+/// 只增不删的独立表（books 表不允许加列，docs/05 §5 DDL 是同步语义的一部分）；
+/// 与 book_groups 同为「纯本地、不同步」的先例。schemaVersion 3 新增。
+@DataClassName('LocalOnlyBook')
+class LocalOnlyBooks extends Table {
+  /// 书籍 ULID（对应 books.book_id）。
+  TextColumn get bookId => text()();
+
+  /// 标记时间（epoch ms，诊断与「最近标记」排序用）。
+  IntColumn get createdAt => integer().withDefault(const Constant(0))();
+
+  @override
+  Set<Column> get primaryKey => {bookId};
+}
+
+/// 应用级本地设置（docs/10 §3.1：accent 持久化等）。
+///
+/// 通用 key-value 表，值为 JSON 或纯字符串；仅本地、不同步、不入云端
+/// meta。schemaVersion 3 新增（与 local_only_books 同一批迁移）。
+@DataClassName('AppSetting')
+class AppSettings extends Table {
+  /// 设置键（如 'accent'）。
+  TextColumn get key => text()();
+
+  /// JSON 序列化的值（或纯字符串）。
+  TextColumn get value => text()();
+
+  @override
+  Set<Column> get primaryKey => {key};
+}

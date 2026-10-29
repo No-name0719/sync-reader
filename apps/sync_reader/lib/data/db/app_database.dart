@@ -1,4 +1,4 @@
-/// 应用数据库（docs/05 §5）：schemaVersion 2，WAL 模式。
+/// 应用数据库（docs/05 §5）：schemaVersion 3，WAL 模式。
 ///
 /// - 生产：drift_flutter 的 [driftDatabase]（懒加载 + 后台 isolate）；
 /// - 测试：[AppDatabase.forTesting] 注入内存 [NativeDatabase]。
@@ -7,6 +7,7 @@ library;
 import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 
+import 'daos/app_settings_dao.dart';
 import 'daos/book_groups_dao.dart';
 import 'daos/books_dao.dart';
 import 'daos/progress_dao.dart';
@@ -28,6 +29,8 @@ part 'app_database.g.dart';
     SyncQueue,
     ReadingDays,
     BookGroups,
+    LocalOnlyBooks,
+    AppSettings,
   ],
   daos: [
     BooksDao,
@@ -36,6 +39,7 @@ part 'app_database.g.dart';
     SyncQueueDao,
     ReadingDaysDao,
     BookGroupsDao,
+    AppSettingsDao,
   ],
 )
 class AppDatabase extends _$AppDatabase {
@@ -46,7 +50,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -59,6 +63,13 @@ class AppDatabase extends _$AppDatabase {
         await m.createTable(readingDays);
         await m.createTable(bookGroups);
         await m.addColumn(books, books.groupId);
+      }
+      // v2 → v3（2026-10-28，v1.1 重设计批 1）：新增 local_only_books
+      // （仅本地标记）与 app_settings（应用级本地设置）两张纯本地表。
+      // 只增不删（docs/05 §6）。
+      if (from < 3) {
+        await m.createTable(localOnlyBooks);
+        await m.createTable(appSettings);
       }
     },
     beforeOpen: (details) async {

@@ -11,6 +11,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../data/db/app_database.dart';
+import '../data/db/daos/app_settings_dao.dart';
 import '../data/db/daos/books_dao.dart';
 import '../data/db/daos/progress_dao.dart';
 import '../data/db/daos/reading_days_dao.dart';
@@ -54,6 +55,11 @@ final readerSettingsDaoProvider = Provider<ReaderSettingsDao>(
 /// 待同步队列 DAO（M2）。
 final syncQueueDaoProvider = Provider<SyncQueueDao>(
   (ref) => ref.watch(databaseProvider).syncQueueDao,
+);
+
+/// 应用级设置 DAO（v1.1：accent / 外观模式持久化，docs/10 §4.7）。
+final appSettingsDaoProvider = Provider<AppSettingsDao>(
+  (ref) => ref.watch(databaseProvider).appSettingsDao,
 );
 
 /// 文件存储（应用支持目录下的 files/，见 [BookFileStore] 文档注释）。
