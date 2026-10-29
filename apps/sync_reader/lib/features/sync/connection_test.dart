@@ -341,7 +341,9 @@ final class ConnectionTester {
   static String classifyStatus(int? status) {
     if (status == 401) {
       return '密码错误或账号无效（HTTP 401）：请核对后重新输入，应用密码为全小写且'
-          '首尾不含空格；若曾在坚果云后台重置过应用密码，请使用新生成的密码';
+          '首尾不含空格；若曾在坚果云后台重置过应用密码，请使用新生成的密码。'
+          '坚果云 WebDAV 只接受应用密码（后台「安全选项 → 应用密码」生成），'
+          '账户登录密码一定会 401';
     }
     if (status == 403) return '权限不足，请检查应用密码与应用授权（HTTP 403）';
     if (status != null && status >= 500 && status < 600) {

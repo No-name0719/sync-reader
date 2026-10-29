@@ -213,4 +213,14 @@ void main() {
       '/Apps/SyncReader/probe-1',
     );
   });
+
+  test('401 文案：说明「只接受应用密码，账户登录密码一定 401」（v1.1）', () {
+    final text = ConnectionTester.classifyStatus(401);
+    expect(text, contains('密码错误或账号无效'));
+    expect(text, contains('应用密码为全小写'));
+    expect(text, contains('首尾不含空格'));
+    // v1.1 补充句：账户登录密码与 WebDAV 应用密码的区别。
+    expect(text, contains('坚果云 WebDAV 只接受应用密码'));
+    expect(text, contains('账户登录密码一定会 401'));
+  });
 }

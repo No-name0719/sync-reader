@@ -303,9 +303,14 @@ class BatchImportController extends Notifier<BatchImportState> {
 
   /// 导入选中的候选（确认页底部按钮触发）。
   ///
+  /// [uploadToCloud] 对应页内「同时上传到云端」开关（docs/10 §4.8 / Q18，
+  /// 默认 true 保持既有行为）；原样透传给 [BookImportService.importFiles]。
+  /// 批 7 补参说明：控制器原先固定走服务层默认值（上传），重设计后的页面
+  /// 需要把用户开关传入，此为唯一缺能力点，仅做了这一处加参透传。
+  ///
   /// 返回汇总；不可导入（未就绪 / 无勾选 / 导入中）返回 null。
   /// 单本失败不中断（[BookImportService] 保证），结束后 phase → done。
-  Future<ImportSummary?> importSelected() async {
+  Future<ImportSummary?> importSelected({bool uploadToCloud = true}) async {
     final current = state;
     if (current.phase != BatchImportPhase.ready || _pipelineRunning) {
       return null;
@@ -325,6 +330,7 @@ class BatchImportController extends Notifier<BatchImportState> {
             onProgress: (p) {
               state = state.copyWith(progress: p);
             },
+            uploadToCloud: uploadToCloud,
           );
       state = state.copyWith(
         phase: BatchImportPhase.done,

@@ -20,9 +20,13 @@ import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sync_core/sync_core.dart';
 import 'package:sync_reader/app/providers.dart';
+import 'package:sync_reader/core/design_tokens.dart';
 import 'package:sync_reader/data/db/app_database.dart';
 import 'package:sync_reader/data/secure/secure_credential_store.dart';
+import 'package:sync_reader/features/sync/connection_test.dart';
+import 'package:sync_reader/features/sync/connection_test_runner.dart';
 import 'package:sync_reader/features/sync/pages/jianguoyun_guide_page.dart';
 import 'package:sync_reader/features/sync/sync_facade.dart';
 
@@ -59,18 +63,26 @@ void main() {
     addTearDown(() => HttpOverrides.global = original);
   }
 
-  Future<void> pumpGuide(WidgetTester tester) async {
+  Future<void> pumpGuide(
+    WidgetTester tester, {
+    ConnectionTestRunner? runner,
+  }) async {
     final container = ProviderContainer(
       overrides: [
         databaseProvider.overrideWithValue(db),
         secureCredentialStoreProvider.overrideWithValue(credentials),
+        if (runner != null)
+          connectionTestRunnerProvider.overrideWithValue(runner),
       ],
     );
     addTearDown(container.dispose);
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: const MaterialApp(home: _OpenerPage()),
+        child: MaterialApp(
+          theme: AppTheme.light(AppAccent.terracotta),
+          home: const _OpenerPage(),
+        ),
       ),
     );
     await tester.pump();
@@ -117,6 +129,34 @@ void main() {
     await tester.tap(find.text('完成'));
     await tester.pumpAndSettle();
     expect(controlText('开始配置', 0), findsOneWidget, reason: '仍停在步骤 0');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('四步进度轨：初始态 = 当前高亮 1 + 未开始 3（无完成 ✓）', (tester) async {
+    await pumpGuide(tester);
+    // 三态说明文案：进行中 ×1、待进行 ×3、已完成 ×0。
+    expect(find.text('进行中'), findsOneWidget);
+    expect(find.text('待进行'), findsNWidgets(3));
+    expect(find.text('已完成'), findsNothing);
+    // 完成态圆内才有 ✓ 图标。
+    expect(find.byIcon(Icons.check), findsNothing);
+    // 四个步骤标题齐全。
+    expect(find.text('生成应用密码'), findsOneWidget);
+    expect(find.text('输入账号与应用密码'), findsOneWidget);
+    expect(find.text('自动连接测试'), findsOneWidget);
+    expect(find.text('完成'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('四步进度轨：前进后出现完成 ✓（三态样式断言）', (tester) async {
+    await pumpGuide(tester);
+    await tester.tap(controlButton('开始配置', 0));
+    await tester.pumpAndSettle();
+    // 步骤 1：已完成 ×1（✓ 图标）+ 进行中 ×1 + 待进行 ×2。
+    expect(find.text('已完成'), findsOneWidget);
+    expect(find.byIcon(Icons.check), findsOneWidget);
+    expect(find.text('进行中'), findsOneWidget);
+    expect(find.text('待进行'), findsNWidgets(2));
     expect(tester.takeException(), isNull);
   });
 
@@ -264,7 +304,144 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.text('连接成功'), findsOneWidget);
   });
+
+  // ── v1.1：「使用已保存的配置测试」快捷路径 + 凭据规范化 ──────────────────
+
+  testWidgets('未保存配置：不出现「使用已保存的配置测试」快捷入口', (tester) async {
+    await pumpGuide(tester);
+    expect(find.text('使用已保存的配置测试'), findsNothing);
+    expect(find.text('已保存的配置'), findsNothing);
+  });
+
+  testWidgets('已有保存配置：出现「使用已保存的配置测试」；点击即测并展示结果', (tester) async {
+    await credentials.save(SecureKeys.webdavAccount, _account);
+    await credentials.save(SecureKeys.webdavPassword, _password);
+    await credentials.save(
+      SecureKeys.webdavBaseUrl,
+      'https://dav.jianguoyun.com/dav/',
+    );
+    await credentials.save(SecureKeys.webdavRootPath, '/Apps/SyncReader');
+    final fake = _FakeRunner(_savedConfigSuccessResult());
+    await pumpGuide(tester, runner: fake.call);
+
+    // 快捷入口出现（无需填表、无需走完四步）。
+    expect(find.text('使用已保存的配置测试'), findsOneWidget);
+    expect(find.text('已保存的配置'), findsOneWidget);
+
+    await tester.tap(find.text('使用已保存的配置测试'));
+    await tester.pump();
+    await tester.pump();
+
+    // 确实发起了测试（用已保存的凭据），结果就地展示。
+    expect(fake.calls, 1);
+    expect(fake.lastUsername, _account);
+    expect(fake.lastPassword, _password);
+    expect(find.text('连接正常 · 列目录 274 ms'), findsOneWidget);
+    // 未填表 → 仍停在第 1 步（不擅自流转）。
+    expect(controlButton('开始配置', 0), findsOneWidget);
+  });
+
+  testWidgets('已保存配置读不到 → 提示并引导回第 2 步填写', (tester) async {
+    await credentials.save(SecureKeys.webdavAccount, _account);
+    await credentials.save(SecureKeys.webdavPassword, _password);
+    final fake = _FakeRunner(_savedConfigSuccessResult());
+    await pumpGuide(tester, runner: fake.call);
+    expect(find.text('使用已保存的配置测试'), findsOneWidget);
+
+    // 凭据被清除（模拟"保存的配置读不到"）。
+    await credentials.deleteAll();
+    await tester.tap(find.text('使用已保存的配置测试'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(fake.calls, 0, reason: '读不到配置时不得发起任何请求');
+    expect(find.text('已保存的配置读取不到，请填写账号与应用密码'), findsOneWidget);
+    // 「去填写」→ 回到第 2 步（输入账号与应用密码）。
+    await tester.tap(find.text('去填写'));
+    await tester.pumpAndSettle();
+    expect(controlButton('下一步', 1), findsOneWidget);
+  });
+
+  testWidgets('落凭据规范化：账号/密码去首尾空白与零宽字符（中间字符不动）', (tester) async {
+    installFakeWebDav(authOk: true);
+    await pumpGuide(tester);
+    await tester.tap(controlButton('开始配置', 0));
+    await tester.pumpAndSettle();
+    // 手输/粘贴常见脏数据：首尾空格 + 零宽字符（U+200B / U+FEFF）。
+    await fillInputs(
+      tester,
+      account: ' $_account\u200B ',
+      password: '$_password\uFEFF ',
+    );
+
+    await tester.tap(controlButton('下一步', 1));
+    await tester.pumpAndSettle();
+    // 规范化后凭据正确 → 测试通过（走到成功页）。
+    expect(find.text('连接成功'), findsOneWidget);
+
+    await tester.tap(controlButton('完成', 3));
+    await tester.pumpAndSettle();
+    expect(await credentials.read(SecureKeys.webdavAccount), _account);
+    expect(await credentials.read(SecureKeys.webdavPassword), _password);
+  });
+
+  testWidgets('390x844 窄窗 + 已保存配置：快捷卡无溢出异常', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await credentials.save(SecureKeys.webdavAccount, _account);
+    await credentials.save(SecureKeys.webdavPassword, _password);
+    final fake = _FakeRunner(_savedConfigSuccessResult());
+    await pumpGuide(tester, runner: fake.call);
+    expect(find.text('使用已保存的配置测试'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    // 点开结果（结果卡也要在窄窗下不溢出）。
+    await tester.tap(find.text('使用已保存的配置测试'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('连接正常 · 列目录 274 ms'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }
+
+/// 假连接测试执行器（记录调用次数与参数；不碰网络）。
+class _FakeRunner {
+  _FakeRunner(this.result);
+
+  /// 本次要返回的结果。
+  final ConnectionTestResult result;
+
+  int calls = 0;
+  String? lastBaseUrl;
+  String? lastUsername;
+  String? lastPassword;
+  String? lastRootPath;
+
+  Future<ConnectionTestResult> call({
+    required String baseUrl,
+    required String username,
+    required String password,
+    String? rootPath,
+  }) async {
+    calls++;
+    lastBaseUrl = baseUrl;
+    lastUsername = username;
+    lastPassword = password;
+    lastRootPath = rootPath;
+    return result;
+  }
+}
+
+/// 「使用已保存的配置测试」的成功结果。
+ConnectionTestResult _savedConfigSuccessResult() => const ConnectionTestResult(
+  steps: [ConnectionTestStep(name: '列目录', ok: true, latencyMs: 274)],
+  success: true,
+  capabilities: BackendCapabilities(
+    supportsMove: true,
+    supportsEtag: true,
+    supportsRange: true,
+  ),
+);
 
 // ── 假 WebDAV 客户端（HttpOverrides 级，协议状态码按方法返回）────────────
 

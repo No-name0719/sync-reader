@@ -8,16 +8,31 @@
 /// ③ 自动连接测试（逐项显示：列目录/建目录/写读删/MOVE 延迟 ms）；
 /// ④ 成功页（显示探测到的能力：MOVE/ETag/Range）→ 落凭据 → 返回。
 ///
+/// A12b：旧版 Material `Stepper` 改为自绘**四步进度轨**（完成 ✓ / 当前高亮
+/// / 未开始灰，对齐原型 guide 屏）；步骤语义与流转逻辑保持不变；表单为
+/// 标签 + 输入框 + 提示条样式。
+///
 /// 硬约束：密码框 obscure；测试过程与日志不落凭据（NFR-03）。
 library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sync_core/sync_core.dart';
 
+import '../../../core/design_tokens.dart';
 import '../../../data/secure/secure_credential_store.dart';
 import '../connection_test.dart';
+import '../connection_test_result_view.dart';
+import '../connection_test_runner.dart';
+import '../credential_normalizer.dart';
 import '../sync_facade.dart';
+
+/// 引导页步骤数（四步进度轨固定）。
+const int _kStepCount = 4;
+
+/// 步骤轨一态：完成 / 当前 / 未开始。
+enum _TrackStepState { done, current, pending }
 
 /// 坚果云引导页（`/sync/guide`）。
 class JianguoYunGuidePage extends ConsumerStatefulWidget {
@@ -46,6 +61,28 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
   bool _testing = false;
   ConnectionTestResult? _result;
 
+  /// 是否已有保存的配置（true = 顶部显示「使用已保存的配置测试」快捷卡）。
+  bool _hasSavedConfig = false;
+
+  /// 已保存配置的展示信息（账号 · 根目录；不含密码）。
+  String _savedAccount = '';
+  String _savedRootPath = '';
+
+  /// 「使用已保存的配置测试」进行中。
+  bool _savedTesting = false;
+
+  /// 「使用已保存的配置测试」结果（复用共享结果组件）。
+  ConnectionTestResult? _savedResult;
+
+  /// 已保存的配置读不到（提示并引导回第 2 步填写）。
+  bool _savedConfigMissing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedConfig();
+  }
+
   @override
   void dispose() {
     _accountController.dispose();
@@ -53,6 +90,28 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
     _baseUrlController.dispose();
     _rootPathController.dispose();
     super.dispose();
+  }
+
+  /// 读已保存的配置（只读凭据，不装配引擎）。
+  Future<void> _loadSavedConfig() async {
+    final config = await _readSavedConfig();
+    if (!mounted) return;
+    setState(() {
+      _hasSavedConfig = config != null;
+      _savedAccount = config?.username ?? '';
+      _savedRootPath = config?.rootPath ?? '';
+    });
+  }
+
+  /// 读已保存配置（返回 null = 未配置或读不到）。
+  Future<BackendConfig?> _readSavedConfig() async {
+    try {
+      return await SyncFacade.readConfigFrom(
+        ref.read(secureCredentialStoreProvider),
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   bool get _inputsValid =>
@@ -65,15 +124,23 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
       _testing = true;
       _result = null;
     });
-    final tester = ConnectionTester();
-    final result = await tester.test(
-      baseUrl: _baseUrlController.text.trim(),
-      username: _accountController.text.trim(),
-      password: _passwordController.text.trim(),
-      rootPath: _rootPathController.text.trim().isEmpty
-          ? ConnectionTester.defaultRootPath
-          : _rootPathController.text.trim(),
-    );
+    ConnectionTestResult result;
+    try {
+      result = await ref.read(connectionTestRunnerProvider)(
+        baseUrl: _baseUrlController.text.trim(),
+        username: normalizeCredentialValue(_accountController.text),
+        password: normalizeCredentialValue(_passwordController.text),
+        rootPath: _rootPathController.text.trim().isEmpty
+            ? ConnectionTester.defaultRootPath
+            : _rootPathController.text.trim(),
+      );
+    } catch (_) {
+      result = const ConnectionTestResult(
+        steps: [],
+        success: false,
+        failureText: '连接测试执行异常，请稍后重试',
+      );
+    }
     if (!mounted) return;
     setState(() {
       _testing = false;
@@ -86,16 +153,63 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
     });
   }
 
+  /// 「使用已保存的配置测试」：不填表，直接跑第 3 步的连接测试。
+  ///
+  /// **只测不改**：不写凭据、不动已保存配置；结果就地显示在快捷卡内
+  /// （与同步设置页共用同一套结果组件）。已保存配置读不到 → 提示并引导
+  /// 回第 2 步填写。
+  Future<void> _runSavedTest() async {
+    if (_savedTesting) return;
+    setState(() {
+      _savedTesting = true;
+      _savedResult = null;
+      _savedConfigMissing = false;
+    });
+    final config = await _readSavedConfig();
+    if (config == null) {
+      if (!mounted) return;
+      setState(() {
+        _savedTesting = false;
+        _savedConfigMissing = true;
+      });
+      return;
+    }
+    ConnectionTestResult result;
+    try {
+      result = await ref.read(connectionTestRunnerProvider)(
+        baseUrl: config.baseUrl,
+        username: config.username ?? '',
+        password: config.password ?? '',
+        rootPath: config.rootPath,
+      );
+    } catch (_) {
+      result = const ConnectionTestResult(
+        steps: [],
+        success: false,
+        failureText: '连接测试执行异常，请稍后重试',
+      );
+    }
+    if (!mounted) return;
+    setState(() {
+      _savedTesting = false;
+      _savedResult = result;
+    });
+  }
+
   /// 步骤 ④：落凭据（安全存储）→ 重置引擎 → 返回。
+  ///
+  /// 写入前做**凭据规范化**（账号/密码去首尾空白 + 零宽字符；中间字符不
+  /// 动）：坚果云应用密码是 16 位全小写字母数字，粘贴时带入的空格/零宽
+  /// 字符会让服务端按字节比对失败 → 401。
   Future<void> _saveAndBack() async {
     final credentials = ref.read(secureCredentialStoreProvider);
     await credentials.save(
       SecureKeys.webdavAccount,
-      _accountController.text.trim(),
+      normalizeCredentialValue(_accountController.text),
     );
     await credentials.save(
       SecureKeys.webdavPassword,
-      _passwordController.text.trim(),
+      normalizeCredentialValue(_passwordController.text),
     );
     await credentials.save(
       SecureKeys.webdavBaseUrl,
@@ -116,24 +230,54 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('配置坚果云同步')),
-      // 居中限宽（8/16/24 栅格；窄窗 480px 时不横向溢出，宽窗不无限拉伸）。
+      // 居中限宽（原型 guide 屏 content-inner max-width: 760px）。
       body: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 640),
-          child: Stepper(
-            currentStep: _currentStep,
-            type: StepperType.vertical,
-            physics: const ClampingScrollPhysics(),
-            onStepTapped: _onStepTapped,
-            onStepContinue: _onContinue,
-            onStepCancel: _onCancel,
-            controlsBuilder: (context, details) => KeyedSubtree(
-              // 竖向 Stepper 会为每个步骤构建 controls（仅当前步可见）；
-              // 按步骤索引加 key，便于测试精确定位可见的那一份。
-              key: ValueKey('guide-controls-${details.stepIndex}'),
-              child: _controls(context, details),
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.s6,
+              AppSpacing.s6,
+              AppSpacing.s6,
+              AppSpacing.s12,
             ),
-            steps: [_step1(), _step2(), _step3(), _step4()],
+            children: [
+              _TrackCard(
+                currentStep: _currentStep,
+                maxVisitedStep: _maxVisitedStep,
+                onStepTapped: _onStepTapped,
+              ),
+              const SizedBox(height: AppSpacing.s4),
+              // 「已保存配置」快捷卡（不填表直接测）：与四步进度轨分开，
+              // 已有保存配置时才出现。
+              if (_hasSavedConfig) ...[
+                _SavedConfigCard(
+                  account: _savedAccount,
+                  rootPath: _savedRootPath,
+                  testing: _savedTesting,
+                  result: _savedResult,
+                  missing: _savedConfigMissing,
+                  onTest: _runSavedTest,
+                  onFill: () => _goto(1),
+                ),
+                const SizedBox(height: AppSpacing.s4),
+              ],
+              _ContentCard(
+                currentStep: _currentStep,
+                controls: KeyedSubtree(
+                  // 与旧版一致：控件区按步骤索引加 key，测试精确定位当前步。
+                  key: ValueKey('guide-controls-$_currentStep'),
+                  child: _controls(context),
+                ),
+                content: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 150),
+                  child: KeyedSubtree(
+                    key: ValueKey('guide-content-$_currentStep'),
+                    child: _stepContent(_currentStep),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -175,7 +319,7 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
     });
   }
 
-  /// 头部点击：只允许跳到已到达过的步骤（未到达步骤头部为 disabled，
+  /// 步骤头部点击：只允许跳到已到达过的步骤（未到达步骤头部为 disabled，
   /// 这里再过滤一次作双保险）。
   void _onStepTapped(int step) {
     if (_testing || step > _maxVisitedStep || step == _currentStep) return;
@@ -186,8 +330,8 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
     });
   }
 
-  Widget _controls(BuildContext context, ControlsDetails details) {
-    // 测试进行中：只显示进度行，不渲染按钮（防重复触发）。
+  /// 当前步控件区：测试中只显示进度行（防重复触发）；否则主按钮 + 上一步。
+  Widget _controls(BuildContext context) {
     if (_testing) {
       return const Padding(
         padding: EdgeInsets.only(top: 12),
@@ -212,242 +356,577 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
       _ => ('完成', true),
     };
     return Padding(
-      padding: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.only(top: AppSpacing.s4),
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
         children: [
+          if (_currentStep > 0)
+            TextButton(onPressed: _onCancel, child: const Text('上一步')),
+          const SizedBox(width: AppSpacing.s2),
           FilledButton(
-            onPressed: enabled ? details.onStepContinue : null,
+            onPressed: enabled ? _onContinue : null,
             child: Text(label),
           ),
-          const SizedBox(width: 8),
-          if (_currentStep > 0)
-            TextButton(
-              onPressed: details.onStepCancel,
-              child: const Text('上一步'),
-            ),
         ],
       ),
     );
   }
 
+  // ── 步骤内容（语义沿用旧 Stepper 版本，仅视觉重排）────────────────────
+
+  Widget _stepContent(int step) {
+    switch (step) {
+      case 0:
+        return _step1();
+      case 1:
+        return _step2();
+      case 2:
+        return _step3();
+      default:
+        return _step4();
+    }
+  }
+
   // ── 步骤 ①：生成应用密码说明 ──────────────────────────────────────────
 
-  Step _step1() {
-    return Step(
-      title: const Text('生成应用密码'),
-      isActive: _currentStep >= 0,
-      state: _currentStep > 0 ? StepState.complete : StepState.indexed,
-      content: const Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _GuideLine('1. 浏览器打开坚果云网页版并登录'),
-          _GuideLine('2. 进入「账户信息 → 安全选项」'),
-          _GuideLine('3. 在「第三方应用管理」点击「添加应用密码」'),
-          _GuideLine('4. 应用名称填 SyncReader，生成后复制口令'),
-          SizedBox(height: 8),
-          _CopyableCommand(),
-          SizedBox(height: 8),
-          Text(
-            '应用密码与登录密码不同：仅开放 WebDAV 文件权限，可随时撤销。',
-            style: TextStyle(fontSize: 12),
-          ),
-        ],
-      ),
+  Widget _step1() {
+    return const Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _GuideLine('1. 浏览器打开坚果云网页版并登录'),
+        _GuideLine('2. 进入「账户信息 → 安全选项」'),
+        _GuideLine('3. 在「第三方应用管理」点击「添加应用密码」'),
+        _GuideLine('4. 应用名称填 SyncReader，生成后复制口令'),
+        SizedBox(height: AppSpacing.s2),
+        _CopyableCommand(),
+        SizedBox(height: AppSpacing.s2),
+        _Notice('应用密码与登录密码不同：仅开放 WebDAV 文件权限，可随时撤销。'),
+      ],
     );
   }
 
   // ── 步骤 ②：账号 + 应用密码（含 FR-502 高级项）────────────────────────
 
-  Step _step2() {
-    return Step(
-      title: const Text('输入账号与应用密码'),
-      isActive: _currentStep >= 1,
-      // 未到达过的步骤头部禁用（配合 [_onStepTapped] 过滤，防跳过输入）。
-      state: _maxVisitedStep < 1
-          ? StepState.disabled
-          : _currentStep > 1
-          ? StepState.complete
-          : StepState.indexed,
-      content: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          TextField(
-            controller: _accountController,
-            decoration: const InputDecoration(
-              labelText: '坚果云账号（邮箱）',
-              border: OutlineInputBorder(),
-            ),
-            keyboardType: TextInputType.emailAddress,
-            onChanged: (_) => setState(() {}),
+  Widget _step2() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          controller: _accountController,
+          decoration: const InputDecoration(
+            labelText: '坚果云账号（邮箱）',
+            prefixIcon: Icon(Icons.person_outline),
           ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _passwordController,
-            obscureText: true,
-            // 应用密码为全小写：防键盘自动首字母大写/联想导致的 401。
-            autocorrect: false,
-            enableSuggestions: false,
-            textCapitalization: TextCapitalization.none,
-            decoration: const InputDecoration(
-              labelText: '应用密码',
-              border: OutlineInputBorder(),
-            ),
-            onChanged: (_) => setState(() {}),
+          keyboardType: TextInputType.emailAddress,
+          onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: AppSpacing.s3),
+        TextField(
+          controller: _passwordController,
+          obscureText: true,
+          // 应用密码为全小写：防键盘自动首字母大写/联想导致的 401。
+          autocorrect: false,
+          enableSuggestions: false,
+          textCapitalization: TextCapitalization.none,
+          decoration: const InputDecoration(
+            labelText: '应用密码',
+            prefixIcon: Icon(Icons.shield_outlined),
           ),
-          const SizedBox(height: 8),
-          // FR-502：WebDAV 通用模式（P1 功能提前放出并标注）。
-          _AdvancedWebDav(
-            baseUrl: _baseUrlController,
-            rootPath: _rootPathController,
-          ),
-        ],
-      ),
+          onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: AppSpacing.s2),
+        // FR-502：WebDAV 通用模式（P1 功能提前放出并标注）。
+        _AdvancedWebDav(
+          baseUrl: _baseUrlController,
+          rootPath: _rootPathController,
+        ),
+      ],
     );
   }
 
   // ── 步骤 ③：自动连接测试 ──────────────────────────────────────────────
 
-  Step _step3() {
+  Widget _step3() {
     final result = _result;
-    return Step(
-      title: const Text('自动连接测试'),
-      isActive: _currentStep >= 2,
-      state: _maxVisitedStep < 2
-          ? StepState.disabled
-          : _testing
-          ? StepState.editing
-          : result == null
-          ? StepState.indexed
-          : result.success
-          ? StepState.complete
-          : StepState.error,
-      content: result == null
-          ? const Text('点击下方"开始连接测试"，将依次检查目录读写与 MOVE 能力。')
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                for (final step in result.steps)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Icon(
-                              step.ok ? Icons.check_circle : Icons.cancel,
-                              size: 16,
-                              color: step.ok
-                                  ? Colors.green.shade600
-                                  : Theme.of(context).colorScheme.error,
-                            ),
-                            const SizedBox(width: 6),
-                            // Expanded：窄窗（480px）下步骤名过长时省略，不横向溢出。
-                            Expanded(
-                              child: Text(
-                                step.name,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            Text(
-                              step.latencyMs == null
-                                  ? '-'
-                                  : '${step.latencyMs} ms',
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                          ],
-                        ),
-                        // 失败原因/附注（HTTP 状态码、目录不存在等）直接跟进行内。
-                        if (step.detail != null)
-                          Padding(
-                            padding: const EdgeInsets.only(left: 22, top: 1),
-                            child: Text(
-                              step.detail!,
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: step.ok
-                                    ? Theme.of(context).hintColor
-                                    : Theme.of(context).colorScheme.error,
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                if (!result.success) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    result.failureText ?? '连接失败',
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-    );
-  }
-
-  // ── 步骤 ④：成功页 ────────────────────────────────────────────────────
-
-  Step _step4() {
-    final caps = _result?.capabilities;
-    return Step(
-      title: const Text('完成'),
-      isActive: _currentStep >= 3,
-      state: _maxVisitedStep < 3
-          ? StepState.disabled
-          : _currentStep > 3
-          ? StepState.complete
-          : StepState.indexed,
-      content: caps == null
-          ? const Text('完成连接测试后保存配置。')
-          : Column(
+    if (result == null) {
+      return const Text('点击下方"开始连接测试"，将依次检查目录读写与 MOVE 能力。');
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final step in result.steps)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
                   children: [
                     Icon(
-                      Icons.verified,
-                      color: Colors.green.shade600,
-                      size: 20,
+                      step.ok ? Icons.check_circle : Icons.cancel,
+                      size: 16,
+                      color: step.ok
+                          ? Colors.green.shade600
+                          : Theme.of(context).colorScheme.error,
                     ),
                     const SizedBox(width: 6),
-                    const Expanded(child: Text('连接成功')),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                // Expanded：能力文案在窄窗下换行，不横向溢出。
-                Row(
-                  children: [
+                    // Expanded：窄窗（480px）下步骤名过长时省略，不横向溢出。
                     Expanded(
                       child: Text(
-                        'MOVE 原子提交：${caps.supportsMove ? '支持' : '不支持（回退校验）'}',
+                        step.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
+                    ),
+                    Text(
+                      step.latencyMs == null ? '-' : '${step.latencyMs} ms',
+                      style: const TextStyle(fontSize: 12),
                     ),
                   ],
                 ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        'ETag 条件请求：${caps.supportsEtag ? '支持' : '不支持（size+mtime 合成）'}',
+                // 失败原因/附注（HTTP 状态码、目录不存在等）直接跟进行内。
+                if (step.detail != null)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 22, top: 1),
+                    child: Text(
+                      step.detail!,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: step.ok
+                            ? Theme.of(context).hintColor
+                            : Theme.of(context).colorScheme.error,
                       ),
                     ),
-                  ],
-                ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        'Range 断点续传：${caps.supportsRange ? '支持' : '不支持'}',
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
               ],
             ),
+          ),
+        if (!result.success) ...[
+          const SizedBox(height: AppSpacing.s2),
+          _Notice(result.failureText ?? '连接失败', severe: true),
+        ],
+      ],
+    );
+  }
+
+  // ── 步骤 ④：成功页 ────────────────────────────────────────────────────
+
+  Widget _step4() {
+    final caps = _result?.capabilities;
+    if (caps == null) {
+      return const Text('完成连接测试后保存配置。');
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.verified, color: Colors.green.shade600, size: 20),
+            const SizedBox(width: 6),
+            const Expanded(child: Text('连接成功')),
+          ],
+        ),
+        const SizedBox(height: AppSpacing.s2),
+        // Expanded：能力文案在窄窗下换行，不横向溢出。
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'MOVE 原子提交：${caps.supportsMove ? '支持' : '不支持（回退校验）'}',
+              ),
+            ),
+          ],
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'ETag 条件请求：${caps.supportsEtag ? '支持' : '不支持（size+mtime 合成）'}',
+              ),
+            ),
+          ],
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: Text('Range 断点续传：${caps.supportsRange ? '支持' : '不支持'}'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+// ── 四步进度轨（A12b，对齐原型 .stepper）───────────────────────────────────
+
+/// 步骤轨卡：完成 ✓（brand 浅底）/ 当前（brand 实底 + 光环）/ 未开始（灰），
+/// 圆心间连线（走过部分染 brandSoft2）；步骤头部可点（仅已到达步骤）。
+class _TrackCard extends StatelessWidget {
+  const _TrackCard({
+    required this.currentStep,
+    required this.maxVisitedStep,
+    required this.onStepTapped,
+  });
+
+  final int currentStep;
+  final int maxVisitedStep;
+  final ValueChanged<int> onStepTapped;
+
+  static const _titles = <String>['生成应用密码', '输入账号与应用密码', '自动连接测试', '完成'];
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.appTokens;
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.s5),
+      decoration: BoxDecoration(
+        color: t.surface,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(color: t.border),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth;
+          const gap = AppSpacing.s4;
+          final cell = (width - gap * (_kStepCount - 1)) / _kStepCount;
+          final half = cell / 2;
+          return Stack(
+            children: [
+              // 圆心连线：从第 1 个圆心到第 4 个圆心（列内圆直径 30、上内边距
+              // s1=4，圆心 y = 4 + 15 = 19；2px 线从 18 画到 20 居中对齐）。
+              Positioned(
+                top: 18,
+                left: half,
+                right: half,
+                child: Container(height: 2, color: t.border),
+              ),
+              // 已走过部分：到当前步圆心为止染 brandSoft2。
+              if (currentStep > 0)
+                Positioned(
+                  top: 18,
+                  left: half,
+                  width: currentStep * (cell + gap),
+                  child: Container(height: 2, color: t.brandSoft2),
+                ),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (var i = 0; i < _kStepCount; i++) ...[
+                    if (i > 0) const SizedBox(width: gap),
+                    Expanded(
+                      child: _TrackStepCell(
+                        index: i,
+                        title: _titles[i],
+                        state: i < currentStep
+                            ? _TrackStepState.done
+                            : i == currentStep
+                            ? _TrackStepState.current
+                            : _TrackStepState.pending,
+                        enabled: i <= maxVisitedStep && i != currentStep,
+                        onTap: () => onStepTapped(i),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// 单个步骤列（圆形序号 + 标题 + 状态说明）。
+class _TrackStepCell extends StatelessWidget {
+  const _TrackStepCell({
+    required this.index,
+    required this.title,
+    required this.state,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final int index;
+  final String title;
+  final _TrackStepState state;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.appTokens;
+    final (desc, descColor) = switch (state) {
+      _TrackStepState.done => ('已完成', t.brandText),
+      _TrackStepState.current => ('进行中', t.brand),
+      _TrackStepState.pending => ('待进行', t.text3),
+    };
+    return InkWell(
+      onTap: enabled ? onTap : null,
+      borderRadius: BorderRadius.circular(AppRadius.md),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: AppSpacing.s1),
+        child: Column(
+          children: [
+            _circle(t),
+            const SizedBox(height: AppSpacing.s2),
+            // FittedBox：窄窗下长标题缩放，不横向溢出。
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                title,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: state == _TrackStepState.pending ? t.text2 : t.text,
+                ),
+                maxLines: 1,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(desc, style: TextStyle(fontSize: 11, color: descColor)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 圆形序号：完成 = brand 浅底 ✓；当前 = brand 实底 + 光环；未开始 = 灰。
+  Widget _circle(AppDesignTokens t) {
+    final done = state == _TrackStepState.done;
+    final current = state == _TrackStepState.current;
+    return Container(
+      width: 30,
+      height: 30,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: done
+            ? t.brandSoft
+            : current
+            ? t.brand
+            : t.surface3,
+        boxShadow: current
+            ? [BoxShadow(color: t.brandSoft, blurRadius: 0, spreadRadius: 4)]
+            : null,
+      ),
+      child: done
+          ? Icon(Icons.check, size: 14, color: t.brandText)
+          : Text(
+              '${index + 1}',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: current ? Colors.white : t.text3,
+              ),
+            ),
+    );
+  }
+}
+
+// ── 内容卡与提示构件 ────────────────────────────────────────────────────────
+
+/// 「已保存的配置」快捷卡（向导页顶部，四步进度轨之下）。
+///
+/// 已有保存配置时出现：显示账号 · 根目录，并提供「使用已保存的配置测试」
+/// 次要按钮——不填表直接跑第 3 步的连接测试；结果复用与同步设置页相同的
+/// 结果组件（[ConnectionTestResultView]），避免两处样式漂移。
+class _SavedConfigCard extends StatelessWidget {
+  const _SavedConfigCard({
+    required this.account,
+    required this.rootPath,
+    required this.testing,
+    required this.result,
+    required this.missing,
+    required this.onTest,
+    required this.onFill,
+  });
+
+  /// 已保存的账号（展示用；不含密码）。
+  final String account;
+
+  /// 已保存的同步根目录。
+  final String rootPath;
+
+  /// 测试进行中（按钮 loading 态）。
+  final bool testing;
+
+  /// 测试结果（null = 还没测过）。
+  final ConnectionTestResult? result;
+
+  /// 已保存配置读不到（提示 + 引导回第 2 步填写）。
+  final bool missing;
+
+  /// 跑一次「使用已保存的配置测试」。
+  final VoidCallback onTest;
+
+  /// 引导回第 2 步（输入账号与应用密码）。
+  final VoidCallback onFill;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.appTokens;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.s5,
+        AppSpacing.s4,
+        AppSpacing.s5,
+        AppSpacing.s4,
+      ),
+      decoration: BoxDecoration(
+        color: t.surface,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(color: t.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.link, size: 18, color: t.text2),
+              const SizedBox(width: AppSpacing.s3),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '已保存的配置',
+                      style: t.sm.copyWith(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '$account · $rootPath',
+                      style: t.tertiary,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: AppSpacing.s3),
+              TextButton(
+                onPressed: testing ? null : onTest,
+                child: Text(testing ? '测试中…' : '使用已保存的配置测试'),
+              ),
+            ],
+          ),
+          if (missing) ...[
+            const SizedBox(height: AppSpacing.s3),
+            Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, size: 17, color: t.warn),
+                const SizedBox(width: AppSpacing.s3),
+                Expanded(
+                  child: Text(
+                    '已保存的配置读取不到，请填写账号与应用密码',
+                    style: t.sm.copyWith(color: t.warn),
+                  ),
+                ),
+                TextButton(onPressed: onFill, child: const Text('去填写')),
+              ],
+            ),
+          ],
+          if (result != null) ...[
+            const SizedBox(height: AppSpacing.s3),
+            ConnectionTestResultView(result: result!),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// 当前步内容卡：正文区 + 底部控件区（右对齐，上一步/主按钮）。
+class _ContentCard extends StatelessWidget {
+  const _ContentCard({
+    required this.content,
+    required this.controls,
+    required this.currentStep,
+  });
+
+  final Widget content;
+  final Widget controls;
+  final int currentStep;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.appTokens;
+    return Container(
+      decoration: BoxDecoration(
+        color: t.surface,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(color: t.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.s5,
+              AppSpacing.s4,
+              AppSpacing.s5,
+              AppSpacing.s4,
+            ),
+            child: content,
+          ),
+          Container(
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.s5,
+              AppSpacing.s3,
+              AppSpacing.s5,
+              AppSpacing.s4,
+            ),
+            decoration: BoxDecoration(
+              border: Border(top: BorderSide(color: t.border)),
+            ),
+            child: controls,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 引导提示条（原型 .notice--warn：应用密码说明等）。
+class _Notice extends StatelessWidget {
+  const _Notice(this.text, {this.severe = false});
+
+  final String text;
+
+  /// true = danger 语气（连接失败原因），false = warn 语气。
+  final bool severe;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.appTokens;
+    final fg = severe ? t.danger : t.warn;
+    final bg = severe ? t.dangerSoft : t.warnSoft;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.s4,
+        vertical: AppSpacing.s3,
+      ),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: fg.withValues(alpha: 0.22)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            severe ? Icons.error_outline : Icons.info_outline,
+            size: 17,
+            color: fg,
+          ),
+          const SizedBox(width: AppSpacing.s3),
+          Expanded(
+            child: Text(text, style: t.sm.copyWith(color: fg)),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -511,19 +990,24 @@ class _AdvancedWebDav extends StatelessWidget {
   Widget build(BuildContext context) {
     return Theme(
       data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-      child: ExpansionTile(
-        tilePadding: EdgeInsets.zero,
-        childrenPadding: EdgeInsets.zero,
-        title: const Text('高级：自定义 WebDAV 地址/根目录'),
-        subtitle: const Text(
-          'P1 功能（兼容其他 WebDAV 服务）',
-          style: TextStyle(fontSize: 11),
+      // Material(transparency)：ExpansionTile 内部 ListTile 在带底色的卡片
+      // DecoratedBox 内直接使用会触发"墨水不可见"断言，显式提供 Material 层。
+      child: Material(
+        type: MaterialType.transparency,
+        child: ExpansionTile(
+          tilePadding: EdgeInsets.zero,
+          childrenPadding: EdgeInsets.zero,
+          title: const Text('高级：自定义 WebDAV 地址/根目录'),
+          subtitle: const Text(
+            'P1 功能（兼容其他 WebDAV 服务）',
+            style: TextStyle(fontSize: 11),
+          ),
+          children: [
+            _GuideTextField(controller: baseUrl, label: 'WebDAV 地址'),
+            const SizedBox(height: 12),
+            _GuideTextField(controller: rootPath, label: '同步根目录'),
+          ],
         ),
-        children: [
-          _GuideTextField(controller: baseUrl, label: 'WebDAV 地址'),
-          const SizedBox(height: 12),
-          _GuideTextField(controller: rootPath, label: '同步根目录'),
-        ],
       ),
     );
   }
