@@ -1,5 +1,7 @@
-/// TxtRenderer 视图冒烟测试：page/scroll 双模式 buildView 可渲染出章首内容，
-/// page 模式页脚可见（排版计算用 debugSyncPagination 同步化以适配 FakeAsync）。
+/// TxtRenderer 视图冒烟测试：page/scroll 双模式 buildView 可渲染出章首内容
+/// （排版计算用 debugSyncPagination 同步化以适配 FakeAsync）。
+/// v1.1：渲染器内置页脚已移除（页码/进度由宿主底部控制条承载，A8），
+/// 正文段落带 2em 首行缩进并两端对齐（A10）。
 library;
 
 import 'dart:convert';
@@ -13,6 +15,7 @@ import 'package:sync_reader/features/reader/contract/progress_anchor.dart';
 import 'package:sync_reader/features/reader/contract/reader_settings.dart';
 import 'package:sync_reader/features/reader/formats/txt/txt_format_handler.dart';
 import 'package:sync_reader/features/reader/formats/txt/txt_paginator.dart';
+import 'package:sync_reader/features/reader/formats/txt/txt_renderer.dart';
 
 /// 章内容足够长：确保末章远超 ListView cacheExtent，惰性断言稳定。
 final String bookText =
@@ -44,15 +47,17 @@ void main() {
     TxtPaginator.debugSyncPagination = false;
   });
 
-  testWidgets('page 模式：渲染章首页文本与页脚进度', (tester) async {
+  testWidgets('page 模式：渲染章首页文本（含 2em 缩进），无内置页脚', (tester) async {
     final bf = (await tester.runAsync(_writeBook))!;
-    final renderer = (await tester.runAsync(
-      () => TxtFormatHandler().createRenderer(
-        bf,
-        ReaderSettings.defaults.copyWith(pageMode: ReaderPageMode.page),
-        ProgressAnchor.empty,
-      ),
-    ))!;
+    final renderer =
+        (await tester.runAsync(
+              () => TxtFormatHandler().createRenderer(
+                bf,
+                ReaderSettings.defaults.copyWith(pageMode: ReaderPageMode.page),
+                ProgressAnchor.empty,
+              ),
+            ))!
+            as TxtRenderer;
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -64,7 +69,20 @@ void main() {
 
     expect(find.byType(PageView), findsOneWidget);
     expect(find.textContaining('第一章 开端'), findsWidgets, reason: '首屏页含章首内容');
-    expect(find.textContaining('·'), findsWidgets, reason: '页脚含"章题 x/y · 进度"');
+    // A10：正文显示文本带 2em 全角空格缩进（分页器与视图共用同一变换）。
+    final pageText = tester.widget<Text>(
+      find
+          .descendant(of: find.byType(PageView), matching: find.byType(Text))
+          .first,
+    );
+    expect(
+      (pageText.data ?? '').startsWith(kReaderParagraphIndent),
+      isTrue,
+      reason: '页首段落带 2em 首行缩进',
+    );
+    expect(pageText.textAlign, TextAlign.justify, reason: 'A10 两端对齐');
+    // A8：页脚移除，页码信息经 currentPageInfo 能力供宿主控制条。
+    expect(renderer.currentPageInfo, isNotNull);
 
     renderer.dispose();
   });

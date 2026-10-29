@@ -101,7 +101,15 @@ void main() {
 
   testWidgets('scroll 模式：nextPage 滚一屏，滚到末尾后为边界 false', (tester) async {
     final bf = (await tester.runAsync(writeEpubBook))!;
-    final renderer = (await tester.runAsync(() => openRenderer(bf)))!;
+    // Q9：出厂默认改「分页」，滚动模式用例显式指定。
+    final renderer = (await tester.runAsync(
+      () => openRenderer(
+        bf,
+        settings: ReaderSettings.defaults.copyWith(
+          pageMode: ReaderPageMode.scroll,
+        ),
+      ),
+    ))!;
     addTearDown(renderer.dispose);
     await pumpReader(tester, renderer);
 

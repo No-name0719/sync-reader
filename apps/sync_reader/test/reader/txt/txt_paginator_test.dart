@@ -3,6 +3,7 @@
 library;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sync_reader/features/reader/formats/txt/txt_paginator.dart';
 
@@ -154,6 +155,118 @@ void main() {
       expect(TxtPaginator.pageIndexOf(pages, 24), 2);
       expect(TxtPaginator.pageIndexOf(pages, 100), 2, reason: '越界钳到末页');
       expect(TxtPaginator.pageIndexOf(const [], 5), 0);
+    });
+  });
+
+  group('v1.1 A10 中文排版（首行缩进 + 两端对齐）', () {
+    test('txtDisplayText：每个段落首行插入 2em 缩进', () {
+      const text = '第一段。\n第二段。\n第三段。';
+      final display = txtDisplayText(text, 0, text.length);
+      expect(
+        display,
+        '$txtParagraphIndent第一段。\n$txtParagraphIndent第二段。\n$txtParagraphIndent第三段。',
+      );
+    });
+
+    test('txtDisplayText：空行与 \\r 起始行不缩进（CRLF 空行不加占位）', () {
+      const text = '甲段。\n\n乙段。\r\n丙段。';
+      final display = txtDisplayText(text, 0, text.length);
+      // 空行本身不加缩进（缩进后紧跟换行/回车 = 给空行加了占位）。
+      expect(
+        display.contains('$txtParagraphIndent\n'),
+        isFalse,
+        reason: '空行不应插入缩进（否则平白多一行）',
+      );
+      expect(
+        display.contains('$txtParagraphIndent\r'),
+        isFalse,
+        reason: '\\r 起始行不应插入缩进',
+      );
+      // 空行之后的正常段落仍缩进。
+      expect(display.contains('\n\n$txtParagraphIndent乙段。'), isTrue);
+      expect(
+        display.contains('\r\n$txtParagraphIndent丙段。'),
+        isTrue,
+        reason: 'CRLF 行结束后的正常段落仍缩进',
+      );
+    });
+
+    test('txtDisplayText：续页起点在段中不缩进（页界不产生假段落头）', () {
+      const text = '甲段落内容。\n乙段落内容。';
+      // 从乙段第二个字符起（段中续行）→ 区间首不缩进。
+      final start = text.indexOf('乙') + 1;
+      final display = txtDisplayText(text, start, text.length);
+      expect(display.startsWith(txtParagraphIndent), isFalse);
+      expect(display, '段落内容。');
+    });
+
+    test('txtDisplayText：不删改原字符（只插入），区间外不受影响', () {
+      const text = '甲。\n乙。';
+      final display = txtDisplayText(text, text.indexOf('乙'), text.length);
+      expect(display, '$txtParagraphIndent乙。');
+      // 全文变换是逐段的真超集：去掉缩进后还原原文。
+      final full = txtDisplayText(text, 0, text.length);
+      expect(full.replaceAll(txtParagraphIndent, ''), text);
+    });
+
+    test('缩进 + justify 分页：结构不变量仍成立', () {
+      final text = _sampleText(lines: 80);
+      final pages = TxtPaginator.paginateSync(
+        TxtPaginationRequest(
+          text: text,
+          fontSize: _fontSize,
+          lineHeight: _lineHeight,
+          viewportWidth: _viewportWidth,
+          viewportHeight: _viewportHeight,
+          paragraphIndent: txtParagraphIndent,
+          textAlign: TextAlign.justify,
+        ),
+      );
+      expect(pages.length, greaterThan(3));
+      _expectInvariants(pages, text.length);
+    });
+
+    test('缩进参与排版：同视口下首页容纳字符数不多于无缩进（不溢出）', () {
+      final text = _sampleText(lines: 60);
+      List<TxtPageRange> paginate({required bool indent}) =>
+          TxtPaginator.paginateSync(
+            TxtPaginationRequest(
+              text: text,
+              fontSize: _fontSize,
+              lineHeight: _lineHeight,
+              viewportWidth: _viewportWidth,
+              viewportHeight: _viewportHeight,
+              paragraphIndent: indent ? txtParagraphIndent : '',
+            ),
+          );
+      final withIndent = paginate(indent: true);
+      final withoutIndent = paginate(indent: false);
+      expect(
+        withIndent.first.end,
+        lessThanOrEqualTo(withoutIndent.first.end),
+        reason: '缩进字符参与测量：每段首行变长，首页容量不增（不产生视口溢出）',
+      );
+      expect(withoutIndent.first.end, lessThan(text.length));
+    });
+
+    test('justify 与 left 测量行断点一致（justify 不改变换页位置）', () {
+      final text = _sampleText(lines: 60);
+      List<TxtPageRange> paginate(TextAlign align) => TxtPaginator.paginateSync(
+        TxtPaginationRequest(
+          text: text,
+          fontSize: _fontSize,
+          lineHeight: _lineHeight,
+          viewportWidth: _viewportWidth,
+          viewportHeight: _viewportHeight,
+          textAlign: align,
+        ),
+      );
+      final justified = paginate(TextAlign.justify);
+      final left = paginate(TextAlign.left);
+      expect(justified.length, left.length, reason: 'justify 不改变行断点');
+      for (var i = 0; i < justified.length; i++) {
+        expect(justified[i], left[i], reason: '第$i页断点应一致');
+      }
     });
   });
 }

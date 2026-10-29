@@ -2,6 +2,9 @@
 /// 视图面板注册的委托执行——page 模式跳相邻页（含首末章边界 false），
 /// scroll 模式滚动一屏（含文档端头 false）。构造方式沿用
 /// txt_renderer_widget_test（debugSyncPagination 同步分页适配 FakeAsync）。
+///
+/// Q9（docs/10）：翻页模式出厂默认由滚动改为分页，滚动模式用例显式
+/// copyWith(pageMode: scroll)。
 library;
 
 import 'dart:convert';
@@ -122,10 +125,20 @@ void main() {
 
   group('scroll 模式', () {
     testWidgets('nextPage 滚动一屏；文档顶端向前滚为边界 false', (tester) async {
-      final r = await _pumpReader(tester, ReaderSettings.defaults);
+      // Q9：出厂默认改「分页」，滚动模式显式指定（v1.0 默认值不再隐式成立）。
+      final r = await _pumpReader(
+        tester,
+        ReaderSettings.defaults.copyWith(pageMode: ReaderPageMode.scroll),
+      );
 
-      expect(await r.controller.previousPage(), isFalse, reason: '已在文档顶端');
-      expect(r.positionOffset, 0);
+      // 视图定位校正会把首章顶部对齐到文档坐标（含顶部留白 padding），
+      // 先滚回文档最顶端再测边界。
+      var guards = 0;
+      while (await r.controller.previousPage()) {
+        await tester.pump();
+        expect(guards++, lessThan(5), reason: '防御死循环');
+      }
+      expect(r.positionOffset, 0, reason: '已在文档顶端');
 
       expect(await r.controller.nextPage(), isTrue);
       await tester.pump();
@@ -133,7 +146,10 @@ void main() {
     });
 
     testWidgets('连续 nextPage 到文档末尾后为边界 false', (tester) async {
-      final r = await _pumpReader(tester, ReaderSettings.defaults);
+      final r = await _pumpReader(
+        tester,
+        ReaderSettings.defaults.copyWith(pageMode: ReaderPageMode.scroll),
+      );
 
       var moves = 0;
       while (await r.controller.nextPage()) {

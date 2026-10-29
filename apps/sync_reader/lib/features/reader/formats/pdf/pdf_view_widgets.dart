@@ -10,10 +10,15 @@ import '../../contract/reader_settings.dart';
 import 'pdf_locator.dart';
 
 /// ReaderTheme → pdf 画布背景色（页面外的留白区）。
+///
+/// pdf 不在 docs/10 A11 的四套配色重调范围内（正文保持现状），此处仅做
+/// 新枚举（纸白/米黄/护眼/夜间）的最小适配：沿用 v1.0 观感——纸白页衬
+/// pdfrx 默认灰、米黄沿用旧「纸张」色、护眼取同亮度淡灰绿、夜间不变。
 Color pdfViewerBackgroundColor(ReaderTheme theme) => switch (theme) {
-  ReaderTheme.light => const Color(0xFF9E9E9E), // pdfrx 默认灰
+  ReaderTheme.paper => const Color(0xFF9E9E9E), // pdfrx 默认灰
+  ReaderTheme.beige => const Color(0xFFE8E2D0),
+  ReaderTheme.green => const Color(0xFFD6DFD4),
   ReaderTheme.dark => const Color(0xFF1A1A1A),
-  ReaderTheme.paper => const Color(0xFFE8E2D0),
 };
 
 /// 悬浮页码指示：`当前页 / 总页数`（1 起展示），点击弹出页码跳转对话框。

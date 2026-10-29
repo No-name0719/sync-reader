@@ -78,6 +78,18 @@ class PdfRenderer implements BookRenderer {
   void applySettings(ReaderSettings settings) =>
       controller.applySettings(settings);
 
+  /// 目录条目是否为当前页（[BookRenderer.isTocEntryCurrent] 契约）。
+  ///
+  /// PdfRenderer 以 implements 声明契约（不继承默认实现），须显式实现；
+  /// pdf 不在 docs/10 A8 重做范围，按页码比对提供最小实现。
+  @override
+  bool isTocEntryCurrent(TocEntry entry) {
+    final anchor = entry.anchor;
+    if (anchor is! PdfPageAnchor) return false;
+    final locator = parsePdfLocator(controller.currentLocator.locatorJson);
+    return locator?.pageIndex == anchor.pageIndex;
+  }
+
   @override
   Widget buildView(BuildContext context) =>
       PdfReaderView(controller: controller);

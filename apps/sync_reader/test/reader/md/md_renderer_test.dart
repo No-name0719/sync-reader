@@ -4,8 +4,11 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:sync_reader/core/design_tokens.dart';
 import 'package:sync_reader/features/reader/contract/progress_anchor.dart';
 import 'package:sync_reader/features/reader/contract/reader_settings.dart';
+import 'package:sync_reader/features/reader/contract/toc_entry.dart';
 import 'package:sync_reader/features/reader/formats/md/md_block_parser.dart';
 import 'package:sync_reader/features/reader/formats/md/md_locator.dart';
 import 'package:sync_reader/features/reader/formats/md/md_renderer.dart';
@@ -56,7 +59,8 @@ void main() {
       addTearDown(renderer.dispose);
       await pumpReader(tester, renderer);
       expect(find.text('第一章'), findsOneWidget);
-      expect(find.text('开头段落。'), findsOneWidget);
+      // A10：段落显示文本带 2em 全角空格缩进前缀。
+      expect(find.text('$mdParagraphIndent开头段落。'), findsOneWidget);
     });
 
     testWidgets('空文档渲染占位', (tester) async {
@@ -284,7 +288,7 @@ void main() {
       final container = tester.widget<Container>(
         find.byKey(renderer.viewportKey),
       );
-      expect(container.color, mdPaletteFor(ReaderTheme.light).background);
+      expect(container.color, mdPaletteFor(ReaderTheme.paper).background);
 
       renderer.applySettings(
         const ReaderSettings(theme: ReaderTheme.dark, fontSize: 24),
@@ -296,6 +300,100 @@ void main() {
       );
       expect(updated.color, mdPaletteFor(ReaderTheme.dark).background);
       expect(renderer.settings.fontSize, 24);
+    });
+  });
+
+  group('v1.1 A10 中文排版（缩进 + 两端对齐 + 列宽）', () {
+    testWidgets('段落块前置 2em 全角空格缩进，标题块不缩进', (tester) async {
+      const sample = '# 第一章\n\n开头段落。\n';
+      final blocks = const MdBlockParser().parse(sample);
+      final renderer = MdRenderer(
+        blocks: blocks,
+        documentLength: sample.length,
+      );
+      addTearDown(renderer.dispose);
+      await pumpReader(tester, renderer);
+
+      // 段落 MarkdownBody 的 data 带缩进前缀（显示层，不改 sourceStart）。
+      final paraBody = tester.widget<MarkdownBody>(
+        find.byWidgetPredicate(
+          (w) => w is MarkdownBody && w.data.contains('开头段落'),
+        ),
+      );
+      expect(paraBody.data, '$mdParagraphIndent开头段落。');
+      // 标题块不缩进（data 为原始 markdown 源）。
+      final headBody = tester.widget<MarkdownBody>(
+        find.byWidgetPredicate(
+          (w) => w is MarkdownBody && w.data.contains('第一章'),
+        ),
+      );
+      expect(headBody.data, '# 第一章');
+    });
+
+    testWidgets('正文列宽上限 720：宽屏水平留白居中', (tester) async {
+      tester.view.physicalSize = const Size(1440, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final doc = longDoc(chapters: 2, parasPerChapter: 4);
+      final blocks = const MdBlockParser().parse(doc);
+      final renderer = MdRenderer(blocks: blocks, documentLength: doc.length);
+      addTearDown(renderer.dispose);
+      await pumpReader(tester, renderer);
+
+      final list = tester.widget<ListView>(find.byType(ListView));
+      final padding = list.padding as EdgeInsets;
+      expect(
+        (1440 - padding.horizontal) / 2,
+        closeTo(AppLayout.readerMaxWidth / 2, 0.5),
+        reason: '内容列宽 = 720 居中（两侧留白对称）',
+      );
+      await drainProgressThrottle(tester);
+    });
+  });
+
+  group('v1.1 能力扩展（A8 控制条）', () {
+    testWidgets('jumpToPercent：滚到目标比例所在块，locator 同步', (tester) async {
+      final doc = longDoc();
+      final blocks = const MdBlockParser().parse(doc);
+      final renderer = MdRenderer(blocks: blocks, documentLength: doc.length);
+      addTearDown(renderer.dispose);
+      await pumpReader(tester, renderer);
+
+      // _scrollToBlock 内部 await endOfFrame：先 fire，再泵帧，后等待完成。
+      final jump = renderer.jumpToPercent(0.5);
+      await tester.pumpAndSettle();
+      await jump;
+      final locator = MdLocator.tryDecode(renderer.currentAnchor.locatorJson);
+      expect(locator, isNotNull);
+      expect(
+        renderer.currentAnchor.percent,
+        greaterThan(0.3),
+        reason: '半程跳转落点在文档中部',
+      );
+      await drainProgressThrottle(tester);
+    });
+
+    testWidgets('isTocEntryCurrent：当前所在标题命中', (tester) async {
+      final doc = longDoc(chapters: 3, parasPerChapter: 3);
+      final blocks = const MdBlockParser().parse(doc);
+      final renderer = MdRenderer(blocks: blocks, documentLength: doc.length);
+      addTearDown(renderer.dispose);
+      await pumpReader(tester, renderer);
+
+      final jump = renderer.jumpToPercent(0.8);
+      await tester.pumpAndSettle();
+      await jump;
+      final current = MdLocator.tryDecode(renderer.currentAnchor.locatorJson)!
+          .headingIndex;
+      TocEntry entryAt(int i) => TocEntry(
+        title: '第$i章',
+        level: 0,
+        anchor: MdHeadingAnchor(headingIndex: i),
+      );
+      expect(renderer.isTocEntryCurrent(entryAt(current)), isTrue);
+      expect(renderer.isTocEntryCurrent(entryAt(current + 1)), isFalse);
+      await drainProgressThrottle(tester);
     });
   });
 }

@@ -1,6 +1,8 @@
 /// txt 阅读主题色映射（FR-202/FR-206）：ReaderTheme → 背景/正文/辅助色。
 ///
-/// 供渲染器内部与集成阶段复用（如阅读页背景随主题联动）。
+/// v1.1（docs/10 A11）：色值权威源为 `core/design_tokens.dart` 的
+/// `ReaderPalette`（纸白/米黄/护眼/夜间 四套），本文件只做角色映射，
+/// 不再自带色值——三格式共用同一权威，避免各写一份。
 library;
 
 import 'package:flutter/material.dart';
@@ -24,22 +26,13 @@ class TxtThemeColors {
   /// 辅助色（页脚章题/进度等弱化信息）。
   final Color dim;
 
-  /// [ReaderTheme] → txt 配色。纸色取 #F5EFDC 系。
-  static TxtThemeColors of(ReaderTheme theme) => switch (theme) {
-    ReaderTheme.light => const TxtThemeColors(
-      background: Color(0xFFFFFFFF),
-      foreground: Color(0xFF262626),
-      dim: Color(0x99262626),
-    ),
-    ReaderTheme.dark => const TxtThemeColors(
-      background: Color(0xFF121212),
-      foreground: Color(0xFFC8C8C8),
-      dim: Color(0x8AC8C8C8),
-    ),
-    ReaderTheme.paper => const TxtThemeColors(
-      background: Color(0xFFF5EFDC),
-      foreground: Color(0xFF43382A),
-      dim: Color(0x9943382A),
-    ),
-  };
+  /// [ReaderTheme] → txt 配色（取 design_tokens 的权威 ReaderPalette）。
+  static TxtThemeColors of(ReaderTheme theme) {
+    final palette = theme.palette;
+    return TxtThemeColors(
+      background: palette.bg,
+      foreground: palette.fg,
+      dim: palette.muted,
+    );
+  }
 }

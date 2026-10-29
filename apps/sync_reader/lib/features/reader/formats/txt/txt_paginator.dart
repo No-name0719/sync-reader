@@ -7,12 +7,69 @@
 /// - 单调性：区间严格递增、每页至少 1 字符；
 /// - 代理对安全：页界不落在 UTF-16 代理对中间。
 ///
+/// v1.1（docs/10 A10 中文排版）：测量与渲染共用 [txtDisplayText] —— 段落
+/// 首行插入 2em 全角空格缩进，保证分页测量与视图渲染的排版完全一致；
+/// 缩进字符只出现在显示层，**不改页区间的字符坐标语义**（locator 兼容）。
+///
+/// 两端对齐说明（A10 结论）：Flutter 3.47 的 `TextPainter` 支持
+/// `TextAlign.justify`（libtxt 引擎级两端对齐，仅作用于软换行行，显式
+/// `\n` 结尾的段落末行保持左对齐，正是中文排版要的行为）。分页器按
+/// 整块测量（非逐行排版），justify 与视图渲染同参数，行断点与高度一致。
+///
 /// 章为页边界：分页只作用于单章文本，章末页不满也翻页（由渲染器逐章调用）。
 /// 计算放 isolate：[TxtPaginator.paginate]（isolate 不可用时自动回退主 isolate）。
 library;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
+
+import '../../contract/reader_settings.dart' show kReaderParagraphIndent;
+
+/// 段落首行缩进量（A10：2em 全角空格，单一事实源见
+/// reader_settings.dart 的 [kReaderParagraphIndent]）。
+const String txtParagraphIndent = kReaderParagraphIndent;
+
+/// 章内区间 [start, end) → 显示文本：对区间内每个段落首行插入 [indent]。
+///
+/// 分页器测量与渲染视图**必须共用**本函数，保证两侧排版一致。规则：
+/// - 区间起点在段落首（start == 0 或前一字符是 `\n`）且该段非空行 → 插入；
+/// - 区间内每个 `\n` 之后（下一段非空行）→ 插入；
+/// - 空行（`\n\n`）与 `\r` 起始行（CRLF 空行/孤立回车）不插入——空行插入
+///   缩进会平白多出一行占位，破坏与裸文本排版的一致性；
+/// - 只插入不删改：返回文本长度 ≥ 原区间长度，偏移坐标不受影响。
+String txtDisplayText(
+  String chapterText,
+  int start,
+  int end, {
+  String indent = txtParagraphIndent,
+}) {
+  final raw = chapterText.substring(start, end);
+  if (indent.isEmpty || start >= end) return raw;
+  final buffer = StringBuffer();
+  // 区间首段：段落首行且非空行才缩进（续页起点在段中则不缩进）。
+  final atParagraphStart =
+      start == 0 || chapterText.codeUnitAt(start - 1) == 0x0A;
+  if (atParagraphStart && _paragraphHasContent(chapterText, start, end)) {
+    buffer.write(indent);
+  }
+  for (var i = start; i < end; i++) {
+    final unit = chapterText.codeUnitAt(i);
+    buffer.writeCharCode(unit);
+    if (unit == 0x0A &&
+        i + 1 < end &&
+        _paragraphHasContent(chapterText, i + 1, end)) {
+      buffer.write(indent);
+    }
+  }
+  return buffer.toString();
+}
+
+/// 段落首字符是否为可显示内容（`\n` 与 `\r` 视为空行/回车，不缩进）。
+bool _paragraphHasContent(String text, int start, int end) {
+  if (start >= end) return false;
+  final first = text.codeUnitAt(start);
+  return first != 0x0A && first != 0x0D;
+}
 
 /// 页区间：章内字符偏移 [start, end)。
 class TxtPageRange {
@@ -45,6 +102,9 @@ class TxtPaginationRequest {
     required this.viewportWidth,
     required this.viewportHeight,
     this.fontFamily,
+    this.fontFamilyFallback,
+    this.paragraphIndent = txtParagraphIndent,
+    this.textAlign = TextAlign.left,
   });
 
   /// 章内文本。
@@ -58,6 +118,15 @@ class TxtPaginationRequest {
 
   /// 字体族（null = 平台默认）。
   final String? fontFamily;
+
+  /// 字体回退栈（v1.1 衬线/黑体/楷体系统栈）。
+  final List<String>? fontFamilyFallback;
+
+  /// 段落首行缩进（A10；空串 = 不缩进）。
+  final String paragraphIndent;
+
+  /// 对齐方式（A10 两端对齐：渲染与测量同参数，见库注释结论）。
+  final TextAlign textAlign;
 
   /// 视口宽（已扣除页边距）。
   final double viewportWidth;
@@ -192,6 +261,9 @@ final class TxtPaginator {
 
   /// 尝试排版 `text[start..endLimit)`；返回实际采用的区间终点
   ///（代理对边界修正后），放不下返回 0。
+  ///
+  /// 测量对象为 [txtDisplayText] 变换后的显示文本（含段落缩进），与渲染
+  /// 视图共用同一变换——缩进字符参与排版，页内容不会因缩进而溢出。
   static int _tryFit(
     TextPainter painter,
     TxtPaginationRequest request,
@@ -202,13 +274,15 @@ final class TxtPaginator {
     final end = _boundaryEnd(text, start, endLimit);
     if (end <= start) return 0;
     painter.text = TextSpan(
-      text: text.substring(start, end),
+      text: txtDisplayText(text, start, end, indent: request.paragraphIndent),
       style: TextStyle(
         fontSize: request.fontSize,
         height: request.lineHeight,
         fontFamily: request.fontFamily,
+        fontFamilyFallback: request.fontFamilyFallback,
       ),
     );
+    painter.textAlign = request.textAlign;
     painter.layout(maxWidth: request.viewportWidth);
     return painter.height <= request.viewportHeight + _heightEpsilon ? end : 0;
   }

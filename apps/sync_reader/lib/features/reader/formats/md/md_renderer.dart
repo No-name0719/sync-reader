@@ -12,15 +12,23 @@
 ///   [MdReaderController.currentLocator]/[MdReaderController.percent] 始终实时，
 ///   宿主退出/切后台时主动读取兜底落库（FR-207）。
 ///
+/// 排版（v1.1 A10 中文习惯）：正文列宽上限 720（AppLayout.readerMaxWidth，
+/// 居中）、衬线为默认字体（Q2，经 resolveReaderFont）、正文段落两端对齐
+/// （md_style 的 textAlign=spaceBetween → p 块 justify）+ 段落块首行缩进
+/// 2em（两个全角空格前置，等价 textIndent；只改显示层，sourceStart 与
+/// locator 坐标不变）。
+///
 /// 已知边界（报告事项）：pageMode == page 暂按 scroll 处理（FR-204 未强制分页）；
 /// md 内相对路径图片渲染占位；链接可渲染但点击行为待集成阶段接入。
 library;
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 
+import '../../../../core/design_tokens.dart' show AppLayout;
 import '../../contract/book_renderer.dart';
 import '../../contract/progress_anchor.dart';
 import '../../contract/reader_controller.dart';
@@ -29,6 +37,13 @@ import '../../contract/toc_entry.dart';
 import 'md_block_parser.dart';
 import 'md_locator.dart';
 import 'md_style.dart';
+
+/// md 正文段落首行缩进（A10：2em 全角空格等价实现，单一事实源见
+/// reader_settings.dart 的 kReaderParagraphIndent）。
+///
+/// 只前置到段落块的 Markdown 源前面（显示层），全角空格不属于 Markdown
+/// 的缩进语法（代码块判定只认 ASCII 空格/制表符），不改变块类型解析。
+const String mdParagraphIndent = kReaderParagraphIndent;
 
 /// md 阅读控制器：[ReaderController] 的薄壳，逻辑在 [MdRenderer]。
 class MdReaderController extends ReaderController {
@@ -60,7 +75,7 @@ class MdReaderController extends ReaderController {
 }
 
 /// md 渲染器（scroll 模式）。
-class MdRenderer extends BookRenderer {
+class MdRenderer extends BookRenderer implements ReaderPercentJump {
   /// [blocks] 为块解析结果；[documentLength] 是全文源文本字符数（percent 分母）；
   /// [initialAnchor] 为已保存进度（宿主随后应调用 [controller.restore] 完成
   /// 定位滚动；创建时仅同步 currentLocator，不滚动）。
@@ -233,8 +248,13 @@ class MdRenderer extends BookRenderer {
   /// 构建单块视图（ [_MdReaderView] 的 itemBuilder 委托）。
   Widget buildBlock(BuildContext context, int index) {
     final block = _blocks[index];
+    // A10：正文段落块前置 2em 全角空格作首行缩进（标题/列表/代码/引用/
+    // 表格/图片不缩进）；只改显示层，sourceStart/locator 坐标不受影响。
+    final data = block.type == MdBlockType.paragraph
+        ? '$mdParagraphIndent${block.content}'
+        : block.content;
     final content = MarkdownBody(
-      data: block.content,
+      data: data,
       styleSheet: _styleSheet,
       imageBuilder: (uri, title, alt) => _buildImage(uri, alt),
       softLineBreak: false,
@@ -333,6 +353,36 @@ class MdRenderer extends BookRenderer {
     // 触发 _handleScroll → currentLocator/percent 刷新 + 节流上报。
     ctrl.jumpTo(target);
     return Future.value(true);
+  }
+
+  /// 按全书比例跳转（[ReaderPercentJump] 契约；进度滑块用）：
+  /// percent → 最近块（与降级恢复同一换算）并滚到块顶，locator 同步刷新。
+  @override
+  Future<void> jumpToPercent(double percent) async {
+    if (_disposed || _blocks.isEmpty) return;
+    final target = MdPositionMath.blockIndexForPercent(
+      _blocks,
+      _documentLength,
+      percent.clamp(0.0, 1.0),
+    );
+    _locatorJson = MdLocator.encode(
+      headingIndex: MdPositionMath.headingIndexUpTo(_blocks, target),
+      blockIndex: target,
+      charOffset: _blocks[target].sourceStart,
+    );
+    await _scrollToBlock(target);
+  }
+
+  /// 目录条目是否为当前所在标题（[BookRenderer.isTocEntryCurrent] 契约）。
+  @override
+  bool isTocEntryCurrent(TocEntry entry) {
+    final anchor = entry.anchor;
+    final parsed = anchor is MdHeadingAnchor
+        ? anchor
+        : MdHeadingAnchor.tryParse(anchor.toString());
+    if (parsed == null) return false;
+    final current = MdLocator.tryDecode(_locatorJson)?.headingIndex ?? 0;
+    return parsed.headingIndex == current;
   }
 
   // ---- 进度定位与恢复 ----
@@ -565,12 +615,25 @@ class _MdReaderViewState extends State<_MdReaderView> {
           ? Center(
               child: Text('（空文档）', style: TextStyle(color: palette.secondary)),
             )
-          : ListView.builder(
-              controller: renderer.scrollController,
-              padding: EdgeInsets.all(renderer.settings.pageMargin),
-              itemCount: blocks.length,
-              itemBuilder: (context, index) =>
-                  renderer.buildBlock(context, index),
+          : LayoutBuilder(
+              builder: (context, constraints) {
+                // 正文列宽上限 720（A10）：宽屏水平留白居中，窄屏保持页边距。
+                final margin = renderer.settings.pageMargin;
+                final horizontal = math.max(
+                  margin,
+                  (constraints.maxWidth - AppLayout.readerMaxWidth) / 2,
+                );
+                return ListView.builder(
+                  controller: renderer.scrollController,
+                  padding: EdgeInsets.symmetric(
+                    horizontal: horizontal,
+                    vertical: margin,
+                  ),
+                  itemCount: blocks.length,
+                  itemBuilder: (context, index) =>
+                      renderer.buildBlock(context, index),
+                );
+              },
             ),
     );
   }

@@ -8,7 +8,9 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
 import 'package:sync_core/sync_core.dart' as core;
+import 'package:sync_reader/core/design_tokens.dart';
 import 'package:sync_reader/features/reader/contract/book_file.dart';
 import 'package:sync_reader/features/reader/contract/progress_anchor.dart';
 import 'package:sync_reader/features/reader/contract/reader_settings.dart';
@@ -42,12 +44,17 @@ Future<BookFile> writeEpubBook() async {
 }
 
 /// 经 handler.createRenderer 打开渲染会话（真实解析链路）。
+///
+/// 默认滚动模式（Q9 后出厂默认为分页）：restore/jumpTo 的落点语义按
+/// 滚动坐标系断言；页模式的 PageScrollPhysics 吸附会在 jumpTo 后把位置
+/// 吸附到最近视口页边界（jumpTo → goBallistic(0) 的物理行为），页模式
+/// 本身由「页模式切换」用例单独覆盖。
 Future<EpubRenderer> openRenderer(
   BookFile bf, {
-  ReaderSettings settings = ReaderSettings.defaults,
+  ReaderSettings? settings,
 }) async => (await EpubFormatHandler().createRenderer(
   bf,
-  settings,
+  settings ?? ReaderSettings.defaults.copyWith(pageMode: ReaderPageMode.scroll),
   ProgressAnchor.empty,
 )) as EpubRenderer;
 
@@ -395,7 +402,7 @@ void main() {
       final container = tester.widget<Container>(
         find.byKey(renderer.viewportKey),
       );
-      expect(container.color, EpubThemeColors.of(ReaderTheme.light).background);
+      expect(container.color, EpubThemeColors.of(ReaderTheme.paper).background);
 
       final jumpFuture = renderer.controller.jumpTo(toc[1]);
       await tester.pumpAndSettle();
@@ -431,6 +438,108 @@ void main() {
       expect(list.physics, isA<PageScrollPhysics>());
       expect(renderer.settings.pageMode, ReaderPageMode.page);
       expect(tester.takeException(), isNull);
+      await drainProgressThrottle(tester);
+    });
+  });
+
+  group('v1.1 A10 中文排版（缩进 + 两端对齐 + 列宽）', () {
+    testWidgets('正文段落包装 justify 样式 + 2em 全角空格缩进', (tester) async {
+      final bf = (await tester.runAsync(writeEpubBook))!;
+      final renderer = (await tester.runAsync(() => openRenderer(bf)))!;
+      addTearDown(renderer.dispose);
+      await pumpReader(tester, renderer);
+
+      // 找一个段落块的 HtmlWidget：外层 div 注入 text-align: justify，
+      // 段首插入两个全角空格（fwfh 无 text-indent 的等价实现）。
+      final htmlWidgets = tester.widgetList<HtmlWidget>(
+        find.byType(HtmlWidget),
+      );
+      final paragraphHtml = htmlWidgets
+          .map((w) => w.html)
+          .where((h) => h.contains('text-align: justify'))
+          .toList();
+      expect(paragraphHtml, isNotEmpty, reason: '正文段落应带 justify 包装');
+      expect(
+        paragraphHtml.first.startsWith(
+          '<div style="text-align: justify">$epubParagraphIndent',
+        ),
+        isTrue,
+      );
+      // 标题块不带 justify 包装（只对正文段落缩进）。
+      final headingHtml = htmlWidgets
+          .map((w) => w.html)
+          .where((h) => RegExp(r'^<h[1-6]').hasMatch(h))
+          .toList();
+      for (final h in headingHtml) {
+        expect(
+          h.contains('text-align: justify'),
+          isFalse,
+          reason: '标题/引用不缩进：$h',
+        );
+      }
+      await drainProgressThrottle(tester);
+    });
+
+    testWidgets('正文列宽上限 720：宽屏水平留白居中', (tester) async {
+      tester.view.physicalSize = const Size(1440, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final bf = (await tester.runAsync(writeEpubBook))!;
+      final renderer = (await tester.runAsync(() => openRenderer(bf)))!;
+      addTearDown(renderer.dispose);
+      await pumpReader(tester, renderer);
+
+      final list = tester.widget<ListView>(find.byType(ListView));
+      final padding = list.padding as EdgeInsets;
+      expect(
+        (1440 - padding.horizontal) / 2,
+        closeTo(AppLayout.readerMaxWidth / 2, 0.5),
+        reason: '内容列宽 = 720 居中（两侧留白对称）',
+      );
+      await drainProgressThrottle(tester);
+    });
+  });
+
+  group('v1.1 能力扩展（A8 控制条）', () {
+    testWidgets('jumpToPercent：跳到目标比例所在 spine 并定位', (tester) async {
+      final bf = (await tester.runAsync(writeEpubBook))!;
+      final renderer = (await tester.runAsync(() => openRenderer(bf)))!;
+      addTearDown(renderer.dispose);
+      await pumpReader(tester, renderer);
+
+      // 定位循环内部 await endOfFrame：先 fire，再泵帧，后等待完成。
+      final toEnd = renderer.jumpToPercent(1.0);
+      await tester.pumpAndSettle();
+      await toEnd;
+      // 末尾定位按视口顶计量：落在最后一个有块的 spine，滚动已到文档底
+      // （percent = 视口顶可见块比例，介于末页起点与 1 之间）。
+      expect(renderer.positionSpine, renderer.spineCount - 1);
+      expect(
+        renderer.scrollController.offset,
+        closeTo(renderer.scrollController.position.maxScrollExtent, 1.0),
+      );
+      expect(renderer.percent, greaterThan(0.5));
+
+      final toStart = renderer.jumpToPercent(0);
+      await tester.pumpAndSettle();
+      await toStart;
+      expect(renderer.positionSpine, 0, reason: '开头跳回首 spine');
+      await drainProgressThrottle(tester);
+    });
+
+    testWidgets('isTocEntryCurrent：当前 spine 的目录条目命中', (tester) async {
+      final bf = (await tester.runAsync(writeEpubBook))!;
+      final toc = (await tester.runAsync(() => parseToc(bf)))!;
+      final renderer = (await tester.runAsync(() => openRenderer(bf)))!;
+      addTearDown(renderer.dispose);
+      await pumpReader(tester, renderer);
+
+      final jump = renderer.controller.jumpTo(toc.last);
+      await tester.pumpAndSettle();
+      await jump;
+      expect(renderer.isTocEntryCurrent(toc.last), isTrue);
+      expect(renderer.isTocEntryCurrent(toc.first), isFalse);
       await drainProgressThrottle(tester);
     });
   });

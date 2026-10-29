@@ -23,12 +23,14 @@
 library;
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:epub_pro/epub_pro.dart' as epub;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_widget_from_html/flutter_widget_from_html.dart';
 
+import '../../../../core/design_tokens.dart' show AppLayout;
 import '../../contract/book_file.dart';
 import '../../contract/book_renderer.dart';
 import '../../contract/progress_anchor.dart';
@@ -43,6 +45,11 @@ import 'epub_theme.dart';
 /// 进度上报节流窗口（docs/03 §3.1：翻页/滚动 3s 防抖）。
 const Duration epubProgressThrottle = Duration(seconds: 3);
 
+/// epub 正文段落首行缩进（A10：2em 全角空格，等价 textIndent——fwfh 无
+/// text-indent 样式支持；单一事实源见 reader_settings.dart，只插入显示层，
+/// 不改 plainText/locator 坐标）。
+const String epubParagraphIndent = kReaderParagraphIndent;
+
 /// spine 条目（解析产物：href + 该文件的块序列）。
 class _SpineItem {
   const _SpineItem({required this.href, required this.blocks});
@@ -55,7 +62,7 @@ class _SpineItem {
 }
 
 /// epub 渲染会话。
-class EpubRenderer extends BookRenderer {
+class EpubRenderer extends BookRenderer implements ReaderPercentJump {
   EpubRenderer._({
     required this.file,
     required ReaderSettings initialSettings,
@@ -236,13 +243,17 @@ class EpubRenderer extends BookRenderer {
   String blockHtml(int index) =>
       _blocks[index.clamp(0, _blocks.length - 1)].html;
 
-  /// 正文基础样式（字号/行距/字体/前景色随设置即时生效）。
-  TextStyle bodyTextStyle() => TextStyle(
-    fontSize: _settings.fontSize,
-    height: _settings.lineHeight,
-    fontFamily: _settings.fontFamily,
-    color: themeColors.foreground,
-  );
+  /// 正文基础样式（字号/行距/字体/前景色随设置即时生效；衬线为默认，Q2）。
+  TextStyle bodyTextStyle() {
+    final font = resolveReaderFont(_settings.fontFamily);
+    return TextStyle(
+      fontSize: _settings.fontSize,
+      height: _settings.lineHeight,
+      fontFamily: font.family,
+      fontFamilyFallback: font.fallback,
+      color: themeColors.foreground,
+    );
+  }
 
   // —— 位置与进度 ——
 
@@ -429,6 +440,29 @@ class EpubRenderer extends BookRenderer {
     if ((target - ctrl.offset).abs() < 0.5) return Future.value(false);
     ctrl.jumpTo(target); // 触发 _handleScroll → 位置更新 + 节流上报
     return Future.value(true);
+  }
+
+  /// 按全书比例跳转（[ReaderPercentJump] 契约；进度滑块用）：
+  /// percent × 总字符 → 所在块（与降级恢复同一换算），块内偏移清零后定位。
+  @override
+  Future<void> jumpToPercent(double percent) async {
+    if (_disposed || _blocks.isEmpty) return;
+    final target = (percent.clamp(0.0, 1.0) * _totalChars).round();
+    final flat = EpubPositionMath.flatIndexAtCharOffset(_prefixChars, target);
+    _setPosition(flat, 0);
+    await _locatePosition();
+    _scheduleProgressReport();
+  }
+
+  /// 目录条目是否为当前 spine（[BookRenderer.isTocEntryCurrent] 契约）。
+  @override
+  bool isTocEntryCurrent(TocEntry entry) {
+    final anchor = entry.anchor;
+    final parsed = anchor is EpubSpineAnchor
+        ? anchor
+        : EpubSpineAnchor.tryParse(anchor.toString());
+    if (parsed == null) return false;
+    return parsed.spineIndex == positionSpine;
   }
 
   // —— 设置变更（宿主经 dynamic 调用，FR-206）——
@@ -639,11 +673,12 @@ class EpubRenderer extends BookRenderer {
       case EpubBlockKind.image:
         content = _buildHtml(block.html, baseStyle, colors);
       case EpubBlockKind.paragraph:
-        // 裸文本块（无 html 片段）：转义后交给 HtmlWidget。
+        // 裸文本块（无 html 片段）：转义后交给 HtmlWidget；正文段落统一
+        // 两端对齐 + 首行缩进（A10，标题/列表/引用/图片不经此分支）。
         final html = block.html.isEmpty
             ? _escapeHtml(block.plainText)
             : block.html;
-        content = _buildHtml(html, baseStyle, colors);
+        content = _buildHtml(_wrapParagraph(html), baseStyle, colors);
       case EpubBlockKind.other:
         content = _buildHtml(block.html, baseStyle, colors);
     }
@@ -668,6 +703,13 @@ class EpubRenderer extends BookRenderer {
           _errorPlaceholder(colors, element.attributes['alt']),
     );
   }
+
+  /// 正文段落包装（A10）：外层 div 注入 `text-align: justify`（fwfh 支持
+  /// 该 CSS 并继承到内联内容），段首插入 2em 全角空格作首行缩进（fwfh 无
+  /// text-indent 样式，全角空格是等价实现）。只改显示层，不改 plainText
+  /// 与块内字符偏移（locator 兼容性不受影响）。
+  static String _wrapParagraph(String innerHtml) =>
+      '<div style="text-align: justify">$epubParagraphIndent$innerHtml</div>';
 
   Widget _errorPlaceholder(EpubThemeColors colors, String? alt) => Container(
     width: double.infinity,
@@ -809,12 +851,25 @@ class _EpubContentPaneState extends State<_EpubContentPane> {
   Widget build(BuildContext context) {
     final r = widget.renderer;
     final isPage = r.settings.pageMode == ReaderPageMode.page;
-    return ListView.builder(
-      controller: r.scrollController,
-      physics: isPage ? const PageScrollPhysics() : null,
-      padding: EdgeInsets.all(r.settings.pageMargin),
-      itemCount: r.blockCount,
-      itemBuilder: (context, index) => r.buildBlock(context, index),
+    // 正文列宽上限 720（A10）：宽屏水平留白居中，窄屏保持页边距。
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final margin = r.settings.pageMargin;
+        final horizontal = math.max(
+          margin,
+          (constraints.maxWidth - AppLayout.readerMaxWidth) / 2,
+        );
+        return ListView.builder(
+          controller: r.scrollController,
+          physics: isPage ? const PageScrollPhysics() : null,
+          padding: EdgeInsets.symmetric(
+            horizontal: horizontal,
+            vertical: margin,
+          ),
+          itemCount: r.blockCount,
+          itemBuilder: (context, index) => r.buildBlock(context, index),
+        );
+      },
     );
   }
 }

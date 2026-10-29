@@ -7,10 +7,16 @@
 /// - [TxtReaderController]：[ReaderController] 实现——restore 三分支
 ///   （docs/05 §3.3）、节流上报（500ms，∈250ms–1s）、jumpTo、同步 currentLocator。
 /// - page 模式：PageView 横向翻页，首屏只分页当前章（isolate），章间经
-///   首尾"章间页"衔接；页脚显示"章题 x/y · 总进度"。
+///   首尾"章间页"衔接；页码信息经 [ReaderPageInfoProvider.currentPageInfo]
+///   供宿主底部控制条展示（v1.1 A8，替代渲染器内置页脚）。
 /// - scroll 模式：ListView.builder 按章分块惰性构建；滚动位置 → 当前章 =
 ///   视口顶部所在章，charOffset = 章内已滚过比例 × 章长（近似，见
 ///   [TxtRenderer.locateScrollOffset] 注释）。
+///
+/// 排版（v1.1 A10 中文习惯）：正文列宽上限 720（AppLayout.readerMaxWidth，
+/// 居中）、衬线字体（Q2，经 resolveReaderFont）、段落首行缩进 2em + 两端
+/// 对齐——分页测量与视图渲染共用 txt_paginator.txtDisplayText 同一变换，
+/// 见该文件头注释的 justify 结论。
 ///
 /// 主题：[TxtThemeColors.of] 映射背景/正文/辅助色，跟随设置即时生效。
 library;
@@ -21,6 +27,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../../../core/design_tokens.dart' show AppLayout;
 import '../../contract/book_file.dart';
 import '../../contract/book_renderer.dart';
 import '../../contract/progress_anchor.dart';
@@ -36,11 +43,9 @@ import 'txt_theme.dart';
 /// 进度上报节流窗口（契约约定 250ms–1s 量级）。
 const Duration txtProgressThrottle = Duration(milliseconds: 500);
 
-/// page 模式页脚保留高度（章题 x/y · 总进度）。
-const double _footerHeight = 28;
-
 /// txt 渲染会话。
-class TxtRenderer extends BookRenderer {
+class TxtRenderer extends BookRenderer
+    implements ReaderPageInfoProvider, ReaderPercentJump {
   TxtRenderer._({
     required BookFile bookFile,
     required TxtBook initialBook,
@@ -100,6 +105,9 @@ class TxtRenderer extends BookRenderer {
   /// 下一页 / -1 上一页。未挂视图（headless）时为 null，翻页返回 false。
   Future<bool> Function(int delta)? _turnDelegate;
 
+  /// 当前章内页码信息（page 模式视图回报；scroll 模式/未就绪为 null）。
+  (int, int)? _pageInfo;
+
   // —— 节流上报 ——
   Timer? _pendingReport;
   DateTime _lastReportAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -142,13 +150,17 @@ class TxtRenderer extends BookRenderer {
   /// 当前主题配色。
   TxtThemeColors get themeColors => TxtThemeColors.of(_settings.theme);
 
-  /// 正文样式（字号/行距/字体/前景色随设置即时生效）。
-  TextStyle bodyTextStyle() => TextStyle(
-    fontSize: _settings.fontSize,
-    height: _settings.lineHeight,
-    fontFamily: _settings.fontFamily,
-    color: themeColors.foreground,
-  );
+  /// 正文样式（字号/行距/字体/前景色随设置即时生效；衬线为默认，Q2）。
+  TextStyle bodyTextStyle() {
+    final font = resolveReaderFont(_settings.fontFamily);
+    return TextStyle(
+      fontSize: _settings.fontSize,
+      height: _settings.lineHeight,
+      fontFamily: font.family,
+      fontFamilyFallback: font.fallback,
+      color: themeColors.foreground,
+    );
+  }
 
   /// 视图重定位总线（面板内部消费）。
   ValueListenable<int> get revision => _revision;
@@ -276,6 +288,40 @@ class TxtRenderer extends BookRenderer {
     return delegate(delta);
   }
 
+  // —— 页码信息与按比例跳转（v1.1 A8，契约外公开约定的能力接口）——
+
+  /// 视图回报当前章内页码（page 模式面板调用；scroll 模式回报 null 清除）。
+  void notePagePosition((int, int)? info) {
+    if (_disposed) return;
+    _pageInfo = info;
+  }
+
+  /// 当前章内页码（[ReaderPageInfoProvider] 契约）。
+  @override
+  (int, int)? get currentPageInfo => _disposed ? null : _pageInfo;
+
+  /// 按全书比例跳转（[ReaderPercentJump] 契约；进度滑块用）：
+  /// percent → 所在章的章首 + 章内按比例偏移（近似定位，与降级恢复的
+  /// percent 语义一致），位置变化经 revision 驱动视图重载与节流上报。
+  @override
+  Future<void> jumpToPercent(double percent) async {
+    if (_disposed) return;
+    final i = TxtPercentMath.chapterIndexAtPercent(_book.chapters, percent);
+    final chapter = _book.chapters[i.clamp(0, _book.chapters.length - 1)];
+    final target = (percent.clamp(0.0, 1.0) * _book.totalChars).round();
+    final offset = (target - chapter.startOffset).clamp(0, chapter.length);
+    _setPosition(i, offset);
+    _bumpRevision();
+    _scheduleProgressReport();
+  }
+
+  /// 目录条目是否为当前章（[BookRenderer.isTocEntryCurrent] 契约）。
+  @override
+  bool isTocEntryCurrent(TocEntry entry) {
+    final anchor = entry.anchor;
+    return anchor is TxtChapterAnchor && anchor.chapterIndex == _chapterIndex;
+  }
+
   void _bumpRevision() {
     if (!_disposed) _revision.value++;
   }
@@ -340,6 +386,9 @@ class TxtRenderer extends BookRenderer {
   // —— 分页（page 模式面板消费）——
 
   /// 取某章页表（缓存 + isolate 计算；排版键变化自动失效）。
+  ///
+  /// 测量参数与视图渲染严格一致：衬线字体栈（Q2）、段落首行缩进 2em +
+  /// 两端对齐（A10，见 txt_paginator 库注释）。
   Future<List<TxtPageRange>> ensurePages(int chapterIndex, Size contentSize) {
     if (_disposed) return Future.value(const []);
     final key = _LayoutKey(
@@ -356,11 +405,15 @@ class TxtRenderer extends BookRenderer {
     final i = chapterIndex.clamp(0, _book.chapters.length - 1);
     return _pageFutures.putIfAbsent(i, () {
       final chapter = _book.chapters[i];
+      final font = resolveReaderFont(_settings.fontFamily);
       final request = TxtPaginationRequest(
         text: _book.text.substring(chapter.startOffset, chapter.endOffset),
         fontSize: _settings.fontSize,
         lineHeight: _settings.lineHeight,
-        fontFamily: _settings.fontFamily,
+        fontFamily: font.family,
+        fontFamilyFallback: font.fallback,
+        paragraphIndent: txtParagraphIndent,
+        textAlign: TextAlign.justify,
         viewportWidth: contentSize.width,
         viewportHeight: contentSize.height,
       );
@@ -544,6 +597,10 @@ class TxtReaderController extends ReaderController {
 // ============================================================================
 
 /// 视图宿主：背景色随主题，LayoutBuilder 提供内容区，按翻页模式选面板。
+///
+/// 正文列宽上限 [AppLayout.readerMaxWidth]（720，A10）：宽屏时内容列居中，
+/// 窄屏时退化为「视口宽 - 2×页边距」。两个尺寸（列宽/列高）同时传给
+/// 分页器与视图，保证测量与渲染一致。
 class _TxtViewHost extends StatelessWidget {
   const _TxtViewHost({required this.renderer});
 
@@ -560,16 +617,25 @@ class _TxtViewHost extends StatelessWidget {
           child: LayoutBuilder(
             builder: (context, constraints) {
               final margin = renderer.settings.pageMargin;
-              final content = Size(
+              final columnWidth = math.min(
+                AppLayout.readerMaxWidth,
                 math.max(0.0, constraints.maxWidth - margin * 2),
+              );
+              final content = Size(
+                columnWidth,
                 math.max(0.0, constraints.maxHeight - margin * 2),
               );
               final isPage = renderer.settings.pageMode == ReaderPageMode.page;
+              final horizontalInset = (constraints.maxWidth - columnWidth) / 2;
               return KeyedSubtree(
                 key: ValueKey(isPage ? 'txt-page-mode' : 'txt-scroll-mode'),
                 child: isPage
                     ? _TxtPagePane(renderer: renderer, content: content)
-                    : _TxtScrollPane(renderer: renderer, content: content),
+                    : _TxtScrollPane(
+                        renderer: renderer,
+                        content: content,
+                        horizontalInset: horizontalInset,
+                      ),
               );
             },
           ),
@@ -579,7 +645,7 @@ class _TxtViewHost extends StatelessWidget {
   }
 }
 
-/// page 模式面板：单章 PageView + 页脚 + 章间衔接。
+/// page 模式面板：单章 PageView + 章间衔接（页码/进度由宿主控制条承载）。
 ///
 /// PageView itemCount = 章页数 + 2：首尾各一"章间页"，滑入即切换到相邻章
 /// （下一章落章首 / 上一章落末页），页表在 isolate 计算期间显示加载态。
@@ -615,12 +681,6 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
     _syncWithRenderer();
   }
 
-  /// 排版内容尺寸（页脚占位扣除）。
-  Size get _pageSize => Size(
-    widget.content.width,
-    math.max(0.0, widget.content.height - _footerHeight),
-  );
-
   /// 与渲染器逻辑位置对齐：章变化或外部重定位（revision 自增）时重载。
   void _syncWithRenderer() {
     final r = widget.renderer;
@@ -649,7 +709,7 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
     _syncedOffset = landingOffset;
     _pages = null;
     _chapterText = r.chapterText(chapter);
-    r.ensurePages(chapter, _pageSize).then((pages) {
+    r.ensurePages(chapter, widget.content).then((pages) {
       if (!mounted || r._disposed) return;
       if (r.positionChapter != _pagesChapter) {
         // 加载期间位置又被外部改变（restore/jumpTo）：释放加载态并重新对齐。
@@ -665,6 +725,11 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
         );
         _switching = false;
       });
+      // 页码信息回报（宿主底部控制条「第 x / y 页」）。
+      r.notePagePosition((
+        TxtPaginator.pageIndexOf(pages, landingOffset),
+        pages.length,
+      ));
     });
   }
 
@@ -696,7 +761,8 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
       return;
     }
     _syncedOffset = pages[globalIndex - 1].start;
-    setState(() {}); // 刷新页脚
+    setState(() {}); // 刷新页码回报
+    widget.renderer.notePagePosition((globalIndex - 1, pages.length));
     widget.renderer.reportPosition(_pagesChapter, _syncedOffset);
   }
 
@@ -730,66 +796,38 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
     final colors = widget.renderer.themeColors;
     final pages = _pages;
     final pageCtrl = _pageCtrl;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Expanded(
-          child: (pageCtrl == null || pages == null)
-              ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
-              : PageView.builder(
-                  controller: pageCtrl,
-                  itemCount: pages.length + 2,
-                  onPageChanged: _onPageChanged,
-                  itemBuilder: (context, global) {
-                    if (global == 0 || global == pages.length + 1) {
-                      return Center(
-                        child: Icon(
-                          Icons.auto_stories_outlined,
-                          color: colors.dim,
-                        ),
-                      );
-                    }
-                    final range = pages[global - 1];
-                    return ClipRect(
-                      child: Align(
-                        alignment: Alignment.topLeft,
-                        child: SizedBox(
-                          width: _pageSize.width,
-                          child: Text(
-                            _chapterText.substring(range.start, range.end),
-                            style: widget.renderer.bodyTextStyle(),
-                          ),
-                        ),
+    final margin = widget.renderer.settings.pageMargin;
+    return Padding(
+      padding: EdgeInsets.symmetric(vertical: margin),
+      child: (pageCtrl == null || pages == null)
+          ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+          : PageView.builder(
+              controller: pageCtrl,
+              itemCount: pages.length + 2,
+              onPageChanged: _onPageChanged,
+              itemBuilder: (context, global) {
+                if (global == 0 || global == pages.length + 1) {
+                  return Center(
+                    child: Icon(Icons.auto_stories_outlined, color: colors.dim),
+                  );
+                }
+                final range = pages[global - 1];
+                return ClipRect(
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    child: SizedBox(
+                      width: widget.content.width,
+                      child: Text(
+                        // 与分页器同一显示变换（段落首行缩进），测量/渲染一致。
+                        txtDisplayText(_chapterText, range.start, range.end),
+                        textAlign: TextAlign.justify,
+                        style: widget.renderer.bodyTextStyle(),
                       ),
-                    );
-                  },
-                ),
-        ),
-        SizedBox(height: _footerHeight, child: _buildFooter(colors)),
-      ],
-    );
-  }
-
-  Widget _buildFooter(TxtThemeColors colors) {
-    final pages = _pages;
-    final pageCtrl = _pageCtrl;
-    if (pages == null || pageCtrl == null) return const SizedBox.shrink();
-    // 首帧构建时 PageView 尚未 attach（hasClients=false），此时页码取
-    // PageController 的 initialPage 语义值 1；布局完成后读真实页码。
-    var global = 1;
-    if (pageCtrl.hasClients && pageCtrl.position.hasContentDimensions) {
-      global = pageCtrl.page?.round() ?? 1;
-    }
-    final index = (global - 1).clamp(0, pages.length - 1);
-    final title = widget.renderer.chapterTitle(_pagesChapter);
-    final percent = (widget.renderer.percent * 100).toStringAsFixed(1);
-    return Center(
-      child: Text(
-        '$title ${index + 1}/${pages.length} · $percent%',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(fontSize: 12, color: colors.dim),
-      ),
+                    ),
+                  ),
+                );
+              },
+            ),
     );
   }
 
@@ -805,10 +843,17 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
 
 /// scroll 模式面板：按章分块惰性构建 + 滚动位置 → 逻辑位置。
 class _TxtScrollPane extends StatefulWidget {
-  const _TxtScrollPane({required this.renderer, required this.content});
+  const _TxtScrollPane({
+    required this.renderer,
+    required this.content,
+    required this.horizontalInset,
+  });
 
   final TxtRenderer renderer;
   final Size content;
+
+  /// 内容列相对视口的水平留白（宽屏 = (视口宽-720)/2，窄屏 = 页边距）。
+  final double horizontalInset;
 
   @override
   State<_TxtScrollPane> createState() => _TxtScrollPaneState();
@@ -828,6 +873,8 @@ class _TxtScrollPaneState extends State<_TxtScrollPane> {
     super.initState();
     // 注册音量键翻页委托（FR-209）：scroll 模式滚动一屏。
     widget.renderer._turnDelegate = _turnPage;
+    // scroll 模式无页码概念：清除 page 模式可能残留的回报。
+    widget.renderer.notePagePosition(null);
     final r = widget.renderer;
     _syncedChapter = r.positionChapter;
     _syncedOffset = r.positionOffset;
@@ -957,6 +1004,10 @@ class _TxtScrollPaneState extends State<_TxtScrollPane> {
       },
       child: ListView.builder(
         controller: _ctrl,
+        padding: EdgeInsets.symmetric(
+          horizontal: widget.horizontalInset,
+          vertical: r.settings.pageMargin,
+        ),
         itemCount: r.chapterCount,
         itemBuilder: (context, index) =>
             _ScrollChapterItem(renderer: r, chapterIndex: index),
@@ -1024,6 +1075,7 @@ class _ScrollChapterItemState extends State<_ScrollChapterItem> {
   @override
   Widget build(BuildContext context) {
     final r = widget.renderer;
+    final chapterText = r.chapterText(widget.chapterIndex);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1032,7 +1084,12 @@ class _ScrollChapterItemState extends State<_ScrollChapterItem> {
           style: r.bodyTextStyle().copyWith(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 8),
-        Text(r.chapterText(widget.chapterIndex), style: r.bodyTextStyle()),
+        // 与分页器同一显示变换（段落首行缩进）+ 两端对齐（A10）。
+        Text(
+          txtDisplayText(chapterText, 0, chapterText.length),
+          textAlign: TextAlign.justify,
+          style: r.bodyTextStyle(),
+        ),
         const SizedBox(height: 24),
       ],
     );

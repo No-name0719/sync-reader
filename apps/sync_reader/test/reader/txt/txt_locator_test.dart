@@ -125,18 +125,23 @@ void main() {
   });
 
   group('主题色映射与指纹工具', () {
-    test('ReaderTheme → 配色（纸色 #F5EFDC 系）', () {
+    test('ReaderTheme → 配色（v1.1 四套，权威色值对齐 design_tokens）', () {
+      // A11：纸白/米黄/护眼/夜间，色值权威源 = ReaderPalette。
       expect(
         TxtThemeColors.of(ReaderTheme.paper).background,
-        const Color(0xFFF5EFDC),
+        const Color(0xFFFFFFFF),
+      );
+      expect(
+        TxtThemeColors.of(ReaderTheme.beige).background,
+        const Color(0xFFF6EFE0),
+      );
+      expect(
+        TxtThemeColors.of(ReaderTheme.green).background,
+        const Color(0xFFE5EEE2),
       );
       expect(
         TxtThemeColors.of(ReaderTheme.dark).background,
-        const Color(0xFF121212),
-      );
-      expect(
-        TxtThemeColors.of(ReaderTheme.light).background,
-        const Color(0xFFFFFFFF),
+        const Color(0xFF14151A),
       );
       for (final theme in ReaderTheme.values) {
         expect(

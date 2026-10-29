@@ -85,6 +85,9 @@ class FakeRenderer extends BookRenderer {
   /// 是否已销毁。
   bool disposed = false;
 
+  /// isTocEntryCurrent 的命中标题（null = 全不命中；目录「当前」标记测试用）。
+  String? currentTocTitle;
+
   /// 模拟渲染器节流后的进度上报。
   void emitProgress(ProgressAnchor anchor, double percent) =>
       controller.onProgressChanged?.call(anchor, percent);
@@ -98,6 +101,10 @@ class FakeRenderer extends BookRenderer {
     lastApplied = settings;
     applySettingsCount++;
   }
+
+  /// 契约外公开约定（v1.1 A8）：当前章比对——按注入的命中标题判断。
+  @override
+  bool isTocEntryCurrent(TocEntry entry) => entry.title == currentTocTitle;
 
   @override
   void dispose() {

@@ -38,9 +38,22 @@ class ReaderSettingsRepository {
     final raw = await _dao.getValue(storageKey);
     if (raw != null) {
       try {
-        _cached = ReaderSettings.fromJson(
+        final parsed = ReaderSettings.fromJson(
           jsonDecode(raw) as Map<String, Object?>,
         );
+        _cached = parsed;
+        // 旧值迁移落盘（docs/10 A11「只增不删」）：解析成功但序列化形态
+        // 已升级（如 v1.0 主题名 light→paper、无 v 标记 → 有 v:2 标记）时
+        // 以新形态覆写回库，下次读取即为新形态（未知主题名也随之归一为
+        // 默认纸白）。覆写失败不阻塞阅读。
+        final normalized = jsonEncode(parsed.toJson());
+        if (normalized != raw) {
+          try {
+            await _dao.setValue(storageKey, normalized);
+          } on Exception {
+            // 迁移覆写失败：本次会话仍使用迁移后的内存值。
+          }
+        }
       } on FormatException {
         // 损坏的设置回落默认并覆写，不阻塞阅读。
         await _dao.setValue(storageKey, jsonEncode(_cached.toJson()));

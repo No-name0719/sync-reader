@@ -31,6 +31,8 @@ import 'package:window_manager/window_manager.dart';
 
 import '../../app/providers.dart';
 import '../../core/app_logger.dart';
+import '../../core/design_tokens.dart'
+    show AppRadius, AppSpacing, ReaderPalette;
 import '../../data/db/app_database.dart' show Book;
 import '../../data/db/daos/books_dao.dart';
 import '../../data/db/daos/progress_dao.dart';
@@ -58,6 +60,18 @@ const Duration readingClockInterval = Duration(seconds: 1);
 
 /// 目录条目每级缩进量。
 const double _tocIndentPerLevel = 16;
+
+/// 控制条显隐动画时长（原型 --dur）。
+const Duration _chromeTransition = Duration(milliseconds: 200);
+
+/// 首次进入轻提示的停留时长（docs/10 §4.4/Q10：2.6s 自动淡出）。
+const Duration _hintDuration = Duration(milliseconds: 2600);
+
+/// 轻提示淡出动画时长。
+const Duration _hintFade = Duration(milliseconds: 300);
+
+/// Aa 面板桌面/移动形态断点（docs/10 §4.4：桌面 >860 右侧抽屉）。
+const double _aaDesktopBreakpoint = 860;
 
 /// 阅读页状态的打开结果。
 sealed class _PageState {
@@ -136,6 +150,26 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
 
   _PageState _state = const _OpeningState();
 
+  // —— 沉浸态（v1.1 A8/Q10）——
+
+  /// 控制条（顶/底条）是否可见；默认全隐（沉浸），点正文中部唤出/再点收起。
+  bool _controlsVisible = false;
+
+  /// 首次进入轻提示是否可见（2.6s 自动淡出）。
+  bool _hintVisible = false;
+  Timer? _hintTimer;
+
+  /// 进度滑块拖动中：拖动期间滑块显示本地值（节流），松手一次性跳转。
+  bool _sliderDragging = false;
+  double _sliderValue = 0;
+
+  /// 最近一次生效的阅读设置（打开链路 load 后与设置热应用时更新；
+  /// 控制条配色随阅读主题走，与正文一致）。
+  ReaderSettings _readerSettings = ReaderSettings.defaults;
+
+  /// 控制条/目录抽屉配色（取自当前阅读主题的权威 ReaderPalette）。
+  ReaderPalette get _readerPalette => _readerSettings.theme.palette;
+
   /// 页面是否已进入 dispose（dispose 期的兜底落库不再触发同步防抖）。
   bool _disposed = false;
 
@@ -188,6 +222,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     _progressDebounce = null;
     _readingClock?.cancel();
     _readingClock = null;
+    _hintTimer?.cancel();
+    _hintTimer = null;
     // 同步防抖与页面同生命周期：先取消挂起的推送防抖（下面退出推送走
     // flushProgress 立即路径），保证卸载后无悬挂 Timer。
     _syncTriggers.cancelProgressDebounce(widget.bookId);
@@ -281,6 +317,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
         sizeBytes: book.sizeBytes,
       );
       final settings = await _settingsRepo.load();
+      _readerSettings = settings;
 
       // toc 解析与渲染器创建并行：toc 失败不影响打开（目录按钮降级隐藏）。
       final parsedFuture = handler.parseMetadata(file).catchError((Object _) {
@@ -338,6 +375,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
           toc: toc,
         );
       });
+      // 沉浸态进入提示（Q10）：每次进入阅读器显示，2.6s 自动淡出。
+      _showEntryHint();
       unawaited(_updateWindowTitle(book.title));
       if (_isAppResumed) _startReadingClock();
       // 音量键翻页（FR-209）：会话就绪后按设置启用（Android 重建约定：
@@ -365,10 +404,12 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   // ============================================================================
 
   /// 渲染器节流上报的进度：记下最新值并挂 3s 防抖（trailing）。
+  /// 同时刷新控制条（进度滑块/百分比/页码随阅读位置即时更新）。
   void _onProgressChanged(ProgressAnchor locator, double percent) {
     _pendingAnchor = locator;
     _pendingPercent = percent.clamp(0.0, 1.0);
     _progressDirty = true;
+    if (mounted) setState(() {});
     _progressDebounce?.cancel();
     _progressDebounce = Timer(progressDebounceInterval, () {
       _progressDebounce = null;
@@ -481,6 +522,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   /// 下发设置到当前渲染器（applySettings 为契约外的公开约定扩展；
   /// 未实现的渲染器（如 epub 基线占位）静默跳过）。
   void _applySettings(ReaderSettings settings) {
+    _readerSettings = settings; // 控制条配色跟随阅读主题
     final renderer = _session?.renderer;
     if (renderer != null) {
       try {
@@ -491,6 +533,21 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     }
     // 音量键翻页开关热应用（FR-209）：设置面板改动立即生效/停用。
     unawaited(_syncVolumeKeys(settings.volumeKeyPageTurn));
+  }
+
+  // ============================================================================
+  // 沉浸态辅助（v1.1 A8/Q10）
+  // ============================================================================
+
+  /// 首次进入轻提示：显示 2.6s 后自动淡出（重复进入重新计时）。
+  void _showEntryHint() {
+    _hintTimer?.cancel();
+    if (!mounted) return;
+    setState(() => _hintVisible = true);
+    _hintTimer = Timer(_hintDuration, () {
+      _hintTimer = null;
+      if (mounted) setState(() => _hintVisible = false);
+    });
   }
 
   // ============================================================================
@@ -537,15 +594,6 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     unawaited(_session?.renderer.controller.jumpTo(entry));
   }
 
-  Future<void> _openSettingsPanel() {
-    return showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (_) => const ReaderSettingsPanel(),
-    );
-  }
-
   /// 返回书库前的结算（PopScope 拦截系统返回/手势，保证先落库再退出）。
   Future<void> _exitWithFlush() async {
     _progressDebounce?.cancel();
@@ -565,7 +613,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   }
 
   // ============================================================================
-  // UI
+  // UI（v1.1 A8 沉浸态：无 AppBar，控制条为浮层，点中部唤出/收起）
   // ============================================================================
 
   @override
@@ -578,11 +626,12 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
       },
       child: Scaffold(
         key: _scaffoldKey,
-        appBar: _buildAppBar(context),
+        // 沉浸态（Q10）：不设 AppBar，正文占满全屏；顶/底控制条与热区
+        // 均为 body 内浮层，endDrawer 承载目录抽屉。
         endDrawer: _buildTocDrawer(context),
         body: switch (_state) {
           _OpeningState() => const Center(child: CircularProgressIndicator()),
-          _ReadyState(:final session) => session.renderer.buildView(context),
+          final _ReadyState ready => _buildReadyBody(context, ready),
           _PlaceholderState() => _buildPlaceholder(context),
           final _ErrorState error => _buildError(context, error.error),
           _MissingBookState() => const SizedBox.expand(),
@@ -591,80 +640,488 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     );
   }
 
-  PreferredSizeWidget _buildAppBar(BuildContext context) {
-    final book = _session?.book;
-    final toc = switch (_state) {
-      final _ReadyState s => s.toc,
-      _ => const <TocEntry>[],
-    };
-    return AppBar(
-      title: Text(
-        book?.title ?? '阅读',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      actions: [
-        if (toc.isNotEmpty)
-          IconButton(
-            key: const ValueKey('reader-toc-button'),
-            icon: const Icon(Icons.menu_book_outlined),
-            tooltip: '目录',
-            onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
-          ),
-        IconButton(
-          key: const ValueKey('reader-settings-button'),
-          icon: const Icon(Icons.settings_outlined),
-          tooltip: '阅读设置',
-          onPressed: _openSettingsPanel,
-        ),
+  /// 就绪态：正文 + 热区 + 顶/底控制条 + 首次轻提示（自下而上叠放）。
+  Widget _buildReadyBody(BuildContext context, _ReadyState ready) {
+    final book = ready.session.book;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        ready.session.renderer.buildView(context),
+        _buildHotZones(ready),
+        _buildTopBar(context, book, ready.toc),
+        _buildBottomBar(context, ready),
+        _buildEntryHint(context),
       ],
     );
   }
 
-  /// 目录抽屉（FR-108）：按层级缩进展示，点击跳转并关闭。
+  // —— 点击热区（A8）：左右两翼 22% 翻页，中间 56% 唤出/收起控制条 ——
+
+  /// 热区始终生效（翻页是高频操作）；全部使用 translucent 命中行为：
+  /// 快点由热区 onTap 接管（翻页/唤出），拖动在竞技场中让位给正文
+  /// PageView/ListView（滚动不受影响）。翻页走 [ReaderController] 的
+  /// nextPage/previousPage——与音量键翻页（FR-209）完全同一路径。
+  Widget _buildHotZones(_ReadyState ready) {
+    final controller = ready.session.renderer.controller;
+    return Positioned.fill(
+      child: Row(
+        children: [
+          Expanded(
+            flex: 22,
+            child: GestureDetector(
+              key: const ValueKey('reader-hot-prev'),
+              behavior: HitTestBehavior.translucent,
+              onTap: () => unawaited(controller.previousPage()),
+            ),
+          ),
+          Expanded(
+            flex: 56,
+            child: GestureDetector(
+              key: const ValueKey('reader-hot-mid'),
+              behavior: HitTestBehavior.translucent,
+              onTap: _toggleControls,
+            ),
+          ),
+          Expanded(
+            flex: 22,
+            child: GestureDetector(
+              key: const ValueKey('reader-hot-next'),
+              behavior: HitTestBehavior.translucent,
+              onTap: () => unawaited(controller.nextPage()),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _toggleControls() {
+    setState(() {
+      _controlsVisible = !_controlsVisible;
+      if (_controlsVisible) {
+        // 唤出菜单后「点按显示菜单」提示使命完成。
+        _hintTimer?.cancel();
+        _hintVisible = false;
+      }
+    });
+  }
+
+  // —— 顶/底控制条 ——
+
+  /// 控制条显隐动画（原型 .reader-top/.reader-bottom 的 translateY）。
+  Widget _chromeSlide({required Widget child, required bool fromTop}) {
+    return AnimatedSlide(
+      duration: _chromeTransition,
+      curve: Curves.easeOutCubic,
+      offset: _controlsVisible
+          ? Offset.zero
+          : (fromTop ? const Offset(0, -1) : const Offset(0, 1)),
+      child: IgnorePointer(ignoring: !_controlsVisible, child: child),
+    );
+  }
+
+  /// 顶部条：返回 / 书名 / 当前章 / 目录 / Aa 排版（半透明浮层，A8）。
+  Widget _buildTopBar(BuildContext context, Book book, List<TocEntry> toc) {
+    final palette = _readerPalette;
+    final chapterTitle = _currentChapterTitle(toc);
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: _chromeSlide(
+        fromTop: true,
+        child: Container(
+          decoration: BoxDecoration(
+            color: palette.bg.withValues(alpha: 0.88),
+            border: Border(bottom: BorderSide(color: palette.rule)),
+          ),
+          child: SafeArea(
+            bottom: false,
+            child: SizedBox(
+              height: 52,
+              child: Row(
+                children: [
+                  IconButton(
+                    tooltip: '返回',
+                    icon: const Icon(Icons.arrow_back),
+                    color: palette.fg,
+                    onPressed: () => Navigator.of(context).maybePop(),
+                  ),
+                  Expanded(
+                    child: Text(
+                      book.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600,
+                        color: palette.fg,
+                      ),
+                    ),
+                  ),
+                  if (chapterTitle != null) ...[
+                    const SizedBox(width: AppSpacing.s2),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 160),
+                      child: Text(
+                        chapterTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 11.5, color: palette.muted),
+                      ),
+                    ),
+                  ],
+                  if (toc.isNotEmpty)
+                    IconButton(
+                      key: const ValueKey('reader-toc-button'),
+                      tooltip: '目录',
+                      icon: const Icon(Icons.menu_book_outlined),
+                      color: palette.fg,
+                      onPressed: () =>
+                          _scaffoldKey.currentState?.openEndDrawer(),
+                    ),
+                  IconButton(
+                    key: const ValueKey('reader-aa-button'),
+                    tooltip: '阅读设置',
+                    icon: const Icon(Icons.text_fields),
+                    color: palette.fg,
+                    onPressed: _openSettingsPanel,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 底部条：章节名 + 进度滑块（拖动跳转）+ `62% · 第 12 / 34 页`
+  /// （无页码信息时仅 `62%`，A8）。
+  Widget _buildBottomBar(BuildContext context, _ReadyState ready) {
+    final palette = _readerPalette;
+    final chapterTitle = _currentChapterTitle(ready.toc);
+    return Positioned(
+      bottom: 0,
+      left: 0,
+      right: 0,
+      child: _chromeSlide(
+        fromTop: false,
+        child: Container(
+          decoration: BoxDecoration(
+            color: palette.bg.withValues(alpha: 0.9),
+            border: Border(top: BorderSide(color: palette.rule)),
+          ),
+          child: SafeArea(
+            top: false,
+            child: SizedBox(
+              height: 52,
+              child: Row(
+                children: [
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: chapterTitle == null ? 0 : 160,
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: AppSpacing.s4),
+                      child: Text(
+                        chapterTitle ?? '',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 12, color: palette.muted),
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        trackHeight: 3,
+                        thumbShape: const RoundSliderThumbShape(
+                          enabledThumbRadius: 6,
+                        ),
+                        overlayShape: const RoundSliderOverlayShape(
+                          overlayRadius: 12,
+                        ),
+                        activeTrackColor: palette.fg.withValues(alpha: 0.75),
+                        inactiveTrackColor: palette.fg.withValues(alpha: 0.14),
+                        thumbColor: palette.fg,
+                        overlayColor: palette.fg.withValues(alpha: 0.12),
+                      ),
+                      child: _buildProgressSlider(ready),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(right: AppSpacing.s4),
+                    child: Text(
+                      _progressText(ready),
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: palette.muted,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 进度滑块：拖动中仅刷新本地值（节流），松手一次性跳转
+  /// （[ReaderPercentJump] 能力，txt/epub/md 实现；不支持的渲染器无操作）。
+  Widget _buildProgressSlider(_ReadyState ready) {
+    final percent = ready.session.renderer.controller.percent.clamp(0.0, 1.0);
+    return Slider(
+      key: const ValueKey('reader-progress-slider'),
+      value: _sliderDragging ? _sliderValue : percent,
+      onChanged: (value) => setState(() {
+        _sliderDragging = true;
+        _sliderValue = value;
+      }),
+      onChangeEnd: (value) {
+        _sliderDragging = false;
+        // 能力接口与 BookRenderer 无父子关系，用模式匹配取实现对象。
+        final renderer = ready.session.renderer;
+        if (renderer case final ReaderPercentJump jump) {
+          unawaited(jump.jumpToPercent(value));
+        }
+        setState(() {});
+      },
+    );
+  }
+
+  /// 进度文案：`62% · 第 12 / 34 页`；页码不可用（滚动模式/连续排版
+  /// 渲染器）时仅 `62%`。
+  String _progressText(_ReadyState ready) {
+    final renderer = ready.session.renderer;
+    final pct = (renderer.controller.percent.clamp(0.0, 1.0) * 100).round();
+    final info = switch (renderer) {
+      ReaderPageInfoProvider p => p.currentPageInfo,
+      _ => null,
+    };
+    if (info == null || info.$2 <= 0) return '$pct%';
+    return '$pct% · 第 ${info.$1 + 1} / ${info.$2} 页';
+  }
+
+  // —— 首次进入轻提示（A8/Q10：2.6s 自动淡出） ——
+
+  Widget _buildEntryHint(BuildContext context) {
+    final palette = _readerPalette;
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 28,
+      child: IgnorePointer(
+        child: Align(
+          alignment: Alignment.bottomCenter,
+          child: AnimatedOpacity(
+            opacity: _hintVisible ? 1 : 0,
+            duration: _hintFade,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+              decoration: BoxDecoration(
+                color: palette.fg.withValues(alpha: 0.78),
+                borderRadius: BorderRadius.circular(AppRadius.full),
+              ),
+              child: Text(
+                '点按屏幕中部显示菜单',
+                style: TextStyle(fontSize: 12, color: palette.bg),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 当前章标题（顶/底条与目录抽屉共用；经渲染器的
+  /// isTocEntryCurrent 能力比对，取第一个命中条目）。
+  String? _currentChapterTitle(List<TocEntry> toc) {
+    final renderer = _session?.renderer;
+    if (renderer == null) return null;
+    for (final entry in toc) {
+      if (renderer.isTocEntryCurrent(entry)) return entry.title;
+    }
+    return null;
+  }
+
+  // —— Aa 排版面板（A9：桌面右侧抽屉 / 移动底部弹层） ——
+
+  Future<void> _openSettingsPanel() {
+    final isDesktop = MediaQuery.widthOf(context) > _aaDesktopBreakpoint;
+    if (isDesktop) {
+      // 桌面（>860）：右侧全高抽屉（对齐原型 .type-panel）。
+      return showGeneralDialog<void>(
+        context: context,
+        barrierDismissible: true,
+        barrierLabel: '关闭阅读设置',
+        barrierColor: Theme.of(context).colorScheme.scrim
+            .withValues(alpha: 0.4),
+        transitionDuration: _chromeTransition,
+        pageBuilder: (context, animation, secondaryAnimation) => Align(
+          alignment: Alignment.centerRight,
+          child: Material(
+            key: const ValueKey('reader-aa-drawer'),
+            color: Theme.of(context).colorScheme.surface,
+            child: SizedBox(
+              width: 340,
+              height: double.infinity,
+              child: const ReaderSettingsPanel(),
+            ),
+          ),
+        ),
+      );
+    }
+    // 移动（≤860）：底部弹层。
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) => ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.heightOf(sheetContext) * 0.85,
+        ),
+        child: const ReaderSettingsPanel(key: ValueKey('reader-aa-sheet')),
+      ),
+    );
+  }
+
+  /// 目录抽屉（FR-108 + A8 重做）：右侧抽屉，头部「目录 + 章数 + 关闭」，
+  /// 按层级缩进展示，当前章高亮并带「当前」标记（isTocEntryCurrent 比对），
+  /// 点击跳转并关闭。配色跟随阅读主题（对齐原型 .toc-panel）。
   Widget _buildTocDrawer(BuildContext context) {
     final toc = switch (_state) {
       final _ReadyState s => s.toc,
       _ => const <TocEntry>[],
     };
     if (toc.isEmpty) return const SizedBox.shrink();
+    final palette = _readerPalette;
     return Drawer(
-      width: 320,
-      child: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text('目录', style: Theme.of(context).textTheme.titleMedium),
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: ListView.builder(
-                itemCount: toc.length,
-                itemBuilder: (context, index) {
-                  final entry = toc[index];
-                  final level = entry.level.clamp(0, 4);
-                  return ListTile(
-                    contentPadding: EdgeInsets.only(
-                      left: 16 + _tocIndentPerLevel * level,
-                      right: 16,
+      width: 340,
+      child: Container(
+        color: palette.bg,
+        child: SafeArea(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+                child: Row(
+                  children: [
+                    Text(
+                      '目录',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: palette.fg,
+                      ),
                     ),
-                    dense: level > 0,
-                    title: Text(
-                      entry.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: level == 0
-                          ? Theme.of(context).textTheme.bodyMedium
-                          : Theme.of(context).textTheme.bodySmall,
+                    const Spacer(),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: palette.fg.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(AppRadius.full),
+                      ),
+                      child: Text(
+                        '${toc.length} 章',
+                        style: TextStyle(fontSize: 11, color: palette.muted),
+                      ),
                     ),
-                    onTap: () => _jumpToTocEntry(entry),
-                  );
-                },
+                    IconButton(
+                      key: const ValueKey('reader-toc-close'),
+                      tooltip: '关闭',
+                      icon: const Icon(Icons.close),
+                      color: palette.fg,
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+              Divider(height: 1, color: palette.rule),
+              Expanded(
+                child: ListView.builder(
+                  padding: const EdgeInsets.symmetric(
+                    vertical: AppSpacing.s2,
+                    horizontal: AppSpacing.s2,
+                  ),
+                  itemCount: toc.length,
+                  itemBuilder: (context, index) {
+                    final entry = toc[index];
+                    final level = entry.level.clamp(0, 4);
+                    final isCurrent =
+                        _session?.renderer.isTocEntryCurrent(entry) ?? false;
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(AppRadius.sm),
+                      onTap: () => _jumpToTocEntry(entry),
+                      child: Container(
+                        padding: EdgeInsets.only(
+                          left: 12 + _tocIndentPerLevel * level,
+                          right: 12,
+                          top: 9,
+                          bottom: 9,
+                        ),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(AppRadius.sm),
+                          color: isCurrent
+                              ? palette.fg.withValues(alpha: 0.08)
+                              : Colors.transparent,
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                entry.title,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: level == 0 ? 13 : 12.5,
+                                  fontWeight: isCurrent
+                                      ? FontWeight.w600
+                                      : FontWeight.w400,
+                                  color: palette.fg.withValues(
+                                    alpha: level == 0 || isCurrent ? 1 : 0.82,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            if (isCurrent) ...[
+                              const SizedBox(width: AppSpacing.s2),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 1,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: palette.fg,
+                                  borderRadius: BorderRadius.circular(
+                                    AppRadius.full,
+                                  ),
+                                ),
+                                child: Text(
+                                  '当前',
+                                  style: TextStyle(
+                                    fontSize: 10.5,
+                                    color: palette.bg,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

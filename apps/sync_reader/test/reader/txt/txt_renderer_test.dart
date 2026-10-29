@@ -268,13 +268,14 @@ void main() {
       );
       await r.applySettings(
         r.settings.copyWith(
-          theme: ReaderTheme.paper,
+          theme: ReaderTheme.beige,
           pageMode: ReaderPageMode.page,
         ),
       );
       expect(r.positionChapter, 1);
       expect(r.positionOffset, 100);
-      expect(r.themeColors.background, const Color(0xFFF5EFDC));
+      // A11：米黄权威色值 #F6EFE0（原「纸张」#F5EFDC 已弃用）。
+      expect(r.themeColors.background, const Color(0xFFF6EFE0));
       r.dispose();
     });
 
@@ -291,5 +292,64 @@ void main() {
     r.dispose();
     expect(() => r.reportPosition(0, 5), returnsNormally);
     expect(r.controller.currentLocator, isA<ProgressAnchor>());
+  });
+
+  group('v1.1 能力扩展（A8 控制条）', () {
+    test('jumpToPercent：跳到目标比例所在章（章内按比例偏移）', () async {
+      final r = await _open();
+      await r.controller.restore(ProgressAnchor.empty);
+      expect(r.positionChapter, 0);
+      await r.jumpToPercent(0.9);
+      expect(r.positionChapter, expectedChapterAtPercent(0.9));
+      expect(r.percent, closeTo(0.9, 0.05), reason: 'percent 落在目标附近');
+      // 页码信息不因跳转伪造（page 模式由视图回报）。
+      expect(r.currentPageInfo, isNull);
+      r.dispose();
+    });
+
+    test('jumpToPercent 钳制边界：0 与 1', () async {
+      final r = await _open();
+      await r.jumpToPercent(0);
+      expect(r.positionChapter, 0);
+      expect(r.positionOffset, 0);
+      await r.jumpToPercent(1);
+      expect(r.percent, closeTo(1.0, 0.01));
+      r.dispose();
+    });
+
+    test('isTocEntryCurrent：当前章命中、其余不命中', () async {
+      final r = await _open();
+      await r.controller.restore(
+        ProgressAnchor(
+          locatorJson: TxtLocator.encode(1, 0),
+          percent: 0.5,
+          hasProgress: true,
+        ),
+      );
+      TocEntry entryAt(int i) => TocEntry(
+        title: '第$i章',
+        level: 0,
+        anchor: TxtChapterAnchor(chapterIndex: i, charOffset: 0),
+      );
+      expect(r.isTocEntryCurrent(entryAt(1)), isTrue);
+      expect(r.isTocEntryCurrent(entryAt(0)), isFalse);
+      expect(r.isTocEntryCurrent(entryAt(2)), isFalse);
+      // 非章锚点（如 percent 降级后的空对象）不命中。
+      expect(
+        r.isTocEntryCurrent(TocEntry(title: 'x', level: 0, anchor: 'txt:bad')),
+        isFalse,
+      );
+      r.dispose();
+    });
+
+    test('notePagePosition / currentPageInfo：视图回报的页码可读', () async {
+      final r = await _open();
+      expect(r.currentPageInfo, isNull);
+      r.notePagePosition((2, 7));
+      expect(r.currentPageInfo, (2, 7));
+      r.notePagePosition(null);
+      expect(r.currentPageInfo, isNull, reason: 'scroll 模式清除页码');
+      r.dispose();
+    });
   });
 }
