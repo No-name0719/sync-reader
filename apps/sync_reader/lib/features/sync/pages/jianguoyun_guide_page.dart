@@ -61,6 +61,9 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
   bool _testing = false;
   ConnectionTestResult? _result;
 
+  /// 第 1 步的图文指引是否展开（默认收起，点「图文指引」按钮展开）。
+  bool _showImageGuide = false;
+
   /// 是否已有保存的配置（true = 顶部显示「使用已保存的配置测试」快捷卡）。
   bool _hasSavedConfig = false;
 
@@ -390,17 +393,31 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
   // ── 步骤 ①：生成应用密码说明 ──────────────────────────────────────────
 
   Widget _step1() {
-    return const Column(
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _GuideLine('1. 浏览器打开坚果云网页版并登录'),
-        _GuideLine('2. 进入「账户信息 → 安全选项」'),
-        _GuideLine('3. 在「第三方应用管理」点击「添加应用密码」'),
-        _GuideLine('4. 应用名称填 SyncReader，生成后复制口令'),
-        SizedBox(height: AppSpacing.s2),
-        _CopyableCommand(),
-        SizedBox(height: AppSpacing.s2),
-        _Notice('应用密码与登录密码不同：仅开放 WebDAV 文件权限，可随时撤销。'),
+        const _GuideLine('1. 下载并安装坚果云客户端（以 Windows 为例）'),
+        const _GuideLine('2. 打开客户端，点左下角的「设置」齿轮'),
+        const _GuideLine('3. 在设置面板右侧点「第三方应用管理 → 管理」'),
+        const _GuideLine('4. 点「添加应用密码」，应用名称填 SyncReader，复制口令'),
+        const SizedBox(height: AppSpacing.s2),
+        const _CopyableCommand(),
+        const SizedBox(height: AppSpacing.s2),
+        const _Notice('应用密码与登录密码不同：仅开放 WebDAV 文件权限，可随时撤销。'),
+        const SizedBox(height: AppSpacing.s2),
+        // 图文指引默认收起，点「图文指引」按钮展开（避免一进来就是一大串图）。
+        TextButton.icon(
+          onPressed: () => setState(() => _showImageGuide = !_showImageGuide),
+          icon: Icon(
+            _showImageGuide ? Icons.expand_less : Icons.help_outline,
+            size: 18,
+          ),
+          label: Text(_showImageGuide ? '收起图文指引' : '图文指引（截图演示）'),
+        ),
+        if (_showImageGuide) ...[
+          const SizedBox(height: AppSpacing.s2),
+          const _GuideImageSection(),
+        ],
       ],
     );
   }
@@ -1027,6 +1044,159 @@ class _GuideTextField extends StatelessWidget {
       decoration: InputDecoration(
         labelText: label,
         border: const OutlineInputBorder(),
+      ),
+    );
+  }
+}
+
+/// 第 1 步的图文指引：桌面客户端生成应用密码的四步截图（点缩略图看大图）。
+///
+/// 素材由 `assets/jianguoyun/` 提供（JPEG，1080px 宽）；
+/// 截图与本文档同源，改图后需同步替换资源并重跑 `flutter build`。
+class _GuideImageSection extends StatelessWidget {
+  const _GuideImageSection();
+
+  /// 四步指引：(资源路径, 标题, 说明)。
+  static const List<(String, String, String)> _steps = [
+    (
+      'assets/jianguoyun/01-client-download.jpg',
+      '下载并安装客户端',
+      '官网下载页，下载并安装（以 Windows 为例）',
+    ),
+    ('assets/jianguoyun/02-client-settings.jpg', '打开设置', '客户端左下角的齿轮图标，点「设置」'),
+    (
+      'assets/jianguoyun/03-third-party-apps.jpg',
+      '第三方应用管理',
+      '设置面板右侧「第三方应用管理 → 管理」',
+    ),
+    (
+      'assets/jianguoyun/04-add-app-password.jpg',
+      '添加应用密码',
+      '应用名称填 SyncReader，生成后复制应用密码',
+    ),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.appTokens;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(AppSpacing.s3),
+      decoration: BoxDecoration(
+        color: t.surface2,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        border: Border.all(color: t.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final step in _steps) ...[
+            _GuideImageRow(asset: step.$1, title: step.$2, desc: step.$3),
+            if (step != _steps.last) const SizedBox(height: AppSpacing.s2),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// 图文指引的一行：缩略图 + 标题 + 说明（点击缩略图放大预览）。
+class _GuideImageRow extends StatelessWidget {
+  const _GuideImageRow({
+    required this.asset,
+    required this.title,
+    required this.desc,
+  });
+
+  final String asset;
+  final String title;
+  final String desc;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.appTokens;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 缩略图：固定比例，点击放大。
+        GestureDetector(
+          onTap: () => _showPreview(context, asset, title),
+          child: Container(
+            width: 104,
+            height: 62,
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              color: t.surface,
+              borderRadius: BorderRadius.circular(AppRadius.sm),
+              border: Border.all(color: t.border),
+            ),
+            child: Image.asset(asset, fit: BoxFit.cover),
+          ),
+        ),
+        const SizedBox(width: AppSpacing.s3),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: t.h3),
+              const SizedBox(height: 2),
+              Text(desc, style: t.caption.copyWith(color: t.text2)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 大图预览弹窗。
+  Future<void> _showPreview(BuildContext context, String asset, String title) {
+    final t = context.appTokens;
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        insetPadding: const EdgeInsets.all(AppSpacing.s4),
+        backgroundColor: t.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.lg),
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 880, maxHeight: 720),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.s4,
+                  AppSpacing.s3,
+                  AppSpacing.s2,
+                  AppSpacing.s2,
+                ),
+                child: Row(
+                  children: [
+                    Expanded(child: Text(title, style: t.h3)),
+                    IconButton(
+                      tooltip: '关闭',
+                      onPressed: () => Navigator.of(dialogContext).pop(),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+              ),
+              Flexible(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.s4,
+                    0,
+                    AppSpacing.s4,
+                    AppSpacing.s4,
+                  ),
+                  child: Image.asset(asset, fit: BoxFit.contain),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

@@ -43,3 +43,6 @@ apps/sync_reader/android/key/
 **/build/
 .dart_tool/
 .packages
+
+# 本地文档
+/docs/local/

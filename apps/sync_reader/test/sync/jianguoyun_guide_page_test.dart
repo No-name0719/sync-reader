@@ -115,6 +115,74 @@ void main() {
     await tester.pump();
   }
 
+  testWidgets('步骤 0：文案为桌面客户端路径（无网页版描述）', (tester) async {
+    await pumpGuide(tester);
+
+    // 坚果云网页版不提供「添加应用密码」，故第 1 步只描述桌面客户端路径。
+    expect(find.textContaining('网页版'), findsNothing);
+    expect(find.textContaining('浏览器打开'), findsNothing);
+    expect(find.textContaining('下载并安装坚果云客户端'), findsOneWidget);
+    expect(find.textContaining('第三方应用管理'), findsOneWidget);
+  });
+
+  testWidgets('图文指引：默认收起，点按钮展开四张截图，再点收起', (tester) async {
+    await pumpGuide(tester);
+
+    // 默认收起：只看到按钮，看不到四行指引标题。
+    expect(find.text('图文指引（截图演示）'), findsOneWidget);
+    expect(find.text('下载并安装客户端'), findsNothing);
+    expect(find.text('添加应用密码'), findsNothing);
+
+    await tester.tap(find.text('图文指引（截图演示）'));
+    await tester.pumpAndSettle();
+
+    // 展开：四行指引标题都在。
+    expect(find.text('下载并安装客户端'), findsOneWidget);
+    expect(find.text('打开设置'), findsOneWidget);
+    expect(find.text('第三方应用管理'), findsOneWidget);
+    expect(find.text('添加应用密码'), findsOneWidget);
+    expect(find.text('收起图文指引'), findsOneWidget);
+
+    // 缩略图用的 asset 确实能加载（四个资源各一张）。
+    expect(find.byType(Image), findsNWidgets(4));
+
+    // 收起。
+    await tester.tap(find.text('收起图文指引'));
+    await tester.pumpAndSettle();
+    expect(find.text('下载并安装客户端'), findsNothing);
+    expect(find.text('图文指引（截图演示）'), findsOneWidget);
+  });
+
+  testWidgets('图文指引展开态：390x844 窄窗无溢出异常', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await pumpGuide(tester);
+    await tester.tap(find.text('图文指引（截图演示）'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('下载并安装客户端'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('图文指引：点击缩略图弹出大图预览', (tester) async {
+    await pumpGuide(tester);
+    await tester.tap(find.text('图文指引（截图演示）'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byType(Image).first);
+    await tester.pumpAndSettle();
+
+    // 预览弹窗：有关闭按钮与标题。
+    expect(find.byIcon(Icons.close), findsOneWidget);
+    expect(find.text('下载并安装客户端'), findsWidgets);
+
+    await tester.tap(find.byIcon(Icons.close));
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.close), findsNothing);
+  });
+
   testWidgets('步骤 0：只有「开始配置」，无「上一步」；未到达步骤头部不可跳', (tester) async {
     await pumpGuide(tester);
 
