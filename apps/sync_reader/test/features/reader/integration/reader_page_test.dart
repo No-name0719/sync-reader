@@ -205,12 +205,12 @@ void main() {
       await tester.pump();
 
       // 提示可见（Q10：进入阅读器即显示）。
-      expect(find.text('点按屏幕中部显示菜单'), findsOneWidget);
+      expect(find.text('点按空白处显示菜单 · 上滑／下滑翻页'), findsOneWidget);
       double hintOpacity() => tester
           .widget<AnimatedOpacity>(
             find
                 .ancestor(
-                  of: find.text('点按屏幕中部显示菜单'),
+                  of: find.text('点按空白处显示菜单 · 上滑／下滑翻页'),
                   matching: find.byType(AnimatedOpacity),
                 )
                 .first,
@@ -290,7 +290,7 @@ void main() {
     await pumpReady(tester);
     expect(find.byKey(const ValueKey('reader-toc-button')), findsNothing);
     // Aa 排版按钮常显（在顶条中，控制条隐藏时也在树中）。
-    expect(find.byKey(const ValueKey('reader-aa-button')), findsOneWidget);
+    expect(find.byKey(const ValueKey('reader-settings-button')), findsOneWidget);
   });
 
   testWidgets('Aa 面板双形态：桌面右侧抽屉 / 移动底部弹层（A9）', (tester) async {
@@ -303,7 +303,7 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('reader-hot-mid')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('reader-aa-button')));
+    await tester.tap(find.byKey(const ValueKey('reader-settings-button')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('reader-aa-drawer')), findsOneWidget);
     expect(find.byKey(const ValueKey('reader-aa-sheet')), findsNothing);
@@ -315,7 +315,7 @@ void main() {
     tester.view.physicalSize = const Size(390, 844);
     addTearDown(tester.view.resetPhysicalSize);
     await tester.pump();
-    await tester.tap(find.byKey(const ValueKey('reader-aa-button')));
+    await tester.tap(find.byKey(const ValueKey('reader-settings-button')));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('reader-aa-sheet')), findsOneWidget);
     expect(find.byKey(const ValueKey('reader-aa-drawer')), findsNothing);
