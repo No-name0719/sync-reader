@@ -39,6 +39,7 @@ apps/sync_reader/android/key/
 # 应用图标母版（本地生成，不入库；重建步骤见 scripts/gen_app_icons.py）
 /ui_audit/tmp/
 /ui_audit/reader_v12/
+/ui_audit/v12_compare/
 /ui_audit/fonts/
 
 # Flutter/Dart 构建产物（不入库）
