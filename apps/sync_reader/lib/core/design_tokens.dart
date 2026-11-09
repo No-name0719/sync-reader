@@ -19,8 +19,11 @@
 /// 约定：
 /// - 颜色值与原型 CSS 变量一一对应，不做近似；
 /// - 不打包中文字体（体积门 NFR-04），UI 走平台默认字体，阅读正文走系统衬线栈；
-/// - 阅读主题独立于应用主题，本文件只提供 4 套静态配色（见 [AppReaderTheme]）。
+/// - 阅读主题独立于应用主题，本文件提供 7 套静态配色（v1.2 B2，
+///   见 [AppReaderTheme]）+ WCAG 对比度工具（面板读数与测试共用）。
 library;
+
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -260,7 +263,11 @@ abstract final class AppTextScale {
 // 四、阅读主题（独立于应用主题）
 // ===========================================================================
 
-/// 阅读主题配色（原型 `[data-reader-theme=...]` 的 `--r-*` 变量）。
+/// 阅读主题配色（v1.2 B2：7 套，命名用朴素颜色描述）。
+///
+/// 色值权威源；对比度门（正文 ≥7:1 AAA、次级 ≥4.5:1）由
+/// `test/core/design_tokens_test.dart` 按 WCAG 2.1 实算锁定，
+/// 夜间系主题另锁定「80% 最低亮度下仍达标」（B3）。
 @immutable
 class ReaderPalette {
   const ReaderPalette({
@@ -286,6 +293,12 @@ class ReaderPalette {
   /// 页面投影颜色（分页模式下纸张阴影）。
   final Color pageShadow;
 
+  /// 正文对背景的 WCAG 对比度。
+  double get fgContrast => wcagContrastRatio(fg, bg);
+
+  /// 次级文字对背景的 WCAG 对比度。
+  double get mutedContrast => wcagContrastRatio(muted, bg);
+
   /// 按比例插值（主题过渡用）。
   ReaderPalette lerp(ReaderPalette other, double t) => ReaderPalette(
     bg: Color.lerp(bg, other.bg, t)!,
@@ -296,57 +309,141 @@ class ReaderPalette {
   );
 }
 
-/// 四套阅读主题（Q5：纸白 / 米黄 / 护眼 / 夜间）。
+/// 七套阅读主题（v1.2 B2：白色/米黄/浅绿/浅灰蓝/深灰/深棕/纯黑）。
+///
+/// 命名约定（B2）：**枚举名保持稳定（持久化兼容），中文 label 用朴素颜色
+/// 描述**。v1.1 的 paper/beige/green/dark 枚举名原样保留，仅 label 由
+/// 「纸白/护眼/夜间」改为「白色/浅绿/深灰」；slate/dusk/ink 为新增。
 enum AppReaderTheme {
-  /// 纸白（默认）。
-  paper('纸白'),
+  /// 白色（默认；v1.1 label「纸白」）。
+  paper('白色'),
 
   /// 米黄（旧版「纸张」的升级）。
   beige('米黄'),
 
-  /// 护眼（新增，淡绿）。
-  green('护眼'),
+  /// 浅绿（v1.1 label「护眼」）。
+  green('浅绿'),
 
-  /// 夜间（比旧版 #121212 更柔和）。
-  dark('夜间');
+  /// 浅灰蓝（v1.2 新增）。
+  slate('浅灰蓝'),
+
+  /// 深灰（夜间系；v1.1 label「夜间」）。
+  dark('深灰'),
+
+  /// 深棕（夜间系，暖调；v1.2 新增）。
+  dusk('深棕'),
+
+  /// 纯黑（夜间系，OLED 友好；v1.2 新增）。
+  ink('纯黑');
 
   const AppReaderTheme(this.label);
 
-  /// 中文显示名。
+  /// 中文显示名（排版面板/设置页用；朴素颜色描述，B2）。
   final String label;
+
+  /// 是否夜间系（B3：夜间亮度滑块只在夜间系背景出现）。
+  bool get isNight => switch (this) {
+    AppReaderTheme.dark || AppReaderTheme.dusk || AppReaderTheme.ink => true,
+    _ => false,
+  };
 
   /// 该主题的配色。
   ReaderPalette get palette => switch (this) {
     AppReaderTheme.paper => const ReaderPalette(
       bg: Color(0xFFFFFFFF),
       fg: Color(0xFF26251F),
-      muted: Color(0xFF8A877F),
+      muted: Color(0xFF6F6C64),
       rule: Color(0xFFECEAE4),
       pageShadow: Color(0x241C1A16),
     ),
     AppReaderTheme.beige => const ReaderPalette(
       bg: Color(0xFFF6EFE0),
       fg: Color(0xFF40382B),
-      muted: Color(0xFF8C7F68),
+      muted: Color(0xFF6B6152),
       rule: Color(0xFFE3D9C2),
       pageShadow: Color(0x29504228),
     ),
     AppReaderTheme.green => const ReaderPalette(
       bg: Color(0xFFE5EEE2),
       fg: Color(0xFF2B3529),
-      muted: Color(0xFF7C8A78),
+      muted: Color(0xFF556354),
       rule: Color(0xFFD2DDCD),
       pageShadow: Color(0x24283C28),
+    ),
+    AppReaderTheme.slate => const ReaderPalette(
+      bg: Color(0xFFE9EEF4),
+      fg: Color(0xFF262E3A),
+      muted: Color(0xFF56616F),
+      rule: Color(0xFFD5DCE5),
+      pageShadow: Color(0x241E2836),
     ),
     AppReaderTheme.dark => const ReaderPalette(
       bg: Color(0xFF14151A),
       fg: Color(0xFFC8CACD),
-      muted: Color(0xFF7C8087),
+      muted: Color(0xFF9AA0A8),
       rule: Color(0xFF26282E),
+      pageShadow: Color(0x80000000),
+    ),
+    AppReaderTheme.dusk => const ReaderPalette(
+      bg: Color(0xFF1E1913),
+      fg: Color(0xFFD8CFC0),
+      muted: Color(0xFFB0A492),
+      rule: Color(0xFF332C22),
+      pageShadow: Color(0x80000000),
+    ),
+    AppReaderTheme.ink => const ReaderPalette(
+      bg: Color(0xFF0B0B0D),
+      fg: Color(0xFFDADADD),
+      muted: Color(0xFF9C9CA4),
+      rule: Color(0xFF222226),
       pageShadow: Color(0x80000000),
     ),
   };
 }
+
+// ===========================================================================
+// 四-b、WCAG 2.1 对比度（v1.2 B2/B3：面板实时读数与测试共用）
+// ===========================================================================
+
+/// sRGB 通道值（0-255）→ 线性光（WCAG 2.1 相对亮度公式的分通道变换）。
+double _srgbChannelToLinear(int value) {
+  final c = value / 255;
+  return c <= 0.04045 ? c / 12.92 : math.pow((c + 0.055) / 1.055, 2.4).toDouble();
+}
+
+/// 颜色的 WCAG 2.1 相对亮度（L = 0.2126R + 0.7152G + 0.0722B，线性光）。
+double colorRelativeLuminance(Color color) =>
+    0.2126 * _srgbChannelToLinear(((color.r * 255.0).round())) +
+    0.7152 * _srgbChannelToLinear(((color.g * 255.0).round())) +
+    0.0722 * _srgbChannelToLinear(((color.b * 255.0).round()));
+
+/// 两色 WCAG 2.1 对比度（(L亮+0.05)/(L暗+0.05)，≥7 AAA、≥4.5 AA）。
+double wcagContrastRatio(Color a, Color b) {
+  final la = colorRelativeLuminance(a);
+  final lb = colorRelativeLuminance(b);
+  final hi = la > lb ? la : lb;
+  final lo = la > lb ? lb : la;
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/// 对比度等级文案（WCAG 2.1，正文场景）。
+String wcagContrastLevel(double ratio) {
+  if (ratio >= 7) return 'AAA';
+  if (ratio >= 4.5) return 'AA';
+  if (ratio >= 3) return 'AA（仅大字）';
+  return '不合格';
+}
+
+/// 亮度系数下的缩放色（B3 夜间亮度）。
+///
+/// 与渲染端 `ColorFiltered` 亮度矩阵同口径：sRGB 各通道线性缩放并钳制，
+/// 作用于整屏（背景与正文一起变暗/变亮），不是只调文字。
+Color scaleColorBrightness(Color color, double factor) => Color.fromARGB(
+  ((color.a * 255.0).round()),
+  (((color.r * 255.0).round()) * factor).round().clamp(0, 255),
+  (((color.g * 255.0).round()) * factor).round().clamp(0, 255),
+  (((color.b * 255.0).round()) * factor).round().clamp(0, 255),
+);
 
 // ===========================================================================
 // 五、主题扩展

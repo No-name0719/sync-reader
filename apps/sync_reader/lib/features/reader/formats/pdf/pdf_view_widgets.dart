@@ -18,7 +18,10 @@ Color pdfViewerBackgroundColor(ReaderTheme theme) => switch (theme) {
   ReaderTheme.paper => const Color(0xFF9E9E9E), // pdfrx 默认灰
   ReaderTheme.beige => const Color(0xFFE8E2D0),
   ReaderTheme.green => const Color(0xFFD6DFD4),
+  ReaderTheme.slate => const Color(0xFFD9DEE6),
   ReaderTheme.dark => const Color(0xFF1A1A1A),
+  ReaderTheme.dusk => const Color(0xFF23201B),
+  ReaderTheme.ink => const Color(0xFF151517),
 };
 
 /// 悬浮页码指示：`当前页 / 总页数`（1 起展示），点击弹出页码跳转对话框。

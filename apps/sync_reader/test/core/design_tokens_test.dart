@@ -186,47 +186,69 @@ void main() {
     });
   });
 
-  group('阅读主题（4 套，独立于应用主题）', () {
-    test('背景色与正文色符合原型', () {
+  group('阅读主题（v1.2 B2：7 套，独立于应用主题）', () {
+    test('背景色与正文色符合权威色表', () {
       expect(AppReaderTheme.paper.palette.bg, const Color(0xFFFFFFFF));
       expect(AppReaderTheme.paper.palette.fg, const Color(0xFF26251F));
       expect(AppReaderTheme.beige.palette.bg, const Color(0xFFF6EFE0));
       expect(AppReaderTheme.beige.palette.fg, const Color(0xFF40382B));
       expect(AppReaderTheme.green.palette.bg, const Color(0xFFE5EEE2));
       expect(AppReaderTheme.green.palette.fg, const Color(0xFF2B3529));
+      expect(AppReaderTheme.slate.palette.bg, const Color(0xFFE9EEF4));
+      expect(AppReaderTheme.slate.palette.fg, const Color(0xFF262E3A));
       expect(AppReaderTheme.dark.palette.bg, const Color(0xFF14151A));
       expect(AppReaderTheme.dark.palette.fg, const Color(0xFFC8CACD));
+      expect(AppReaderTheme.dusk.palette.bg, const Color(0xFF1E1913));
+      expect(AppReaderTheme.dusk.palette.fg, const Color(0xFFD8CFC0));
+      expect(AppReaderTheme.ink.palette.bg, const Color(0xFF0B0B0D));
+      expect(AppReaderTheme.ink.palette.fg, const Color(0xFFDADADD));
     });
 
-    test('弱化文字与分隔线色符合原型', () {
-      expect(AppReaderTheme.paper.palette.muted, const Color(0xFF8A877F));
+    test('弱化文字与分隔线色符合权威色表（次级文字 ≥4.5:1 由对比度门锁定）', () {
+      expect(AppReaderTheme.paper.palette.muted, const Color(0xFF6F6C64));
       expect(AppReaderTheme.paper.palette.rule, const Color(0xFFECEAE4));
-      expect(AppReaderTheme.beige.palette.muted, const Color(0xFF8C7F68));
+      expect(AppReaderTheme.beige.palette.muted, const Color(0xFF6B6152));
       expect(AppReaderTheme.beige.palette.rule, const Color(0xFFE3D9C2));
-      expect(AppReaderTheme.green.palette.muted, const Color(0xFF7C8A78));
+      expect(AppReaderTheme.green.palette.muted, const Color(0xFF556354));
       expect(AppReaderTheme.green.palette.rule, const Color(0xFFD2DDCD));
-      expect(AppReaderTheme.dark.palette.muted, const Color(0xFF7C8087));
+      expect(AppReaderTheme.slate.palette.muted, const Color(0xFF56616F));
+      expect(AppReaderTheme.slate.palette.rule, const Color(0xFFD5DCE5));
+      expect(AppReaderTheme.dark.palette.muted, const Color(0xFF9AA0A8));
       expect(AppReaderTheme.dark.palette.rule, const Color(0xFF26282E));
+      expect(AppReaderTheme.dusk.palette.muted, const Color(0xFFB0A492));
+      expect(AppReaderTheme.dusk.palette.rule, const Color(0xFF332C22));
+      expect(AppReaderTheme.ink.palette.muted, const Color(0xFF9C9CA4));
+      expect(AppReaderTheme.ink.palette.rule, const Color(0xFF222226));
     });
 
-    test('令牌透出阅读主题色（默认纸白）', () {
+    test('令牌透出阅读主题色（默认白色）', () {
       final t = AppTheme.dark(AppAccent.terracotta)
           .extension<AppDesignTokens>()!;
       expect(t.readerBg, const Color(0xFFFFFFFF));
       expect(t.readerFg, const Color(0xFF26251F));
-      expect(t.readerMuted, const Color(0xFF8A877F));
+      expect(t.readerMuted, const Color(0xFF6F6C64));
       expect(t.readerRule, const Color(0xFFECEAE4));
       expect(t.readerPageShadow, const Color(0x241C1A16));
       expect(t.readerPalette, AppReaderTheme.paper.palette);
     });
 
-    test('四套阅读主题都有中文名', () {
+    test('七套阅读主题都有中文名（朴素颜色描述，B2）', () {
       expect(AppReaderTheme.values.map((t) => t.label).toList(), [
-        '纸白',
+        '白色',
         '米黄',
-        '护眼',
-        '夜间',
+        '浅绿',
+        '浅灰蓝',
+        '深灰',
+        '深棕',
+        '纯黑',
       ]);
+    });
+
+    test('isNight：夜间系 = 深灰/深棕/纯黑（B3）', () {
+      expect(
+        AppReaderTheme.values.where((t) => t.isNight).map((t) => t.name),
+        ['dark', 'dusk', 'ink'],
+      );
     });
   });
 

@@ -216,16 +216,22 @@ final class _SettingsPageState extends ConsumerState<SettingsPage> {
         _SettingRow(
           title: '默认背景',
           description: '阅读器打开时的背景主题',
-          bottom: SegmentedButton<ReaderTheme>(
+          // v1.2 B2：阅读主题 4→7 套（朴素颜色名）——七项超出分段按钮的
+          // 单行容量（390 手机宽度溢出），改 Wrap 多行 chip。
+          bottom: Wrap(
             key: const ValueKey('app-settings-reader-theme'),
-            // v1.1 A11：阅读主题 3→4 套（纸白/米黄/护眼/夜间，Q5）。
-            segments: [
+            spacing: AppSpacing.s2,
+            runSpacing: AppSpacing.s2,
+            children: [
               for (final theme in ReaderTheme.values)
-                ButtonSegment(value: theme, label: Text(theme.label)),
+                ChoiceChip(
+                  key: ValueKey('app-settings-reader-theme-${theme.name}'),
+                  label: Text(theme.label),
+                  selected: _reader.theme == theme,
+                  onSelected: (_) =>
+                      _updateReader(_reader.copyWith(theme: theme)),
+                ),
             ],
-            selected: {_reader.theme},
-            onSelectionChanged: (selection) =>
-                _updateReader(_reader.copyWith(theme: selection.first)),
           ),
         ),
         const Divider(height: AppSpacing.s6),
