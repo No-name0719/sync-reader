@@ -75,7 +75,8 @@ class MdReaderController extends ReaderController {
 }
 
 /// md 渲染器（scroll 模式）。
-class MdRenderer extends BookRenderer implements ReaderPercentJump {
+class MdRenderer extends BookRenderer
+    implements ReaderPercentJump, ReaderTextProbe {
   /// [blocks] 为块解析结果；[documentLength] 是全文源文本字符数（percent 分母）；
   /// [initialAnchor] 为已保存进度（宿主随后应调用 [controller.restore] 完成
   /// 定位滚动；创建时仅同步 currentLocator，不滚动）。
@@ -383,6 +384,26 @@ class MdRenderer extends BookRenderer implements ReaderPercentJump {
     if (parsed == null) return false;
     final current = MdLocator.tryDecode(_locatorJson)?.headingIndex ?? 0;
     return parsed.headingIndex == current;
+  }
+
+  /// B6 文字命中判定：点击点是否落在任一**已构建块**的盒内（块粒度；
+  /// MarkdownBody 的块内字形盒不对外暴露）。视图未挂载返回 false。
+  @override
+  bool isTextAt(Offset globalPosition) {
+    if (_disposed) return false;
+    for (final key in _keys) {
+      final box = key.currentContext?.findRenderObject();
+      if (box is! RenderBox || !box.attached || !box.hasSize) continue;
+      final local = box.globalToLocal(globalPosition);
+      if (local.dx < -4 ||
+          local.dy < -4 ||
+          local.dx > box.size.width + 4 ||
+          local.dy > box.size.height + 4) {
+        continue;
+      }
+      return true;
+    }
+    return false;
   }
 
   // ---- 进度定位与恢复 ----

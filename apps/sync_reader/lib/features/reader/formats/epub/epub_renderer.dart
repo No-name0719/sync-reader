@@ -62,7 +62,8 @@ class _SpineItem {
 }
 
 /// epub 渲染会话。
-class EpubRenderer extends BookRenderer implements ReaderPercentJump {
+class EpubRenderer extends BookRenderer
+    implements ReaderPercentJump, ReaderTextProbe {
   EpubRenderer._({
     required this.file,
     required ReaderSettings initialSettings,
@@ -463,6 +464,30 @@ class EpubRenderer extends BookRenderer implements ReaderPercentJump {
         : EpubSpineAnchor.tryParse(anchor.toString());
     if (parsed == null) return false;
     return parsed.spineIndex == positionSpine;
+  }
+
+  /// B6 文字命中判定：点击点是否落在任一**已构建块**的盒内（块粒度，
+  /// 对齐原型「点空白显隐」的可用精度；fwfh 的块内字形盒不对外暴露）。
+  ///
+  /// 块盒含块尾距（fontSize×0.35），该段留白判为非文字，块与块之间的
+  /// 空隙可正常唤出/收起控制条。视图未挂载（headless）返回 false。
+  @override
+  bool isTextAt(Offset globalPosition) {
+    if (_disposed || _blocks.isEmpty) return false;
+    final blockTail = _settings.fontSize * 0.35;
+    for (var i = _builtMin; i <= _builtMax && i < _blocks.length; i++) {
+      final box = _keys[i].currentContext?.findRenderObject();
+      if (box is! RenderBox || !box.attached || !box.hasSize) continue;
+      final local = box.globalToLocal(globalPosition);
+      if (local.dx < -4 ||
+          local.dy < -4 ||
+          local.dx > box.size.width + 4 ||
+          local.dy > box.size.height - blockTail + 4) {
+        continue;
+      }
+      return true;
+    }
+    return false;
   }
 
   // —— 设置变更（宿主经 dynamic 调用，FR-206）——
