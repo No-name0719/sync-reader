@@ -48,6 +48,7 @@ import 'contract/reader_settings.dart';
 import 'contract/reader_settings_repository.dart';
 import 'contract/toc_entry.dart';
 import 'contract/toc_fingerprint.dart';
+import 'reader_brightness.dart';
 import 'reading_day.dart';
 import 'settings/settings_panel.dart';
 import 'volume_key_page_turn.dart';
@@ -522,7 +523,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   /// 下发设置到当前渲染器（applySettings 为契约外的公开约定扩展；
   /// 未实现的渲染器（如 epub 基线占位）静默跳过）。
   void _applySettings(ReaderSettings settings) {
-    _readerSettings = settings; // 控制条配色跟随阅读主题
+    setState(() {
+      _readerSettings = settings; // 控制条配色/夜间亮度/提示文案跟随
+    });
     final renderer = _session?.renderer;
     if (renderer != null) {
       try {
@@ -641,21 +644,26 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   }
 
   /// 就绪态：正文 + 热区 + 顶/底控制条 + 首次轻提示（自下而上叠放）。
+  /// B3：夜间系背景下整屏套亮度滤镜（背景与正文一起变暗/变亮）。
   Widget _buildReadyBody(BuildContext context, _ReadyState ready) {
     final book = ready.session.book;
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        ready.session.renderer.buildView(context),
-        _buildHotZones(ready),
-        _buildTopBar(context, book, ready.toc),
-        _buildBottomBar(context, ready),
-        _buildEntryHint(context),
-      ],
+    return ReaderBrightnessFilter(
+      isNightTheme: _readerSettings.theme.isNight,
+      brightness: _readerSettings.nightBrightness,
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          ready.session.renderer.buildView(context),
+          _buildHotZones(ready),
+          _buildTopBar(context, book, ready.toc),
+          _buildBottomBar(context, ready),
+          _buildEntryHint(context),
+        ],
+      ),
     );
   }
 
-  // —— 点击热区（A8）：左右两翼 22% 翻页，中间 56% 唤出/收起控制条 ——
+  // —— 点击热区（A8 + B6）：左右两翼 22% 翻页，中间 56% 唤出/收起控制条 ——
 
   /// 热区始终生效（翻页是高频操作）；全部使用 translucent 命中行为：
   /// 快点由热区 onTap 接管（翻页/唤出），拖动在竞技场中让位给正文
@@ -679,7 +687,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
             child: GestureDetector(
               key: const ValueKey('reader-hot-mid'),
               behavior: HitTestBehavior.translucent,
-              onTap: _toggleControls,
+              onTapUp: (details) => _handleMidZoneTap(details.globalPosition),
             ),
           ),
           Expanded(
@@ -693,6 +701,17 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
         ],
       ),
     );
+  }
+
+  /// 中区点击（B6 文字优先）：点在正文文字上不切换控件（保证文字区域的
+  /// 手势语义，对齐原型「点空白处显示菜单」）；空白处唤出/收起。
+  void _handleMidZoneTap(Offset globalPosition) {
+    final renderer = _session?.renderer;
+    if (renderer is ReaderTextProbe &&
+        (renderer as ReaderTextProbe).isTextAt(globalPosition)) {
+      return;
+    }
+    _toggleControls();
   }
 
   void _toggleControls() {
@@ -781,9 +800,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
                           _scaffoldKey.currentState?.openEndDrawer(),
                     ),
                   IconButton(
-                    key: const ValueKey('reader-aa-button'),
+                    key: const ValueKey('reader-settings-button'),
                     tooltip: '阅读设置',
-                    icon: const Icon(Icons.text_fields),
+                    icon: const Icon(Icons.settings_outlined),
                     color: palette.fg,
                     onPressed: _openSettingsPanel,
                   ),
@@ -927,7 +946,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
                 borderRadius: BorderRadius.circular(AppRadius.full),
               ),
               child: Text(
-                '点按屏幕中部显示菜单',
+                _entryHintText,
                 style: TextStyle(fontSize: 12, color: palette.bg),
               ),
             ),
@@ -936,6 +955,15 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
       ),
     );
   }
+
+  /// 首次进入轻提示文案（随翻页方式变化，B5/B6；对齐原型 rd-hint）。
+  String get _entryHintText => switch (_readerSettings.pageMode) {
+    ReaderPageMode.page => switch (_readerSettings.pageTurnAxis) {
+      ReaderPageTurnAxis.horizontal => '点按空白处显示菜单 · 左右滑动翻页',
+      ReaderPageTurnAxis.vertical => '点按空白处显示菜单 · 上滑／下滑翻页',
+    },
+    ReaderPageMode.scroll => '点按空白处显示菜单 · 滚动阅读',
+  };
 
   /// 当前章标题（顶/底条与目录抽屉共用；经渲染器的
   /// isTocEntryCurrent 能力比对，取第一个命中条目）。
