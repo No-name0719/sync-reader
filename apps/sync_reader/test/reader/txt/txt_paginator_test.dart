@@ -1,5 +1,6 @@
-/// 分页器测试（FR-202 验收线）：确定性（同输入同输出）/ 连续性 / 覆盖性 /
-/// 单调性 / 代理对安全 / 退化视口终止性 / pageIndexOf。
+/// 分页器测试（FR-202 + v1.2 B1 整行分页验收线）：确定性（同输入同输出）/
+/// 连续性 / 覆盖性 / 单调性 / 代理对安全 / 退化视口终止性 / pageIndexOf /
+/// **整行性（B1：页界落在行与行之间，无半行）**。
 library;
 
 import 'package:flutter/foundation.dart';
@@ -12,15 +13,37 @@ const _lineHeight = 1.5;
 const _viewportWidth = 400.0;
 const _viewportHeight = 600.0;
 
-TxtPaginationRequest _request(String text, {String? fontFamily}) =>
-    TxtPaginationRequest(
-      text: text,
-      fontSize: _fontSize,
-      lineHeight: _lineHeight,
-      fontFamily: fontFamily,
-      viewportWidth: _viewportWidth,
-      viewportHeight: _viewportHeight,
-    );
+/// 与 [_request] 同参数的字体样式（fontFamily 同为 null，走同一默认字体，
+/// 保证测试内测量与分页器测量行盒一致）。
+TextStyle get _testStyle => const TextStyle(fontSize: _fontSize, height: _lineHeight);
+
+TxtPaginationRequest _request(
+  String text, {
+  String? fontFamily,
+  String indent = txtParagraphIndent,
+  int paragraphGapLines = 0,
+}) => TxtPaginationRequest(
+  text: text,
+  fontSize: _fontSize,
+  lineHeight: _lineHeight,
+  fontFamily: fontFamily,
+  paragraphIndent: indent,
+  paragraphGapLines: paragraphGapLines,
+  viewportWidth: _viewportWidth,
+  viewportHeight: _viewportHeight,
+);
+
+/// 排版一段显示文本并返回行数（测试内测量行盒，与分页器同引擎同字体；
+/// 宽度必须与分页视口一致，否则行断点不可比）。
+int _lineCount(String display, double width) {
+  final painter = TextPainter(
+    textDirection: TextDirection.ltr,
+    text: TextSpan(text: display, style: _testStyle),
+  )..layout(maxWidth: width);
+  final n = painter.computeLineMetrics().length;
+  painter.dispose();
+  return n;
+}
 
 String _sampleText({int lines = 200}) => List<String>.generate(
   lines,
@@ -269,4 +292,196 @@ void main() {
       }
     });
   });
+
+  group('v1.2 B1 整行分页（页界落在行与行之间，无半行）', () {
+    /// 断言一页独立排版的高度不超过视口（页尾不足一行时留白而不是溢出）。
+    /// 用 [txtPageDisplayText] 与渲染侧同口径（页尾分页符不渲染空行盒）。
+    void expectPageFits(
+      String text,
+      TxtPageRange page,
+      double width, {
+      double height = _viewportHeight,
+    }) {
+      final display = txtPageDisplayText(text, page.start, page.end);
+      final painter = TextPainter(
+        textDirection: TextDirection.ltr,
+        text: TextSpan(text: display, style: _testStyle),
+      )..layout(maxWidth: width);
+      expect(
+        painter.height,
+        lessThanOrEqualTo(height + 0.01),
+        reason: '第 ${page.start}..${page.end} 页渲染高度应在视口内',
+      );
+      painter.dispose();
+    }
+
+    /// 断言相邻两页的切点落在行边界：两页各自排版行数之和 == 两页并集区间
+    /// 排版行数。若切点落在某行中间，并集会把两半拼回一行，行数少 1。
+    void expectCutOnLineBoundary(
+      String text,
+      TxtPageRange a,
+      TxtPageRange b, {
+      int gapLines = 0,
+      double width = _viewportWidth,
+    }) {
+      final countA = _lineCount(
+        txtPageDisplayText(text, a.start, a.end, paragraphGapLines: gapLines),
+        width,
+      );
+      final countB = _lineCount(
+        txtPageDisplayText(text, b.start, b.end, paragraphGapLines: gapLines),
+        width,
+      );
+      final countUnion = _lineCount(
+        txtPageDisplayText(text, a.start, b.end, paragraphGapLines: gapLines),
+        width,
+      );
+      // 并集区间里，b 的首段若为段落首且上一行有内容则插入段距空行
+      // （单页排版时页首段落收起段距），需要按条件补回。
+      final boundaryIsParagraphStart =
+          b.start > 0 && text.codeUnitAt(b.start - 1) == 0x0A;
+      final prevLineHasContent = boundaryIsParagraphStart
+          ? _prevLineHasContentForTest(text, b.start - 1)
+          : false;
+      final gapAtBoundary =
+          gapLines > 0 && boundaryIsParagraphStart && prevLineHasContent
+          ? gapLines
+          : 0;
+      expect(
+        countUnion,
+        countA + countB + gapAtBoundary,
+        reason:
+            '页界 $a | $b 应落在行边界（并集行数 = 两页行数之和，'
+            '出现半行时会少 1）',
+      );
+    }
+
+    test('无半行：相邻页拼接行数守恒（正文多段多页）', () {
+      final text = _sampleText(lines: 120);
+      final pages = TxtPaginator.paginateSync(_request(text));
+      expect(pages.length, greaterThan(3));
+      for (var i = 0; i < pages.length; i++) {
+        expectPageFits(text, pages[i], _viewportWidth);
+        if (i + 1 < pages.length) {
+          expectCutOnLineBoundary(text, pages[i], pages[i + 1]);
+        }
+      }
+    });
+
+    test('无半行：justify 两端对齐下同样成立', () {
+      final text = _sampleText(lines: 80);
+      final pages = TxtPaginator.paginateSync(
+        TxtPaginationRequest(
+          text: text,
+          fontSize: _fontSize,
+          lineHeight: _lineHeight,
+          viewportWidth: _viewportWidth,
+          viewportHeight: _viewportHeight,
+          paragraphIndent: txtParagraphIndent,
+          textAlign: TextAlign.justify,
+        ),
+      );
+      expect(pages.length, greaterThan(3));
+      for (var i = 0; i + 1 < pages.length; i++) {
+        expectCutOnLineBoundary(text, pages[i], pages[i + 1]);
+      }
+    });
+
+    test('段距（整行空行）下页界仍是行边界且页高不超视口', () {
+      final text = _sampleText(lines: 60);
+      for (final gap in [1, 2]) {
+        final pages = TxtPaginator.paginateSync(
+          _request(text, indent: txtParagraphIndent, paragraphGapLines: gap),
+        );
+        expect(pages.length, greaterThan(3), reason: '段距 $gap');
+        for (var i = 0; i < pages.length; i++) {
+          expectPageFits(text, pages[i], _viewportWidth);
+          if (i + 1 < pages.length) {
+            expectCutOnLineBoundary(
+              text,
+              pages[i],
+              pages[i + 1],
+              gapLines: gap,
+            );
+          }
+        }
+      }
+    });
+
+    test('段距只加在相邻内容段之间：原文空行分隔的段落不叠加', () {
+      const text = '甲段。\n\n乙段。\n丙段。';
+      final display = txtDisplayText(
+        text,
+        0,
+        text.length,
+        indent: txtParagraphIndent,
+        paragraphGapLines: 1,
+      );
+      // 乙段前已有原文空行 → 不再叠加段距；丙段前是相邻内容行 → 叠加 1 行。
+      expect(display.contains('甲段。\n\n$txtParagraphIndent乙段。'), isTrue);
+      expect(
+        display.contains('$txtParagraphIndent乙段。\n\n$txtParagraphIndent丙段。'),
+        isTrue,
+        reason: '乙段与丙段之间 = 段尾换行 + 1 空行段距（共两个 \\n）',
+      );
+    });
+
+    test('页首段落不插段距（跨页收起）：单页显示文本不以空行开头', () {
+      final text = _sampleText(lines: 40);
+      final pages = TxtPaginator.paginateSync(
+        _request(text, indent: txtParagraphIndent, paragraphGapLines: 2),
+      );
+      expect(pages.length, greaterThan(2));
+      for (final page in pages.skip(1)) {
+        final display = txtDisplayText(
+          text,
+          page.start,
+          page.end,
+          indent: txtParagraphIndent,
+          paragraphGapLines: 2,
+        );
+        expect(
+          display.startsWith('\n'),
+          isFalse,
+          reason: '页 ${page.start} 起点是段落首时不得以段距空行开头',
+        );
+      }
+    });
+
+    test('窄视口退化：仍满足结构不变量与整行性', () {
+      // 48px = 3 字宽：窄于任何真实设备，但宽于 2em 缩进（32px）——
+      // 缩进自身不跨行的下限。再窄（如 24px）缩进会跨行，页界退化为
+      // 字符推进（分页器文档注明），整行性不再成立，属病态输入。
+      final text = _sampleText(lines: 20);
+      final pages = TxtPaginator.paginateSync(
+        TxtPaginationRequest(
+          text: text,
+          fontSize: _fontSize,
+          lineHeight: _lineHeight,
+          viewportWidth: 48,
+          viewportHeight: 30,
+        ),
+      );
+      _expectInvariants(pages, text.length);
+      for (var i = 0; i < pages.length; i++) {
+        expectPageFits(text, pages[i], 48, height: 30);
+        if (i + 1 < pages.length) {
+          expectCutOnLineBoundary(text, pages[i], pages[i + 1], width: 48);
+        }
+      }
+    });
+  });
+}
+
+/// 测试内复刻分页器的段距前置条件：`newlineIndex` 处换行符结束的上一行
+/// 是否有内容（剥掉 CRLF 的 '\r'）。
+bool _prevLineHasContentForTest(String text, int newlineIndex) {
+  var i = newlineIndex - 1;
+  if (i < 0) return false;
+  while (i >= 0 && text.codeUnitAt(i) != 0x0A) {
+    i--;
+  }
+  var end = newlineIndex;
+  if (end > i + 1 && text.codeUnitAt(end - 1) == 0x0D) end--;
+  return end > i + 1;
 }

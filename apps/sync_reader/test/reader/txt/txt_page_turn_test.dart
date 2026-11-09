@@ -90,7 +90,8 @@ void main() {
       expect(r.positionOffset, 0);
 
       expect(await r.controller.nextPage(), isTrue);
-      await tester.pump();
+      // B5：委托翻页走 animateToPage 播放推移动画，等动画结束后断言落点。
+      await tester.pumpAndSettle();
       expect(r.positionChapter, 0, reason: '章内翻页不切章');
       expect(r.positionOffset, greaterThan(0), reason: '翻到本章第二页');
     });
@@ -114,7 +115,8 @@ void main() {
 
       expect(await r.controller.nextPage(), isFalse, reason: '已是全书末页');
       expect(await r.controller.previousPage(), isTrue);
-      await tester.pump();
+      // B5：委托翻页走 animateToPage 播放推移动画，等动画结束后断言落点。
+      await tester.pumpAndSettle();
       expect(
         r.positionOffset,
         lessThan(r.chapterCharLength(2)),

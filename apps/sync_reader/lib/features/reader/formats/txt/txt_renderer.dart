@@ -1,4 +1,5 @@
-/// txt 渲染器（FR-202/FR-207）：双翻页模式 + 进度管线 + 设置变更响应。
+/// txt 渲染器（FR-202/FR-207 + v1.2 B1/B4/B5/B6）：双翻页模式 + 进度管线 +
+/// 设置变更响应。
 ///
 /// 组成：
 /// - [TxtRenderer]：渲染会话。持有 [TxtBook]（解码+章节表）、当前逻辑位置
@@ -6,17 +7,20 @@
 ///   [TxtRenderer.applySettings]（设置变更入口，集成阶段由设置流驱动调用）。
 /// - [TxtReaderController]：[ReaderController] 实现——restore 三分支
 ///   （docs/05 §3.3）、节流上报（500ms，∈250ms–1s）、jumpTo、同步 currentLocator。
-/// - page 模式：PageView 横向翻页，首屏只分页当前章（isolate），章间经
-///   首尾"章间页"衔接；页码信息经 [ReaderPageInfoProvider.currentPageInfo]
-///   供宿主底部控制条展示（v1.1 A8，替代渲染器内置页脚）。
+/// - page 模式：PageView 翻页（B5：轴向随设置切换上下滑动/左右翻页），
+///   分页内核为整行分页（B1：页界落在行边界，无半行），首屏只分页当前章
+///   （isolate），章间经首尾"章间页"衔接；页码信息经
+///   [ReaderPageInfoProvider.currentPageInfo] 供宿主底部控制条展示。
 /// - scroll 模式：ListView.builder 按章分块惰性构建；滚动位置 → 当前章 =
 ///   视口顶部所在章，charOffset = 章内已滚过比例 × 章长（近似，见
 ///   [TxtRenderer.locateScrollOffset] 注释）。
+/// - B6 文字探测：page/scroll 面板注册命中委托，宿主中区热区点击前询问
+///   [ReaderTextProbe.isTextAt]（txt 为字形盒粒度，对齐原型 clickOnText）。
 ///
-/// 排版（v1.1 A10 中文习惯）：正文列宽上限 720（AppLayout.readerMaxWidth，
-/// 居中）、衬线字体（Q2，经 resolveReaderFont）、段落首行缩进 2em + 两端
-/// 对齐——分页测量与视图渲染共用 txt_paginator.txtDisplayText 同一变换，
-/// 见该文件头注释的 justify 结论。
+/// 排版（v1.1 A10 + v1.2 B4）：正文列宽上限 720（AppLayout.readerMaxWidth，
+/// 居中）、衬线字体（Q2，经 resolveReaderFont）、段落首行缩进 2em（可关）+
+/// 段距整行空行 + 两端对齐——分页测量与视图渲染共用 txt_paginator 的显示
+/// 变换（txtDisplayText/txtPageDisplayText），见该文件头注释。
 ///
 /// 主题：[TxtThemeColors.of] 映射背景/正文/辅助色，跟随设置即时生效。
 library;
@@ -26,6 +30,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderParagraph;
 
 import '../../../../core/design_tokens.dart' show AppLayout;
 import '../../contract/book_file.dart';
@@ -45,7 +50,7 @@ const Duration txtProgressThrottle = Duration(milliseconds: 500);
 
 /// txt 渲染会话。
 class TxtRenderer extends BookRenderer
-    implements ReaderPageInfoProvider, ReaderPercentJump {
+    implements ReaderPageInfoProvider, ReaderPercentJump, ReaderTextProbe {
   TxtRenderer._({
     required BookFile bookFile,
     required TxtBook initialBook,
@@ -104,6 +109,18 @@ class TxtRenderer extends BookRenderer
   /// PageView 相邻页（含章间衔接），scroll 模式滚动一屏；参数 delta = +1
   /// 下一页 / -1 上一页。未挂视图（headless）时为 null，翻页返回 false。
   Future<bool> Function(int delta)? _turnDelegate;
+
+  /// B6 文字命中委托：由当前激活的视图面板注册；视图未挂载为 null
+  /// （[ReaderTextProbe.isTextAt] 返回 false → 中区点击视为空白）。
+  bool Function(Offset globalPosition)? _textProbeDelegate;
+
+  /// [ReaderTextProbe] 契约：转发当前面板的命中判定（B6 文字优先）。
+  @override
+  bool isTextAt(Offset globalPosition) {
+    final probe = _textProbeDelegate;
+    if (_disposed || probe == null) return false;
+    return probe(globalPosition);
+  }
 
   /// 当前章内页码信息（page 模式视图回报；scroll 模式/未就绪为 null）。
   (int, int)? _pageInfo;
@@ -330,9 +347,10 @@ class TxtRenderer extends BookRenderer
 
   /// 应用新设置（宿主监听设置仓库后调用；渲染器比较新旧值决定响应）：
   /// - 编码覆盖变更 → isolate 整书重解码重切章，按"章序号 + 章内比例"保留位置；
-  /// - 排版变更（字号/行距/边距/字体）→ 清分页与滚动度量缓存，重排后按
-  ///   "当前章首字符偏移"重新定位（落章首，规格约定）；
-  /// - 主题/翻页模式 → 仅触发视图重建（配色/面板切换），位置不变。
+  /// - 排版变更（字号/行距/边距/字体/段距/首行缩进）→ 清分页与滚动度量
+  ///   缓存，重排后按"当前章首字符偏移"重新定位（落章首，规格约定）；
+  /// - 主题/翻页模式/翻页动画/夜间亮度 → 仅触发视图重建（配色/轴向/滤镜），
+  ///   位置不变。
   Future<void> applySettings(ReaderSettings next) async {
     if (_disposed || next == _settings) return;
     final old = _settings;
@@ -348,7 +366,9 @@ class TxtRenderer extends BookRenderer
         next.fontSize != old.fontSize ||
         next.lineHeight != old.lineHeight ||
         next.pageMargin != old.pageMargin ||
-        next.fontFamily != old.fontFamily;
+        next.fontFamily != old.fontFamily ||
+        next.paragraphGap != old.paragraphGap ||
+        next.firstLineIndent != old.firstLineIndent;
     if (typographyChanged) {
       _pageFutures.clear();
       _scrollHeights.clear();
@@ -387,14 +407,17 @@ class TxtRenderer extends BookRenderer
 
   /// 取某章页表（缓存 + isolate 计算；排版键变化自动失效）。
   ///
-  /// 测量参数与视图渲染严格一致：衬线字体栈（Q2）、段落首行缩进 2em +
-  /// 两端对齐（A10，见 txt_paginator 库注释）。
+  /// 测量参数与视图渲染严格一致：衬线字体栈（Q2）、段落首行缩进 2em
+  /// （B4 可关）、段距整行空行（B4）+ 两端对齐（A10，见 txt_paginator
+  /// 库注释）。
   Future<List<TxtPageRange>> ensurePages(int chapterIndex, Size contentSize) {
     if (_disposed) return Future.value(const []);
     final key = _LayoutKey(
       fontSize: _settings.fontSize,
       lineHeight: _settings.lineHeight,
       fontFamily: _settings.fontFamily,
+      paragraphGapLines: _settings.paragraphGap.lines,
+      firstLineIndent: _settings.firstLineIndent,
       width: contentSize.width,
       height: contentSize.height,
     );
@@ -412,7 +435,8 @@ class TxtRenderer extends BookRenderer
         lineHeight: _settings.lineHeight,
         fontFamily: font.family,
         fontFamilyFallback: font.fallback,
-        paragraphIndent: txtParagraphIndent,
+        paragraphIndent: _settings.firstLineIndent ? txtParagraphIndent : '',
+        paragraphGapLines: _settings.paragraphGap.lines,
         textAlign: TextAlign.justify,
         viewportWidth: contentSize.width,
         viewportHeight: contentSize.height,
@@ -522,12 +546,14 @@ class TxtRenderer extends BookRenderer
   }
 }
 
-/// 分页缓存键：排版四要素 + 视口尺寸任一变化即失效。
+/// 分页缓存键：排版要素 + 视口尺寸任一变化即失效（B4：段距/缩进参与）。
 class _LayoutKey {
   const _LayoutKey({
     required this.fontSize,
     required this.lineHeight,
     required this.fontFamily,
+    required this.paragraphGapLines,
+    required this.firstLineIndent,
     required this.width,
     required this.height,
   });
@@ -535,6 +561,8 @@ class _LayoutKey {
   final double fontSize;
   final double lineHeight;
   final String? fontFamily;
+  final int paragraphGapLines;
+  final bool firstLineIndent;
   final double width;
   final double height;
 
@@ -545,12 +573,21 @@ class _LayoutKey {
           fontSize == other.fontSize &&
           lineHeight == other.lineHeight &&
           fontFamily == other.fontFamily &&
+          paragraphGapLines == other.paragraphGapLines &&
+          firstLineIndent == other.firstLineIndent &&
           width == other.width &&
           height == other.height;
 
   @override
-  int get hashCode =>
-      Object.hash(fontSize, lineHeight, fontFamily, width, height);
+  int get hashCode => Object.hash(
+    fontSize,
+    lineHeight,
+    fontFamily,
+    paragraphGapLines,
+    firstLineIndent,
+    width,
+    height,
+  );
 }
 
 // ============================================================================
@@ -645,10 +682,47 @@ class _TxtViewHost extends StatelessWidget {
   }
 }
 
+/// B6 共享命中判定：[renderObject]（应为正文段落的 [RenderParagraph]）在
+/// 全局坐标 [global] 处是否画有文字（±4px 容差，对齐原型 clickOnText 的
+/// 「行内盒命中 + 余量」行为）。
+///
+/// 做法：先把点换算到段落本地坐标，用 `getPositionForOffset` 取最近字符，
+/// 再查该字符的字形盒是否包含该点——空行/页边空白/行间空白处最近字符的
+/// 字形盒不包含点击点，判为非文字。O(1) 查询，与文本长度无关。
+bool _hitTestParagraph(RenderObject? renderObject, Offset global) {
+  if (renderObject is! RenderParagraph || !renderObject.attached) return false;
+  final box = renderObject;
+  if (!box.hasSize || box.size.isEmpty) return false;
+  final local = box.globalToLocal(global);
+  if (local.dx < -4 ||
+      local.dy < -4 ||
+      local.dx > box.size.width + 4 ||
+      local.dy > box.size.height + 4) {
+    return false;
+  }
+  final plain = box.text.toPlainText();
+  if (plain.isEmpty) return false;
+  final position = box.getPositionForOffset(local);
+  final boxes = box.getBoxesForSelection(
+    TextSelection(baseOffset: position.offset, extentOffset: position.offset),
+  );
+  for (final glyph in boxes) {
+    if (local.dx >= glyph.left - 4 &&
+        local.dx <= glyph.right + 4 &&
+        local.dy >= glyph.top - 2 &&
+        local.dy <= glyph.bottom + 2) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// page 模式面板：单章 PageView + 章间衔接（页码/进度由宿主控制条承载）。
 ///
 /// PageView itemCount = 章页数 + 2：首尾各一"章间页"，滑入即切换到相邻章
 /// （下一章落章首 / 上一章落末页），页表在 isolate 计算期间显示加载态。
+/// B5：轴向随设置的翻页动画方式切换（上下滑动 = 纵轴 / 左右翻页 = 横轴），
+/// 委托翻页走 animateToPage 播放推移动画；拖拽翻页由 PageView 原生手势承担。
 class _TxtPagePane extends StatefulWidget {
   const _TxtPagePane({required this.renderer, required this.content});
 
@@ -660,6 +734,9 @@ class _TxtPagePane extends StatefulWidget {
 }
 
 class _TxtPagePaneState extends State<_TxtPagePane> {
+  /// 翻页动画时长（原型 TURN_MS = 340ms 的就近取整）。
+  static const Duration _turnDuration = Duration(milliseconds: 300);
+
   int _pagesChapter = -1;
   int _syncedOffset = -1;
   List<TxtPageRange>? _pages;
@@ -667,11 +744,16 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
   PageController? _pageCtrl;
   bool _switching = false;
 
+  /// 页面正文渲染盒的 Key（按全局页下标；B6 文字命中探测用）。
+  final Map<int, GlobalKey> _pageTextKeys = {};
+
   @override
   void initState() {
     super.initState();
     // 注册音量键翻页委托（FR-209）：page 模式驱动 PageView 相邻页。
     widget.renderer._turnDelegate = _turnPage;
+    // 注册文字命中委托（B6）：当前页正文的字形盒粒度判定。
+    widget.renderer._textProbeDelegate = _probeText;
     _syncWithRenderer();
   }
 
@@ -709,6 +791,7 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
     _syncedOffset = landingOffset;
     _pages = null;
     _chapterText = r.chapterText(chapter);
+    _pageTextKeys.clear(); // 章切换后旧页渲染盒全部失效
     r.ensurePages(chapter, widget.content).then((pages) {
       if (!mounted || r._disposed) return;
       if (r.positionChapter != _pagesChapter) {
@@ -769,8 +852,9 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
   /// 音量键翻页委托（FR-209）：delta = +1 下一页 / -1 上一页。
   ///
   /// 跳相邻全局页（含滑入首尾章间页触发章间衔接，复用 [_onPageChanged]
-  /// 的位置上报）；jumpToPage 即时跳转不做动画（音量键连按即时响应）。
-  /// 已在全书画廊边界（首章首页向前 / 末章末页向后）返回 false 不动。
+  /// 的位置上报）；animateToPage 播放推移动画（B5），连按由 PageView
+  /// 重定向到新目标。已在全书画廊边界（首章首页向前 / 末章末页向后）
+  /// 返回 false 不动。
   Future<bool> _turnPage(int delta) async {
     final pages = _pages;
     final ctrl = _pageCtrl;
@@ -787,8 +871,31 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
     if ((delta < 0 && atBookStart) || (delta > 0 && atBookEnd)) {
       return false; // 已是全书边界，无实际移动
     }
-    ctrl.jumpToPage((global + delta).clamp(0, pages.length + 1));
+    final target = (global + delta).clamp(0, pages.length + 1);
+    if (ctrl.hasClients) {
+      unawaited(
+        ctrl
+            .animateToPage(
+              target,
+              duration: _turnDuration,
+              curve: Curves.easeOutCubic,
+            )
+            .catchError((_) {}),
+      );
+    }
     return true;
+  }
+
+  /// B6 文字命中判定：点击点是否落在当前页正文的字形盒上（±4px 容差，
+  /// 对齐原型 clickOnText 的行内盒判定 + 4px 余量）。
+  bool _probeText(Offset global) {
+    final ctrl = _pageCtrl;
+    if (ctrl == null || !ctrl.hasClients) return false;
+    final current = ctrl.page?.round();
+    if (current == null) return false;
+    final context = _pageTextKeys[current]?.currentContext;
+    if (context == null) return false;
+    return _hitTestParagraph(context.findRenderObject(), global);
   }
 
   @override
@@ -797,12 +904,18 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
     final pages = _pages;
     final pageCtrl = _pageCtrl;
     final margin = widget.renderer.settings.pageMargin;
+    // B5：翻页动画方式 → PageView 轴向（上下滑动 = 纵轴，左右翻页 = 横轴）。
+    final axis = widget.renderer.settings.pageTurnAxis ==
+            ReaderPageTurnAxis.horizontal
+        ? Axis.horizontal
+        : Axis.vertical;
     return Padding(
       padding: EdgeInsets.symmetric(vertical: margin),
       child: (pageCtrl == null || pages == null)
           ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
           : PageView.builder(
               controller: pageCtrl,
+              scrollDirection: axis,
               itemCount: pages.length + 2,
               onPageChanged: _onPageChanged,
               itemBuilder: (context, global) {
@@ -818,8 +931,19 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
                     child: SizedBox(
                       width: widget.content.width,
                       child: Text(
-                        // 与分页器同一显示变换（段落首行缩进），测量/渲染一致。
-                        txtDisplayText(_chapterText, range.start, range.end),
+                        // 与分页器同一显示变换（缩进/段距）+ 页尾分页符
+                        // 不渲染空行盒（txtPageDisplayText，B1）。
+                        txtPageDisplayText(
+                          _chapterText,
+                          range.start,
+                          range.end,
+                          indent: widget.renderer.settings.firstLineIndent
+                              ? txtParagraphIndent
+                              : '',
+                          paragraphGapLines:
+                              widget.renderer.settings.paragraphGap.lines,
+                        ),
+                        key: _pageTextKeys.putIfAbsent(global, GlobalKey.new),
                         textAlign: TextAlign.justify,
                         style: widget.renderer.bodyTextStyle(),
                       ),
@@ -835,6 +959,9 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
   void dispose() {
     if (identical(widget.renderer._turnDelegate, _turnPage)) {
       widget.renderer._turnDelegate = null;
+    }
+    if (identical(widget.renderer._textProbeDelegate, _probeText)) {
+      widget.renderer._textProbeDelegate = null;
     }
     _pageCtrl?.dispose();
     super.dispose();
@@ -865,6 +992,9 @@ class _TxtScrollPaneState extends State<_TxtScrollPane> {
   int _syncedOffset = -1;
   int _locateAttempts = 0;
 
+  /// 各章正文的渲染盒 Key（B6 文字命中探测用；仅已构建章有 context）。
+  final Map<int, GlobalKey> _scrollTextKeys = {};
+
   /// 程序化定位中：抑制滚动回调的近似位置上报，避免覆盖精确恢复值。
   bool _locating = false;
 
@@ -873,6 +1003,8 @@ class _TxtScrollPaneState extends State<_TxtScrollPane> {
     super.initState();
     // 注册音量键翻页委托（FR-209）：scroll 模式滚动一屏。
     widget.renderer._turnDelegate = _turnPage;
+    // 注册文字命中委托（B6）：可见章正文的字形盒粒度判定。
+    widget.renderer._textProbeDelegate = _probeText;
     // scroll 模式无页码概念：清除 page 模式可能残留的回报。
     widget.renderer.notePagePosition(null);
     final r = widget.renderer;
@@ -885,6 +1017,15 @@ class _TxtScrollPaneState extends State<_TxtScrollPane> {
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _locateRendererPosition(),
     );
+  }
+
+  /// B6 文字命中判定：点击点是否落在任一已构建章正文的字形盒上。
+  bool _probeText(Offset global) {
+    for (final key in _scrollTextKeys.values) {
+      final hit = _hitTestParagraph(key.currentContext?.findRenderObject(), global);
+      if (hit) return true;
+    }
+    return false;
   }
 
   @override
@@ -1009,8 +1150,11 @@ class _TxtScrollPaneState extends State<_TxtScrollPane> {
           vertical: r.settings.pageMargin,
         ),
         itemCount: r.chapterCount,
-        itemBuilder: (context, index) =>
-            _ScrollChapterItem(renderer: r, chapterIndex: index),
+        itemBuilder: (context, index) => _ScrollChapterItem(
+          renderer: r,
+          chapterIndex: index,
+          textKey: _scrollTextKeys.putIfAbsent(index, GlobalKey.new),
+        ),
       ),
     );
   }
@@ -1019,6 +1163,9 @@ class _TxtScrollPaneState extends State<_TxtScrollPane> {
   void dispose() {
     if (identical(widget.renderer._turnDelegate, _turnPage)) {
       widget.renderer._turnDelegate = null;
+    }
+    if (identical(widget.renderer._textProbeDelegate, _probeText)) {
+      widget.renderer._textProbeDelegate = null;
     }
     _ctrl?.dispose();
     super.dispose();
@@ -1030,10 +1177,14 @@ class _ScrollChapterItem extends StatefulWidget {
   const _ScrollChapterItem({
     required this.renderer,
     required this.chapterIndex,
+    required this.textKey,
   });
 
   final TxtRenderer renderer;
   final int chapterIndex;
+
+  /// 正文渲染盒 Key（B6 命中探测）。
+  final GlobalKey textKey;
 
   @override
   State<_ScrollChapterItem> createState() => _ScrollChapterItemState();
@@ -1076,6 +1227,7 @@ class _ScrollChapterItemState extends State<_ScrollChapterItem> {
   Widget build(BuildContext context) {
     final r = widget.renderer;
     final chapterText = r.chapterText(widget.chapterIndex);
+    final settings = r.settings;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1084,9 +1236,16 @@ class _ScrollChapterItemState extends State<_ScrollChapterItem> {
           style: r.bodyTextStyle().copyWith(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 8),
-        // 与分页器同一显示变换（段落首行缩进）+ 两端对齐（A10）。
+        // 与分页器同一显示变换（缩进/段距）+ 两端对齐（A10/B4）。
         Text(
-          txtDisplayText(chapterText, 0, chapterText.length),
+          txtDisplayText(
+            chapterText,
+            0,
+            chapterText.length,
+            indent: settings.firstLineIndent ? txtParagraphIndent : '',
+            paragraphGapLines: settings.paragraphGap.lines,
+          ),
+          key: widget.textKey,
           textAlign: TextAlign.justify,
           style: r.bodyTextStyle(),
         ),

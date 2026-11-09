@@ -42,3 +42,15 @@ abstract interface class ReaderPercentJump {
   /// 实现须可重入、不破坏既有进度坐标语义（只改视觉落点）。
   Future<void> jumpToPercent(double percent);
 }
+
+/// 正文命中探测能力（契约外公开约定，v1.2 B6「文字优先」用）。
+///
+/// 沉浸态点击热区的中区（唤出/收起控制条）在触发前先询问渲染器：
+/// 点击点是否落在正文文字上——落在文字上则不切换控件（文字优先，
+/// 对齐原型 clickOnText 的行内盒命中判定）。未实现该接口的渲染器
+/// （假渲染器/无文字视图）中区点击一律视为空白。
+abstract interface class ReaderTextProbe {
+  /// 全局坐标 [globalPosition] 是否落在当前可见的正文文字上
+  /// （txt 为字形盒粒度，epub/md 为块盒粒度）。视图未挂载返回 false。
+  bool isTextAt(Offset globalPosition);
+}
