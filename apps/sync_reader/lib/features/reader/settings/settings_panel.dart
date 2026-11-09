@@ -1,7 +1,10 @@
-/// 阅读设置面板（Aa 排版面板，docs/10 A9/A14 重做）：实时预览框 +
-/// 字号/行距/页边距 + 字体三选（衬线·黑体·楷体，带字体预览）+ 4 种背景
-/// （Q5：纸白/米黄/护眼/夜间）+ 翻页模式（Q9：分页·滚动）+ txt 编码，
-/// 另含 Android 专属的音量键翻页开关（FR-209）。
+/// 阅读设置面板（v1.2 B4：入口为齿轮图标；docs/10 A9/A14/A23 重做）：
+/// 实时预览框（跟随全部设置项）+ 实时对比度读数（WCAG 2.1 实算）+
+/// 字号/行距/页边距 + 段距（整行空行，B4）+ 首行缩进开关（B4）+
+/// 字体三选（衬线·黑体·楷体，带字体预览）+ 7 种背景（B2）+
+/// 夜间亮度（B3，仅夜间系背景显示）+ 翻页模式（Q9）+
+/// 翻页动画（B5，仅分页模式显示）+ txt 编码，另含 Android 专属的
+/// 音量键翻页开关（FR-209）。
 ///
 /// 形态由宿主（阅读页）决定：桌面（>860）右侧抽屉、移动（≤860）底部弹层
 /// （docs/10 §4.4），本 widget 只承载内容，两种形态共用。
@@ -60,6 +63,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
 
   @override
   Widget build(BuildContext context) {
+    final palette = _settings.theme.palette;
     return SafeArea(
       child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
@@ -70,16 +74,30 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
             _buildHeader(context),
             const SizedBox(height: AppSpacing.s4),
             _buildPreview(),
+            const SizedBox(height: AppSpacing.s2),
+            _buildContrastNote(context, palette),
             const SizedBox(height: AppSpacing.s5),
             _buildFontSize(context),
             _buildLineHeight(context),
             _buildPageMargin(context),
             const SizedBox(height: AppSpacing.s5),
+            _buildParagraphGap(context),
+            _buildFirstLineIndent(context),
+            const SizedBox(height: AppSpacing.s5),
             _buildFontFamily(context),
             const SizedBox(height: AppSpacing.s5),
             _buildTheme(context),
+            if (_settings.theme.isNight) ...[
+              const SizedBox(height: AppSpacing.s5),
+              _buildNightBrightness(context),
+            ],
             const SizedBox(height: AppSpacing.s5),
             _buildPageMode(context),
+            // 翻页动画仅分页模式有意义（原型行为）。
+            if (_settings.pageMode == ReaderPageMode.page) ...[
+              const SizedBox(height: AppSpacing.s5),
+              _buildPageTurnAxis(context),
+            ],
             const SizedBox(height: AppSpacing.s5),
             _buildEncoding(context),
             // 音量键翻页（FR-209）为 Android 专属能力，其他平台不显示该行。
@@ -109,8 +127,8 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
     );
   }
 
-  /// 实时预览框（A9/I4）：随字号/行距/字体/背景即时变化，
-  /// 段首 2em 全角空格缩进（与三渲染器同款等价实现）。
+  /// 实时预览框（A9/I4）：随字号/行距/段距/缩进/字体/背景即时变化，
+  /// 段首 2em 全角空格缩进随开关切换（与三渲染器同款等价实现）。
   Widget _buildPreview() {
     final palette = _settings.theme.palette;
     final font = resolveReaderFont(_settings.fontFamily);
@@ -126,7 +144,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
         border: Border.all(color: palette.rule),
       ),
       child: Text(
-        '$kReaderParagraphIndent$_previewSample',
+        '${_settings.firstLineIndent ? kReaderParagraphIndent : ''}$_previewSample',
         textAlign: TextAlign.justify,
         style: TextStyle(
           fontSize: _settings.fontSize,
@@ -136,6 +154,18 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
           fontFamilyFallback: font.fallback,
         ),
       ),
+    );
+  }
+
+  /// 实时对比度读数（B2/B4）：按当前主题色值 WCAG 2.1 实算，非写死数字。
+  Widget _buildContrastNote(BuildContext context, ReaderPalette palette) {
+    final fg = palette.fgContrast;
+    final muted = palette.mutedContrast;
+    return Text(
+      '正文对比度 ${fg.toStringAsFixed(1)}:1 · ${wcagContrastLevel(fg)}'
+      '　|　次级文字 ${muted.toStringAsFixed(1)}:1',
+      key: const ValueKey('aa-contrast-note'),
+      style: Theme.of(context).textTheme.bodySmall,
     );
   }
 
@@ -225,6 +255,86 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
     );
   }
 
+  /// 夜间亮度滑杆（B3）：80%–130%、步进 5，只在夜间系背景显示；
+  /// 作用整屏（背景与正文一起变），80% 下限保证正文对比度仍达 AAA
+  /// （对比度门测试锁定）。
+  Widget _buildNightBrightness(BuildContext context) {
+    final percent = (_settings.nightBrightness * 100).round();
+    return _sliderRow(
+      context,
+      label: '夜间亮度',
+      valueText: '$percent%',
+      sliderKey: const ValueKey('settings-night-brightness'),
+      value: _settings.nightBrightness,
+      min: 0.8,
+      max: 1.3,
+      divisions: 10, // (1.3-0.8)/步进0.05 = 10
+      onChanged: (value) =>
+          _update(_settings.copyWith(nightBrightness: value)),
+    );
+  }
+
+  /// 段距三选（B4）：紧 / 空一行 / 空两行（以整行为单位，不破坏行网格）。
+  Widget _buildParagraphGap(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('段距', style: Theme.of(context).textTheme.titleSmall),
+        const SizedBox(height: AppSpacing.s2),
+        SizedBox(
+          width: double.infinity,
+          child: SegmentedButton<ReaderParagraphGap>(
+            key: const ValueKey('settings-paragraph-gap'),
+            segments: const [
+              ButtonSegment(value: ReaderParagraphGap.tight, label: Text('紧')),
+              ButtonSegment(
+                value: ReaderParagraphGap.oneLine,
+                label: Text('空一行'),
+              ),
+              ButtonSegment(
+                value: ReaderParagraphGap.twoLines,
+                label: Text('空两行'),
+              ),
+            ],
+            selected: {_settings.paragraphGap},
+            onSelectionChanged: (selection) =>
+                _update(_settings.copyWith(paragraphGap: selection.first)),
+          ),
+        ),
+        const SizedBox(height: AppSpacing.s1),
+        Text(
+          '以整行为单位：每页行数恒定，页底留白不随内容长短跳动',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ],
+    );
+  }
+
+  /// 首行缩进开关（B4）：缩进 2em（两个全角空格，显示层等价实现）↔ 不缩进。
+  Widget _buildFirstLineIndent(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: AppSpacing.s5),
+        Text('首行缩进', style: Theme.of(context).textTheme.titleSmall),
+        const SizedBox(height: AppSpacing.s2),
+        SizedBox(
+          width: double.infinity,
+          child: SegmentedButton<bool>(
+            key: const ValueKey('settings-first-line-indent'),
+            segments: const [
+              ButtonSegment(value: true, label: Text('缩进 2em')),
+              ButtonSegment(value: false, label: Text('不缩进')),
+            ],
+            selected: {_settings.firstLineIndent},
+            onSelectionChanged: (selection) =>
+                _update(_settings.copyWith(firstLineIndent: selection.first)),
+          ),
+        ),
+      ],
+    );
+  }
+
   /// 字体三选（Q2：衬线为默认；每项用该字体渲染预览字样，A9）。
   Widget _buildFontFamily(BuildContext context) {
     final selectedFamily = resolveReaderFont(_settings.fontFamily).family;
@@ -298,21 +408,30 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
     );
   }
 
-  /// 背景四选（Q5）：圆点色块选择器，色值取 design_tokens 权威 ReaderPalette。
+  /// 背景七选（B2）：色块选择器，色值取 design_tokens 权威 ReaderPalette，
+  /// 每片用该主题的 bg/fg 渲染「字」样与朴素颜色名。
   Widget _buildTheme(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('背景', style: Theme.of(context).textTheme.titleSmall),
+        Text('阅读背景', style: Theme.of(context).textTheme.titleSmall),
         const SizedBox(height: AppSpacing.s2),
-        Row(
+        GridView.count(
+          key: const ValueKey('settings-themes'),
+          crossAxisCount: 4,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          mainAxisSpacing: AppSpacing.s2,
+          crossAxisSpacing: AppSpacing.s2,
+          childAspectRatio: 1.15,
           children: [
-            for (final theme in ReaderTheme.values) ...[
-              if (theme != ReaderTheme.values.first)
-                const SizedBox(width: AppSpacing.s2),
-              Expanded(child: _themeSwatch(context, theme)),
-            ],
+            for (final theme in ReaderTheme.values) _themeSwatch(context, theme),
           ],
+        ),
+        const SizedBox(height: AppSpacing.s1),
+        Text(
+          '阅读背景与应用深浅色相互独立：应用是浅色时也可切夜间背景',
+          style: Theme.of(context).textTheme.bodySmall,
         ),
       ],
     );
@@ -337,21 +456,27 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
         ),
         child: Column(
           children: [
-            Container(
-              height: 40,
-              decoration: BoxDecoration(
-                color: palette.bg,
-                borderRadius: BorderRadius.circular(AppRadius.sm),
-                border: Border.all(color: scheme.outlineVariant),
-              ),
-              alignment: Alignment.center,
-              child: Text(
-                '字',
-                style: TextStyle(color: palette.fg, fontSize: 15),
+            Expanded(
+              child: Container(
+                decoration: BoxDecoration(
+                  color: palette.bg,
+                  borderRadius: BorderRadius.circular(AppRadius.sm),
+                  border: Border.all(color: scheme.outlineVariant),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  '字',
+                  style: TextStyle(color: palette.fg, fontSize: 15),
+                ),
               ),
             ),
             const SizedBox(height: AppSpacing.s1),
-            Text(theme.label, style: Theme.of(context).textTheme.bodySmall),
+            Text(
+              theme.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
           ],
         ),
       ),
@@ -359,6 +484,10 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
   }
 
   /// 翻页模式（Q9：出厂默认分页；原型顺序 分页·滚动）。
+  ///
+  /// 说明文字如实标注各格式支持现状（B 要求「不要假装支持」）：分页对
+  /// txt 为整行精确分页；epub 为连续排版按屏吸附；md 暂以滚动呈现；
+  /// pdf 的「页」由文件自带。
   Widget _buildPageMode(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -383,6 +512,44 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
             selected: {_settings.pageMode},
             onSelectionChanged: (selection) =>
                 _update(_settings.copyWith(pageMode: selection.first)),
+          ),
+        ),
+        const SizedBox(height: AppSpacing.s1),
+        Text(
+          '分页：txt 整行精确分页；epub 连续排版按屏吸附；md 暂按滚动呈现；pdf 按文件自带页呈现',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ],
+    );
+  }
+
+  /// 翻页动画（B5）：上下滑动（默认，正文像滚动一样纵向推移）/ 左右翻页。
+  /// 仅分页模式显示；两种动画共用同一排版与翻页路径（ReaderController）。
+  Widget _buildPageTurnAxis(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('翻页动画', style: Theme.of(context).textTheme.titleSmall),
+        const SizedBox(height: AppSpacing.s2),
+        SizedBox(
+          width: double.infinity,
+          child: SegmentedButton<ReaderPageTurnAxis>(
+            key: const ValueKey('settings-page-turn-axis'),
+            segments: const [
+              ButtonSegment(
+                value: ReaderPageTurnAxis.vertical,
+                icon: Icon(Icons.swipe_up),
+                label: Text('上下滑动'),
+              ),
+              ButtonSegment(
+                value: ReaderPageTurnAxis.horizontal,
+                icon: Icon(Icons.swipe),
+                label: Text('左右翻页'),
+              ),
+            ],
+            selected: {_settings.pageTurnAxis},
+            onSelectionChanged: (selection) =>
+                _update(_settings.copyWith(pageTurnAxis: selection.first)),
           ),
         ),
       ],
