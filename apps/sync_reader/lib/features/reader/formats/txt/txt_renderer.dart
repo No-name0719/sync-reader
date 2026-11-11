@@ -39,6 +39,7 @@ import '../../contract/progress_anchor.dart';
 import '../../contract/reader_controller.dart';
 import '../../contract/reader_settings.dart';
 import '../../contract/toc_entry.dart';
+import '../../reader_indent.dart';
 import 'txt_book_parser.dart';
 import 'txt_chapter_anchor.dart';
 import 'txt_locator.dart';
@@ -435,7 +436,7 @@ class TxtRenderer extends BookRenderer
         lineHeight: _settings.lineHeight,
         fontFamily: font.family,
         fontFamilyFallback: font.fallback,
-        paragraphIndent: _settings.firstLineIndent ? txtParagraphIndent : '',
+        indentEm: _settings.firstLineIndent ? kReaderParagraphIndentEm : 0,
         paragraphGapLines: _settings.paragraphGap.lines,
         textAlign: TextAlign.justify,
         viewportWidth: contentSize.width,
@@ -930,22 +931,23 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
                     alignment: Alignment.topCenter,
                     child: SizedBox(
                       width: widget.content.width,
-                      child: Text(
+                      child: Text.rich(
                         // 与分页器同一显示变换（缩进/段距）+ 页尾分页符
-                        // 不渲染空行盒（txtPageDisplayText，B1）。
-                        txtPageDisplayText(
+                        // 不渲染空行盒（txtPageDisplaySpan，B1）。
+                        txtPageDisplaySpan(
                           _chapterText,
                           range.start,
                           range.end,
-                          indent: widget.renderer.settings.firstLineIndent
-                              ? txtParagraphIndent
-                              : '',
+                          style: widget.renderer.bodyTextStyle(),
+                          fontSize: widget.renderer.settings.fontSize,
+                          indentEm: widget.renderer.settings.firstLineIndent
+                              ? kReaderParagraphIndentEm
+                              : 0,
                           paragraphGapLines:
                               widget.renderer.settings.paragraphGap.lines,
                         ),
                         key: _pageTextKeys.putIfAbsent(global, GlobalKey.new),
                         textAlign: TextAlign.justify,
-                        style: widget.renderer.bodyTextStyle(),
                       ),
                     ),
                   ),
@@ -1231,23 +1233,23 @@ class _ScrollChapterItemState extends State<_ScrollChapterItem> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          r.chapterTitle(widget.chapterIndex),
-          style: r.bodyTextStyle().copyWith(fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(height: 8),
-        // 与分页器同一显示变换（缩进/段距）+ 两端对齐（A10/B4）。
-        Text(
-          txtDisplayText(
+        // 与分页器同一显示变换（章题样式/缩进/段距）+ 两端对齐（A10/B4）。
+        //
+        // 章题**不再单独渲染**：章题就是章的首行，由显示变换按标题样式
+        // （1.32em / 600）渲染——此前单独渲染一次 + 正文里再渲染一次，
+        // 滚动模式下章题会重复出现两遍。
+        Text.rich(
+          txtDisplaySpan(
             chapterText,
             0,
             chapterText.length,
-            indent: settings.firstLineIndent ? txtParagraphIndent : '',
+            style: r.bodyTextStyle(),
+            fontSize: settings.fontSize,
+            indentEm: settings.firstLineIndent ? kReaderParagraphIndentEm : 0,
             paragraphGapLines: settings.paragraphGap.lines,
           ),
           key: widget.textKey,
           textAlign: TextAlign.justify,
-          style: r.bodyTextStyle(),
         ),
         const SizedBox(height: 24),
       ],

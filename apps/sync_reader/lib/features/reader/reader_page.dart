@@ -49,6 +49,7 @@ import 'contract/reader_settings_repository.dart';
 import 'contract/toc_entry.dart';
 import 'contract/toc_fingerprint.dart';
 import 'reader_brightness.dart';
+import 'reader_chrome.dart';
 import 'reading_day.dart';
 import 'settings/settings_panel.dart';
 import 'volume_key_page_turn.dart';
@@ -645,6 +646,10 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
 
   /// 就绪态：正文 + 热区 + 顶/底控制条 + 首次轻提示（自下而上叠放）。
   /// B3：夜间系背景下整屏套亮度滤镜（背景与正文一起变暗/变亮）。
+  ///
+  /// v1.3：正文视图包一层 [readerBodyInsets] 垂直内缩——上留顶条高、
+  /// 下留底条高（+ 系统状态栏/导航栏），**结构上保证正文永不被控制条
+  /// 遮挡**（对齐原型 `.rd-stage` 的上下留白）。
   Widget _buildReadyBody(BuildContext context, _ReadyState ready) {
     final book = ready.session.book;
     return ReaderBrightnessFilter(
@@ -653,7 +658,15 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
       child: Stack(
         fit: StackFit.expand,
         children: [
-          ready.session.renderer.buildView(context),
+          ColoredBox(
+            // 内缩带（顶条/底条之下）用阅读背景色铺满，避免露出 Scaffold
+            // 底色形成色带。
+            color: _readerPalette.bg,
+            child: Padding(
+              padding: readerBodyInsets(context),
+              child: ready.session.renderer.buildView(context),
+            ),
+          ),
           _buildHotZones(ready),
           _buildTopBar(context, book, ready.toc),
           _buildBottomBar(context, ready),
@@ -669,8 +682,15 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   /// 快点由热区 onTap 接管（翻页/唤出），拖动在竞技场中让位给正文
   /// PageView/ListView（滚动不受影响）。翻页走 [ReaderController] 的
   /// nextPage/previousPage——与音量键翻页（FR-209）完全同一路径。
+  ///
+  /// **移动端（窄视口）的交互模型**：点屏幕任意处唤出/收起控制条，**滑动
+  /// 才翻页**。原因是手机屏几乎被正文铺满，「点空白才出菜单」没有可点的
+  /// 空白（正文列 363 逻辑 px ≈ 屏宽的 88%），菜单几乎唤不出来。
+  /// 桌面端保留原模型：两翼点击翻页（鼠标用户习惯，且与原型一致）、中区
+  /// 点空白唤出菜单（B6 文字优先，为将来的正文可选中留出语义）。
   Widget _buildHotZones(_ReadyState ready) {
     final controller = ready.session.renderer.controller;
+    final narrow = MediaQuery.sizeOf(context).width <= kReaderNarrowBreakpoint;
     return Positioned.fill(
       child: Row(
         children: [
@@ -679,7 +699,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
             child: GestureDetector(
               key: const ValueKey('reader-hot-prev'),
               behavior: HitTestBehavior.translucent,
-              onTap: () => unawaited(controller.previousPage()),
+              onTap: narrow
+                  ? _toggleControls
+                  : () => unawaited(controller.previousPage()),
             ),
           ),
           Expanded(
@@ -687,7 +709,10 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
             child: GestureDetector(
               key: const ValueKey('reader-hot-mid'),
               behavior: HitTestBehavior.translucent,
-              onTapUp: (details) => _handleMidZoneTap(details.globalPosition),
+              onTapUp: (details) => narrow
+                  // 移动端：点屏幕任意处都唤出控制条（正文上也可点）。
+                  ? _toggleControls()
+                  : _handleMidZoneTap(details.globalPosition),
             ),
           ),
           Expanded(
@@ -695,7 +720,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
             child: GestureDetector(
               key: const ValueKey('reader-hot-next'),
               behavior: HitTestBehavior.translucent,
-              onTap: () => unawaited(controller.nextPage()),
+              onTap: narrow
+                  ? _toggleControls
+                  : () => unawaited(controller.nextPage()),
             ),
           ),
         ],
@@ -739,10 +766,16 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     );
   }
 
-  /// 顶部条：返回 / 书名 / 当前章 / 目录 / Aa 排版（半透明浮层，A8）。
+  /// 顶部条：返回 / 书名（+当前章副标题）/ 目录 / 齿轮（半透明浮层，A8）。
+  ///
+  /// 骨架对齐原型 `.rd-top`（v1.3）：条高 [kReaderTopBarHeight]（54），
+  /// 标题区为**上下两行**——书名 13.5/600 + 当前章 11.5 muted（窄视口
+  /// 隐藏副标题，同原型 `.rd-title span`）；三个图标按钮为 34×34 点击区
+  /// + 19px 图标（原型 `.rd-btn` / `.rd-btn .ico`）。
   Widget _buildTopBar(BuildContext context, Book book, List<TocEntry> toc) {
     final palette = _readerPalette;
     final chapterTitle = _currentChapterTitle(toc);
+    final narrow = MediaQuery.sizeOf(context).width <= kReaderNarrowBreakpoint;
     return Positioned(
       top: 0,
       left: 0,
@@ -757,56 +790,61 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
           child: SafeArea(
             bottom: false,
             child: SizedBox(
-              height: 52,
-              child: Row(
-                children: [
-                  IconButton(
-                    tooltip: '返回',
-                    icon: const Icon(Icons.arrow_back),
-                    color: palette.fg,
-                    onPressed: () => Navigator.of(context).maybePop(),
-                  ),
-                  Expanded(
-                    child: Text(
-                      book.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w600,
-                        color: palette.fg,
+              height: kReaderTopBarHeight,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s4),
+                child: Row(
+                  children: [
+                    _buildTopBarIcon(
+                      tooltip: '返回',
+                      icon: Icons.arrow_back,
+                      onPressed: () => Navigator.of(context).maybePop(),
+                    ),
+                    const SizedBox(width: AppSpacing.s2),
+                    Expanded(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            book.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w600,
+                              color: palette.fg,
+                            ),
+                          ),
+                          if (chapterTitle != null && !narrow)
+                            Text(
+                              chapterTitle,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: palette.muted,
+                              ),
+                            ),
+                        ],
                       ),
                     ),
-                  ),
-                  if (chapterTitle != null) ...[
-                    const SizedBox(width: AppSpacing.s2),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 160),
-                      child: Text(
-                        chapterTitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 11.5, color: palette.muted),
+                    if (toc.isNotEmpty)
+                      _buildTopBarIcon(
+                        key: const ValueKey('reader-toc-button'),
+                        tooltip: '目录',
+                        icon: Icons.menu_book_outlined,
+                        onPressed: () =>
+                            _scaffoldKey.currentState?.openEndDrawer(),
                       ),
+                    _buildTopBarIcon(
+                      key: const ValueKey('reader-settings-button'),
+                      tooltip: '阅读设置',
+                      icon: Icons.settings_outlined,
+                      onPressed: _openSettingsPanel,
                     ),
                   ],
-                  if (toc.isNotEmpty)
-                    IconButton(
-                      key: const ValueKey('reader-toc-button'),
-                      tooltip: '目录',
-                      icon: const Icon(Icons.menu_book_outlined),
-                      color: palette.fg,
-                      onPressed: () =>
-                          _scaffoldKey.currentState?.openEndDrawer(),
-                    ),
-                  IconButton(
-                    key: const ValueKey('reader-settings-button'),
-                    tooltip: '阅读设置',
-                    icon: const Icon(Icons.settings_outlined),
-                    color: palette.fg,
-                    onPressed: _openSettingsPanel,
-                  ),
-                ],
+                ),
               ),
             ),
           ),
@@ -815,11 +853,46 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     );
   }
 
-  /// 底部条：章节名 + 进度滑块（拖动跳转）+ `62% · 第 12 / 34 页`
-  /// （无页码信息时仅 `62%`，A8）。
+  /// 顶条图标按钮：34×34 点击区 + 19px 图标（原型 `.rd-btn` / `.ico`）。
+  ///
+  /// 用 `IconButton` 但显式收紧约束：`constraints` 定死 34×34、
+  /// `padding: EdgeInsets.zero`、`iconSize: 19`，并用
+  /// `MaterialTapTargetSize.shrinkWrap` 关闭 Material 默认的 48×48
+  /// 命中区扩展（否则按钮实际仍是 48×48，与原型不符）。
+  Widget _buildTopBarIcon({
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback onPressed,
+    Key? key,
+  }) {
+    return IconButton(
+      key: key,
+      tooltip: tooltip,
+      icon: Icon(icon),
+      iconSize: 19,
+      color: _readerPalette.fg,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints.tightFor(width: 34, height: 34),
+      style: IconButton.styleFrom(
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+      onPressed: onPressed,
+    );
+  }
+
+  /// 底部条：章节名 + 进度滑块（拖动跳转）+ 轨道下方一行小字。
+  ///
+  /// 骨架对齐原型 `.rd-bottom`（v1.3）：条高 [kReaderBottomBarHeight]（58），
+  /// 窄视口 ≤460 为 [kReaderBottomBarHeightNarrow]（54）；左侧章节名
+  /// （12px muted，窄视口隐藏，同原型 `.rd-chap`）；中间滑块区 = 轨道
+  /// （4px 细线 + 12px 圆点手柄）+ 下方一行 11px muted 小字（左右分列）。
   Widget _buildBottomBar(BuildContext context, _ReadyState ready) {
     final palette = _readerPalette;
     final chapterTitle = _currentChapterTitle(ready.toc);
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final narrow = screenWidth <= kReaderNarrowBreakpoint;
+    final height = narrow ? kReaderBottomBarHeightNarrow : kReaderBottomBarHeight;
+    final (leftMeta, rightMeta) = _bottomBarMeta(ready);
     return Positioned(
       bottom: 0,
       left: 0,
@@ -834,53 +907,86 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
           child: SafeArea(
             top: false,
             child: SizedBox(
-              height: 52,
-              child: Row(
-                children: [
-                  ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxWidth: chapterTitle == null ? 0 : 160,
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.only(left: AppSpacing.s4),
-                      child: Text(
-                        chapterTitle ?? '',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 12, color: palette.muted),
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    child: SliderTheme(
-                      data: SliderTheme.of(context).copyWith(
-                        trackHeight: 3,
-                        thumbShape: const RoundSliderThumbShape(
-                          enabledThumbRadius: 6,
+              height: height,
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: narrow ? AppSpacing.s3 : AppSpacing.s5,
+                ),
+                child: Row(
+                  children: [
+                    if (!narrow && chapterTitle != null)
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxWidth: screenWidth * 0.26,
                         ),
-                        overlayShape: const RoundSliderOverlayShape(
-                          overlayRadius: 12,
+                        child: Text(
+                          chapterTitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 12, color: palette.muted),
                         ),
-                        activeTrackColor: palette.fg.withValues(alpha: 0.75),
-                        inactiveTrackColor: palette.fg.withValues(alpha: 0.14),
-                        thumbColor: palette.fg,
-                        overlayColor: palette.fg.withValues(alpha: 0.12),
                       ),
-                      child: _buildProgressSlider(ready),
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.only(right: AppSpacing.s4),
-                    child: Text(
-                      _progressText(ready),
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        color: palette.muted,
-                        fontFeatures: const [FontFeature.tabularFigures()],
+                    Expanded(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            height: 22,
+                            child: SliderTheme(
+                              data: SliderTheme.of(context).copyWith(
+                                trackHeight: 4,
+                                thumbShape: const RoundSliderThumbShape(
+                                  enabledThumbRadius: 6,
+                                ),
+                                overlayShape: const RoundSliderOverlayShape(
+                                  overlayRadius: 12,
+                                ),
+                                activeTrackColor: palette.fg.withValues(
+                                  alpha: 0.7,
+                                ),
+                                inactiveTrackColor: palette.fg.withValues(
+                                  alpha: 0.14,
+                                ),
+                                thumbColor: palette.fg,
+                                overlayColor: palette.fg.withValues(
+                                  alpha: 0.12,
+                                ),
+                              ),
+                              child: _buildProgressSlider(ready),
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                leftMeta,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: palette.muted,
+                                  fontFeatures: const [
+                                    FontFeature.tabularFigures(),
+                                  ],
+                                ),
+                              ),
+                              Text(
+                                rightMeta,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: palette.muted,
+                                  fontFeatures: const [
+                                    FontFeature.tabularFigures(),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -912,17 +1018,20 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     );
   }
 
-  /// 进度文案：`62% · 第 12 / 34 页`；页码不可用（滚动模式/连续排版
-  /// 渲染器）时仅 `62%`。
-  String _progressText(_ReadyState ready) {
+  /// 底条小字行内容（左「本章 N / M 页」、右「全书 X%」）。
+  ///
+  /// 页码取自渲染器的 [ReaderPageInfoProvider.currentPageInfo]（章内页码，
+  /// 0 起）；页码不可用（滚动模式/连续排版渲染器）时左侧退化为纯百分比，
+  /// 右侧留空——避免同一百分比在左右重复出现。
+  (String, String) _bottomBarMeta(_ReadyState ready) {
     final renderer = ready.session.renderer;
     final pct = (renderer.controller.percent.clamp(0.0, 1.0) * 100).round();
     final info = switch (renderer) {
       ReaderPageInfoProvider p => p.currentPageInfo,
       _ => null,
     };
-    if (info == null || info.$2 <= 0) return '$pct%';
-    return '$pct% · 第 ${info.$1 + 1} / ${info.$2} 页';
+    if (info == null || info.$2 <= 0) return ('$pct%', '');
+    return ('本章 ${info.$1 + 1} / ${info.$2} 页', '全书 $pct%');
   }
 
   // —— 首次进入轻提示（A8/Q10：2.6s 自动淡出） ——
@@ -932,7 +1041,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     return Positioned(
       left: 0,
       right: 0,
-      bottom: 28,
+      // v1.3：对齐原型 `.rd-hint`（bottom 84px）——避开底条。
+      bottom: 84,
       child: IgnorePointer(
         child: Align(
           alignment: Alignment.bottomCenter,
@@ -995,7 +1105,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
             key: const ValueKey('reader-aa-drawer'),
             color: Theme.of(context).colorScheme.surface,
             child: SizedBox(
-              width: 340,
+              // 336 = 原型 `.rd-drawer{width:336px}`（单元 2 对齐）。
+              width: 336,
               height: double.infinity,
               child: const ReaderSettingsPanel(),
             ),
@@ -1003,14 +1114,15 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
         ),
       );
     }
-    // 移动（≤860）：底部弹层。
+    // 移动（≤860）：底部弹层（原型 ≤700 宽时抽屉变底部弹层：
+    // 顶部圆角、max-height 78%、无拖拽条）。
     return showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      showDragHandle: true,
+      showDragHandle: false,
       builder: (sheetContext) => ConstrainedBox(
         constraints: BoxConstraints(
-          maxHeight: MediaQuery.heightOf(sheetContext) * 0.85,
+          maxHeight: MediaQuery.heightOf(sheetContext) * 0.78,
         ),
         child: const ReaderSettingsPanel(key: ValueKey('reader-aa-sheet')),
       ),
@@ -1019,24 +1131,44 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
 
   /// 目录抽屉（FR-108 + A8 重做）：右侧抽屉，头部「目录 + 章数 + 关闭」，
   /// 按层级缩进展示，当前章高亮并带「当前」标记（isTocEntryCurrent 比对），
-  /// 点击跳转并关闭。配色跟随阅读主题（对齐原型 .toc-panel）。
+  /// 点击跳转并关闭。
+  ///
+  /// 配色归属（对齐原型 `.rd-drawer`）：**阅读页内的浮层抽屉属于应用外壳**
+  /// ——底色取外壳 `surface`，文字取 `onSurface` / `onSurfaceVariant`，
+  /// 强调色取品牌色 `primary`；**正文与顶/底控制条才属于阅读主题**。
+  /// 因此本抽屉不再使用阅读主题 palette（阅读主题底色会随夜间背景变黑，
+  /// 与原型「抽屉始终是浅色面板」的观感不符）。
   Widget _buildTocDrawer(BuildContext context) {
     final toc = switch (_state) {
       final _ReadyState s => s.toc,
       _ => const <TocEntry>[],
     };
     if (toc.isEmpty) return const SizedBox.shrink();
-    final palette = _readerPalette;
+    // 应用外壳配色（浅/深跟随系统，不受阅读主题影响）。
+    final scheme = Theme.of(context).colorScheme;
+    final brand = scheme.primary;
     return Drawer(
-      width: 340,
+      // 336 = 原型 `.rd-drawer{width:336px}`（与 Aa 排版面板同宽）。
+      width: 336,
+      // 底色 = 应用外壳 surface（原型 `--surface`）：抽屉 Material 自身也要
+      // 用外壳色，否则 M3 默认 surfaceContainerLow 会在边缘露出来。
+      backgroundColor: scheme.surface,
+      // 原型 `.rd-drawer` 为直角面板（无圆角），与 Aa 排版面板一致。
+      shape: const RoundedRectangleBorder(),
       child: Container(
-        color: palette.bg,
+        // 只描左边线（原型 `.rd-drawer{border-left:1px solid var(--border)}`）；
+        // 不铺底色——底色由 Drawer 的 Material 提供，条目 hover 的
+        // `--surface-3` 底色（应用主题 hoverColor）才能透出来。
+        decoration: BoxDecoration(
+          border: Border(left: BorderSide(color: scheme.outline)),
+        ),
         child: SafeArea(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+                // 原型 `.rd-drawer-head{padding:var(--s4)}`（16 四周）。
+                padding: const EdgeInsets.all(AppSpacing.s4),
                 child: Row(
                   children: [
                     Text(
@@ -1044,35 +1176,52 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
                       style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w600,
-                        color: palette.fg,
+                        color: scheme.onSurface,
                       ),
                     ),
                     const Spacer(),
+                    // 章数胶囊（原型 `.rd-pill`：11px、padding 2/8、全圆、
+                    // 浅底 + muted 字）。
                     Container(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 8,
                         vertical: 2,
                       ),
                       decoration: BoxDecoration(
-                        color: palette.fg.withValues(alpha: 0.08),
+                        color: scheme.surfaceContainerHighest,
                         borderRadius: BorderRadius.circular(AppRadius.full),
                       ),
                       child: Text(
                         '${toc.length} 章',
-                        style: TextStyle(fontSize: 11, color: palette.muted),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: scheme.onSurfaceVariant,
+                        ),
                       ),
                     ),
+                    const SizedBox(width: AppSpacing.s2),
+                    // 关闭（原型 `.rd-btn`：34×34 点击区 + 19px 图标）。
                     IconButton(
                       key: const ValueKey('reader-toc-close'),
                       tooltip: '关闭',
                       icon: const Icon(Icons.close),
-                      color: palette.fg,
+                      iconSize: 19,
+                      color: scheme.onSurface,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints.tightFor(
+                        width: 34,
+                        height: 34,
+                      ),
+                      style: IconButton.styleFrom(
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
                       onPressed: () => Navigator.of(context).pop(),
                     ),
                   ],
                 ),
               ),
-              Divider(height: 1, color: palette.rule),
+              // 头与列表之间的 1px 分隔线（原型 `.rd-drawer-head` 下边框）。
+              Divider(height: 1, color: scheme.outline),
               Expanded(
                 child: ListView.builder(
                   padding: const EdgeInsets.symmetric(
@@ -1085,64 +1234,98 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
                     final level = entry.level.clamp(0, 4);
                     final isCurrent =
                         _session?.renderer.isTocEntryCurrent(entry) ?? false;
+                    final isSub = level >= 1;
+                    // 二级项左侧引导线（原型 `.rd-toc-item.lv2::before`）：
+                    // 1px 竖线，位于文字左侧 3px（原型 lv2 文字 24px / 线 20px）。
+                    const double guideGap = 3;
+                    final textLeft = 12 + _tocIndentPerLevel * level;
                     return InkWell(
                       borderRadius: BorderRadius.circular(AppRadius.sm),
                       onTap: () => _jumpToTocEntry(entry),
-                      child: Container(
-                        padding: EdgeInsets.only(
-                          left: 12 + _tocIndentPerLevel * level,
-                          right: 12,
-                          top: 9,
-                          bottom: 9,
-                        ),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(AppRadius.sm),
-                          color: isCurrent
-                              ? palette.fg.withValues(alpha: 0.08)
-                              : Colors.transparent,
-                        ),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                entry.title,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  fontSize: level == 0 ? 13 : 12.5,
-                                  fontWeight: isCurrent
-                                      ? FontWeight.w600
-                                      : FontWeight.w400,
-                                  color: palette.fg.withValues(
-                                    alpha: level == 0 || isCurrent ? 1 : 0.82,
-                                  ),
-                                ),
-                              ),
+                      child: Stack(
+                        children: [
+                          Container(
+                            padding: EdgeInsets.only(
+                              left: textLeft,
+                              right: 12,
+                              top: 9,
+                              bottom: 9,
                             ),
-                            if (isCurrent) ...[
-                              const SizedBox(width: AppSpacing.s2),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 6,
-                                  vertical: 1,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: palette.fg,
-                                  borderRadius: BorderRadius.circular(
-                                    AppRadius.full,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(AppRadius.sm),
+                              color: isCurrent
+                                  ? brand.withValues(alpha: 0.14)
+                                  : Colors.transparent,
+                            ),
+                            child: Row(
+                              children: [
+                                // 二级标题前缀「·」（原型 `.rd-toc-item.lv2
+                                // .t::before`）：弱化文字色，与左缩进一起
+                                // 标示层级。txt 书无二级项，肉眼不可见；
+                                // epub/md 有二级项时会显现。
+                                if (isSub) ...[
+                                  Text(
+                                    '·',
+                                    style: TextStyle(
+                                      fontSize: 12.5,
+                                      color: scheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 7),
+                                ],
+                                Expanded(
+                                  child: Text(
+                                    entry.title,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: level == 0 ? 13 : 12.5,
+                                      fontWeight: isCurrent
+                                          ? FontWeight.w600
+                                          : FontWeight.w400,
+                                      color: isCurrent
+                                          ? brand
+                                          : scheme.onSurface.withValues(
+                                              alpha: isSub ? 0.72 : 0.82,
+                                            ),
+                                    ),
                                   ),
                                 ),
-                                child: Text(
-                                  '当前',
-                                  style: TextStyle(
-                                    fontSize: 10.5,
-                                    color: palette.bg,
+                                if (isCurrent) ...[
+                                  const SizedBox(width: AppSpacing.s2),
+                                  // 「当前」徽标（原型 `.rd-toc-cur`）：品牌色
+                                  // 18% 透明底 + 品牌色字，不再是实心深色药丸。
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 1,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: brand.withValues(alpha: 0.18),
+                                      borderRadius: BorderRadius.circular(
+                                        AppRadius.full,
+                                      ),
+                                    ),
+                                    child: Text(
+                                      '当前',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        color: brand,
+                                      ),
+                                    ),
                                   ),
-                                ),
-                              ),
-                            ],
-                          ],
-                        ),
+                                ],
+                              ],
+                            ),
+                          ),
+                          if (isSub)
+                            Positioned(
+                              left: textLeft - guideGap - 1,
+                              top: 0,
+                              bottom: 0,
+                              child: Container(width: 1, color: scheme.outline),
+                            ),
+                        ],
                       ),
                     );
                   },

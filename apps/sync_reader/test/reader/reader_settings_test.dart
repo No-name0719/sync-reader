@@ -1,5 +1,5 @@
 /// ReaderSettings 契约测试：音量键翻页字段（FR-209）序列化、出厂默认值
-/// （docs/10 A14/Q9：字号 19 / 行高 1.95 / 默认分页）、主题 7 套与旧值
+/// （v1.3 视觉对齐：字号 16 / 行高 1.95 / 页边距 24 / 默认分页）、主题 7 套与旧值
 /// 迁移映射（A11 + v1.2 B2）、v1.2 新增排版字段（B3/B4/B5）与字体栈解析
 /// （Q2/Q4）。
 library;
@@ -42,10 +42,10 @@ void main() {
   });
 
   group('v1.1 出厂默认值（docs/10 A14/Q9/§4.4）', () {
-    test('字号 19 / 行高 1.95（正文排版基线）', () {
-      expect(ReaderSettings.defaults.fontSize, 19.0);
+    test('字号 16 / 行高 1.95 / 页边距 24（v1.3 视觉对齐原型）', () {
+      expect(ReaderSettings.defaults.fontSize, 16.0);
       expect(ReaderSettings.defaults.lineHeight, 1.95);
-      expect(ReaderSettings.defaults.pageMargin, 16.0);
+      expect(ReaderSettings.defaults.pageMargin, 24.0);
     });
 
     test('翻页模式默认「分页」（Q9，与 v1.0 默认滚动相反）', () {

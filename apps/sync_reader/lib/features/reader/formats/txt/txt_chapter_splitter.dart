@@ -62,6 +62,12 @@ final class TxtChapterSplitter {
   ];
 
   /// 返回命中单行文本的规则 id；不命中返回 null（单测用）。
+  /// 该行是否命中章节标题规则（任一规则）。
+  ///
+  /// 显示层用它判定「章首行是不是章题」——章题要用标题样式渲染
+  /// （1.32em / 600，见 [buildTxtDisplaySpans]），正文行不适用。
+  static bool isHeadingLine(String line) => ruleIdForLine(line) != null;
+
   static String? ruleIdForLine(String line) {
     // 规则 3 有额外护栏：分隔符后紧跟数字 → 小数/IP/年份类，不切；
     // 含代码标点 → 代码式伪行，不切。

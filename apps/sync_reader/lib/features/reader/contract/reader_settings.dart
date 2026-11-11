@@ -3,7 +3,8 @@
 /// v1.1（docs/10 A10/A11/A14/Q2/Q5/Q9）：
 /// - 阅读主题 3→4 套，色值权威源为 `core/design_tokens.dart` 的
 ///   [AppReaderTheme]/`ReaderPalette`；
-/// - 出厂默认：字号 19、行高 1.95、翻页模式「分页」（旧版默认滚动）；
+/// - 出厂默认：行高 1.95、翻页模式「分页」（旧版默认滚动）；
+///   字号 19 已由 v1.3 改为 16（见下）；
 /// - 字体三选（衬线·黑体·楷体），衬线为默认（Q2），系统字体栈不打包（Q4）。
 ///
 /// v1.2（docs/10 A23–A26，阅读页重设计）：
@@ -13,6 +14,13 @@
 ///   四项排版设置；
 /// - JSON schema v3：v≥2 直读主题枚举名（v1 的 legacy 映射仅对更旧数据），
 ///   新增键缺省回落默认（只增不删，读方容忍）。
+///
+/// v1.3（阅读页骨架对齐原型，2026-11-11）：
+/// - 出厂默认改为 **字号 16 / 页边距 24**（行高仍 1.95）——依据原型
+///   `ui_prototype/reader.css` 的正文 16px 与 720px 正文列宽：同一列宽下
+///   原型每行约 45 字，而 19px 时只有约 38 字，密度观感差一截；
+/// - 仅改出厂默认值，**JSON schema 版本不变**（仍为 3）；[fromJson] 的
+///   缺省回落逻辑不动——老用户已持久化的值仍优先，不被新默认覆盖。
 library;
 
 import '../../../core/design_tokens.dart'
@@ -111,9 +119,9 @@ enum ReaderTextEncoding { auto, utf8, gbk }
 /// 阅读偏好值对象（不可变；经 JSON 存入 reader_settings 表）。
 class ReaderSettings {
   const ReaderSettings({
-    this.fontSize = 19.0,
+    this.fontSize = 16.0,
     this.lineHeight = 1.95,
-    this.pageMargin = 16.0,
+    this.pageMargin = 24.0,
     this.theme = ReaderTheme.paper,
     this.fontFamily,
     this.pageMode = ReaderPageMode.page,
@@ -125,17 +133,18 @@ class ReaderSettings {
     this.volumeKeyPageTurn = false,
   });
 
-  /// 出厂默认（docs/10 §4.4：正文 19px / 行高 1.95；Q9 默认分页；
+  /// 出厂默认（v1.3 视觉对齐：正文 16px / 行高 1.95 / 页边距 24，依据原型
+  /// 16px 正文 + 720px 正文列；Q9 默认分页；
   /// Q2 默认衬线——由字体解析把 null 解析为衬线栈；B5 默认上下滑动）。
   static const ReaderSettings defaults = ReaderSettings();
 
-  /// 正文字号（逻辑像素；出厂默认 19，范围 12–32、步进 1，A14）。
+  /// 正文字号（逻辑像素；出厂默认 16，范围 12–32、步进 1，A14）。
   final double fontSize;
 
   /// 行距倍数（出厂默认 1.95，docs/10 §4.4）。
   final double lineHeight;
 
-  /// 页边距（逻辑像素，四边对称）。
+  /// 页边距（逻辑像素，四边对称；出厂默认 24，v1.3 视觉对齐）。
   final double pageMargin;
 
   /// 阅读主题（白色/米黄/浅绿/浅灰蓝/深灰/深棕/纯黑，B2）。

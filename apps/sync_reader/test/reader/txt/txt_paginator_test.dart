@@ -4,9 +4,16 @@
 library;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/painting.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sync_reader/features/reader/formats/txt/txt_paginator.dart';
+import 'package:sync_reader/features/reader/reader_indent.dart';
+
+/// 缩进占位符在扁平文本里的样子（U+FFFC，行内不可见盒）。
+///
+/// 缩进不再用全角空格（两端对齐会吞掉行首空白），改用行内占位符，
+/// 因此显示层纯文本里每个缩进是 **1 个** U+FFFC（不是 2 个 U+3000）。
+const _indentMark = '￼';
 
 const _fontSize = 16.0;
 const _lineHeight = 1.5;
@@ -20,14 +27,14 @@ TextStyle get _testStyle => const TextStyle(fontSize: _fontSize, height: _lineHe
 TxtPaginationRequest _request(
   String text, {
   String? fontFamily,
-  String indent = txtParagraphIndent,
+  int indentEm = kReaderParagraphIndentEm,
   int paragraphGapLines = 0,
 }) => TxtPaginationRequest(
   text: text,
   fontSize: _fontSize,
   lineHeight: _lineHeight,
   fontFamily: fontFamily,
-  paragraphIndent: indent,
+  indentEm: indentEm,
   paragraphGapLines: paragraphGapLines,
   viewportWidth: _viewportWidth,
   viewportHeight: _viewportHeight,
@@ -35,15 +42,63 @@ TxtPaginationRequest _request(
 
 /// 排版一段显示文本并返回行数（测试内测量行盒，与分页器同引擎同字体；
 /// 宽度必须与分页视口一致，否则行断点不可比）。
-int _lineCount(String display, double width) {
-  final painter = TextPainter(
-    textDirection: TextDirection.ltr,
-    text: TextSpan(text: display, style: _testStyle),
-  )..layout(maxWidth: width);
+int _lineCount(TextSpan span, double width, {int indentCount = 0}) {
+  final painter = TextPainter(textDirection: TextDirection.ltr, text: span);
+  painter.setPlaceholderDimensions(
+    List<PlaceholderDimensions>.filled(
+      indentCount,
+      readerIndentPlaceholder(_fontSize),
+    ),
+  );
+  painter.layout(maxWidth: width);
   final n = painter.computeLineMetrics().length;
   painter.dispose();
   return n;
 }
+
+/// span 树里缩进占位符的数量（测量时用来喂占位符尺寸）。
+int _indentCount(TextSpan span) {
+  var n = 0;
+  span.visitChildren((InlineSpan child) {
+    if (child is WidgetSpan) n++;
+    return true;
+  });
+  return n;
+}
+
+/// 章内区间的显示层 span 树（与分页器/渲染侧同一变换）。
+TextSpan _displaySpan(
+  String text,
+  int start,
+  int end, {
+  int indentEm = kReaderParagraphIndentEm,
+  int paragraphGapLines = 0,
+}) => txtDisplaySpan(
+  text,
+  start,
+  end,
+  style: _testStyle,
+  fontSize: _fontSize,
+  indentEm: indentEm,
+  paragraphGapLines: paragraphGapLines,
+);
+
+/// 章内区间的**单页**显示层 span 树。
+TextSpan _pageSpan(
+  String text,
+  int start,
+  int end, {
+  int indentEm = kReaderParagraphIndentEm,
+  int paragraphGapLines = 0,
+}) => txtPageDisplaySpan(
+  text,
+  start,
+  end,
+  style: _testStyle,
+  fontSize: _fontSize,
+  indentEm: indentEm,
+  paragraphGapLines: paragraphGapLines,
+);
 
 String _sampleText({int lines = 200}) => List<String>.generate(
   lines,
@@ -182,54 +237,54 @@ void main() {
   });
 
   group('v1.1 A10 中文排版（首行缩进 + 两端对齐）', () {
-    test('txtDisplayText：每个段落首行插入 2em 缩进', () {
+    test('显示层变换：每个段落首行插入 2em 缩进', () {
       const text = '第一段。\n第二段。\n第三段。';
-      final display = txtDisplayText(text, 0, text.length);
+      final display = _displaySpan(text, 0, text.length).toPlainText();
       expect(
         display,
-        '$txtParagraphIndent第一段。\n$txtParagraphIndent第二段。\n$txtParagraphIndent第三段。',
+        '$_indentMark第一段。\n$_indentMark第二段。\n$_indentMark第三段。',
       );
     });
 
-    test('txtDisplayText：空行与 \\r 起始行不缩进（CRLF 空行不加占位）', () {
+    test('显示层变换：空行与 \\r 起始行不缩进（CRLF 空行不加占位）', () {
       const text = '甲段。\n\n乙段。\r\n丙段。';
-      final display = txtDisplayText(text, 0, text.length);
+      final display = _displaySpan(text, 0, text.length).toPlainText();
       // 空行本身不加缩进（缩进后紧跟换行/回车 = 给空行加了占位）。
       expect(
-        display.contains('$txtParagraphIndent\n'),
+        display.contains('$_indentMark\n'),
         isFalse,
         reason: '空行不应插入缩进（否则平白多一行）',
       );
       expect(
-        display.contains('$txtParagraphIndent\r'),
+        display.contains('$_indentMark\r'),
         isFalse,
         reason: '\\r 起始行不应插入缩进',
       );
       // 空行之后的正常段落仍缩进。
-      expect(display.contains('\n\n$txtParagraphIndent乙段。'), isTrue);
+      expect(display.contains('\n\n$_indentMark乙段。'), isTrue);
       expect(
-        display.contains('\r\n$txtParagraphIndent丙段。'),
+        display.contains('\r\n$_indentMark丙段。'),
         isTrue,
         reason: 'CRLF 行结束后的正常段落仍缩进',
       );
     });
 
-    test('txtDisplayText：续页起点在段中不缩进（页界不产生假段落头）', () {
+    test('显示层变换：续页起点在段中不缩进（页界不产生假段落头）', () {
       const text = '甲段落内容。\n乙段落内容。';
       // 从乙段第二个字符起（段中续行）→ 区间首不缩进。
       final start = text.indexOf('乙') + 1;
-      final display = txtDisplayText(text, start, text.length);
-      expect(display.startsWith(txtParagraphIndent), isFalse);
+      final display = _displaySpan(text, start, text.length).toPlainText();
+      expect(display.startsWith(_indentMark), isFalse);
       expect(display, '段落内容。');
     });
 
-    test('txtDisplayText：不删改原字符（只插入），区间外不受影响', () {
+    test('显示层变换：不删改原字符（只插入），区间外不受影响', () {
       const text = '甲。\n乙。';
-      final display = txtDisplayText(text, text.indexOf('乙'), text.length);
-      expect(display, '$txtParagraphIndent乙。');
+      final display = _displaySpan(text, text.indexOf('乙'), text.length).toPlainText();
+      expect(display, '$_indentMark乙。');
       // 全文变换是逐段的真超集：去掉缩进后还原原文。
-      final full = txtDisplayText(text, 0, text.length);
-      expect(full.replaceAll(txtParagraphIndent, ''), text);
+      final full = _displaySpan(text, 0, text.length).toPlainText();
+      expect(full.replaceAll(_indentMark, ''), text);
     });
 
     test('缩进 + justify 分页：结构不变量仍成立', () {
@@ -241,7 +296,7 @@ void main() {
           lineHeight: _lineHeight,
           viewportWidth: _viewportWidth,
           viewportHeight: _viewportHeight,
-          paragraphIndent: txtParagraphIndent,
+          indentEm: kReaderParagraphIndentEm,
           textAlign: TextAlign.justify,
         ),
       );
@@ -259,7 +314,7 @@ void main() {
               lineHeight: _lineHeight,
               viewportWidth: _viewportWidth,
               viewportHeight: _viewportHeight,
-              paragraphIndent: indent ? txtParagraphIndent : '',
+              indentEm: indent ? kReaderParagraphIndentEm : 0,
             ),
           );
       final withIndent = paginate(indent: true);
@@ -295,18 +350,22 @@ void main() {
 
   group('v1.2 B1 整行分页（页界落在行与行之间，无半行）', () {
     /// 断言一页独立排版的高度不超过视口（页尾不足一行时留白而不是溢出）。
-    /// 用 [txtPageDisplayText] 与渲染侧同口径（页尾分页符不渲染空行盒）。
+    /// 用 [_pageSpan] 与渲染侧同口径（页尾分页符不渲染空行盒）。
     void expectPageFits(
       String text,
       TxtPageRange page,
       double width, {
       double height = _viewportHeight,
     }) {
-      final display = txtPageDisplayText(text, page.start, page.end);
-      final painter = TextPainter(
-        textDirection: TextDirection.ltr,
-        text: TextSpan(text: display, style: _testStyle),
-      )..layout(maxWidth: width);
+      final span = _pageSpan(text, page.start, page.end);
+      final painter = TextPainter(textDirection: TextDirection.ltr, text: span);
+      painter.setPlaceholderDimensions(
+        List<PlaceholderDimensions>.filled(
+          _indentCount(span),
+          readerIndentPlaceholder(_fontSize),
+        ),
+      );
+      painter.layout(maxWidth: width);
       expect(
         painter.height,
         lessThanOrEqualTo(height + 0.01),
@@ -324,17 +383,20 @@ void main() {
       int gapLines = 0,
       double width = _viewportWidth,
     }) {
-      final countA = _lineCount(
-        txtPageDisplayText(text, a.start, a.end, paragraphGapLines: gapLines),
-        width,
+      final spanA = _pageSpan(text, a.start, a.end, paragraphGapLines: gapLines);
+      final spanB = _pageSpan(text, b.start, b.end, paragraphGapLines: gapLines);
+      final spanUnion = _pageSpan(
+        text,
+        a.start,
+        b.end,
+        paragraphGapLines: gapLines,
       );
-      final countB = _lineCount(
-        txtPageDisplayText(text, b.start, b.end, paragraphGapLines: gapLines),
-        width,
-      );
+      final countA = _lineCount(spanA, width, indentCount: _indentCount(spanA));
+      final countB = _lineCount(spanB, width, indentCount: _indentCount(spanB));
       final countUnion = _lineCount(
-        txtPageDisplayText(text, a.start, b.end, paragraphGapLines: gapLines),
+        spanUnion,
         width,
+        indentCount: _indentCount(spanUnion),
       );
       // 并集区间里，b 的首段若为段落首且上一行有内容则插入段距空行
       // （单页排版时页首段落收起段距），需要按条件补回。
@@ -377,7 +439,7 @@ void main() {
           lineHeight: _lineHeight,
           viewportWidth: _viewportWidth,
           viewportHeight: _viewportHeight,
-          paragraphIndent: txtParagraphIndent,
+          indentEm: kReaderParagraphIndentEm,
           textAlign: TextAlign.justify,
         ),
       );
@@ -391,7 +453,7 @@ void main() {
       final text = _sampleText(lines: 60);
       for (final gap in [1, 2]) {
         final pages = TxtPaginator.paginateSync(
-          _request(text, indent: txtParagraphIndent, paragraphGapLines: gap),
+          _request(text, paragraphGapLines: gap),
         );
         expect(pages.length, greaterThan(3), reason: '段距 $gap');
         for (var i = 0; i < pages.length; i++) {
@@ -410,17 +472,16 @@ void main() {
 
     test('段距只加在相邻内容段之间：原文空行分隔的段落不叠加', () {
       const text = '甲段。\n\n乙段。\n丙段。';
-      final display = txtDisplayText(
+      final display = _displaySpan(
         text,
         0,
         text.length,
-        indent: txtParagraphIndent,
         paragraphGapLines: 1,
-      );
+      ).toPlainText();
       // 乙段前已有原文空行 → 不再叠加段距；丙段前是相邻内容行 → 叠加 1 行。
-      expect(display.contains('甲段。\n\n$txtParagraphIndent乙段。'), isTrue);
+      expect(display.contains('甲段。\n\n$_indentMark乙段。'), isTrue);
       expect(
-        display.contains('$txtParagraphIndent乙段。\n\n$txtParagraphIndent丙段。'),
+        display.contains('$_indentMark乙段。\n\n$_indentMark丙段。'),
         isTrue,
         reason: '乙段与丙段之间 = 段尾换行 + 1 空行段距（共两个 \\n）',
       );
@@ -429,17 +490,16 @@ void main() {
     test('页首段落不插段距（跨页收起）：单页显示文本不以空行开头', () {
       final text = _sampleText(lines: 40);
       final pages = TxtPaginator.paginateSync(
-        _request(text, indent: txtParagraphIndent, paragraphGapLines: 2),
+        _request(text, paragraphGapLines: 2),
       );
       expect(pages.length, greaterThan(2));
       for (final page in pages.skip(1)) {
-        final display = txtDisplayText(
+        final display = _displaySpan(
           text,
           page.start,
           page.end,
-          indent: txtParagraphIndent,
           paragraphGapLines: 2,
-        );
+        ).toPlainText();
         expect(
           display.startsWith('\n'),
           isFalse,

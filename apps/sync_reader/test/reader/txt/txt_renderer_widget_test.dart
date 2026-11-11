@@ -72,17 +72,19 @@ void main() {
 
     expect(find.byType(PageView), findsOneWidget);
     expect(find.textContaining('第一章 开端'), findsWidgets, reason: '首屏页含章首内容');
-    // A10：正文显示文本带 2em 全角空格缩进（分页器与视图共用同一变换）。
+    // A10：正文段首缩进是**行内占位符**（宽 2em；空白字符会被两端对齐吞掉），
+    // 分页器与视图共用同一变换。
     final pageText = tester.widget<Text>(
       find
           .descendant(of: find.byType(PageView), matching: find.byType(Text))
           .first,
     );
-    expect(
-      (pageText.data ?? '').startsWith(kReaderParagraphIndent),
-      isTrue,
-      reason: '页首段落带 2em 首行缩进',
-    );
+    var indentCount = 0;
+    pageText.textSpan?.visitChildren((child) {
+      if (child is WidgetSpan) indentCount++;
+      return true;
+    });
+    expect(indentCount, greaterThan(0), reason: '页首段落带 2em 首行缩进占位符');
     expect(pageText.textAlign, TextAlign.justify, reason: 'A10 两端对齐');
     // A8：页脚移除，页码信息经 currentPageInfo 能力供宿主控制条。
     expect(renderer.currentPageInfo, isNotNull);

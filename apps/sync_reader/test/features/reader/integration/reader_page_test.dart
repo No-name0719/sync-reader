@@ -177,6 +177,69 @@ void main() {
       expect(find.text('第一章'), findsNothing, reason: '控制条已收起');
     });
 
+    testWidgets('移动端（窄视口）：点屏幕任意处唤出控制条，滑动才翻页',
+        (tester) async {
+      // 窄视口（≤460）= 手机形态：正文几乎铺满屏幕，没有可点的空白，
+      // 因此点任意处都唤出控制条（含左右翼），翻页交给滑动。
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      final renderer = await pumpReady(
+        tester,
+        toc: const [TocEntry(title: '第一章', level: 0, anchor: 0)],
+      );
+
+      // 点中区（哪怕点在正文上）→ 控制条出现（目录按钮恢复响应）。
+      await tester.tap(find.byKey(const ValueKey('reader-hot-mid')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('reader-toc-button')));
+      await tester.pumpAndSettle();
+      expect(find.text('第一章'), findsOneWidget, reason: '点中区即唤出控制条');
+      await tester.tap(find.byKey(const ValueKey('reader-toc-close')));
+      await tester.pumpAndSettle();
+
+      // 再点中区 → 控制条收起。
+      await tester.tap(find.byKey(const ValueKey('reader-hot-mid')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('reader-toc-button')));
+      await tester.pump();
+      expect(find.text('第一章'), findsNothing, reason: '再点中区收起控制条');
+
+      // 点左翼 → 同样唤出控制条，且**不**翻页。
+      await tester.tap(find.byKey(const ValueKey('reader-hot-prev')));
+      await tester.pumpAndSettle();
+      expect(renderer.controller.turnCalls, isEmpty, reason: '移动端点按不翻页');
+      await tester.tap(find.byKey(const ValueKey('reader-toc-button')));
+      await tester.pumpAndSettle();
+      expect(find.text('第一章'), findsOneWidget, reason: '点左翼也能唤出控制条');
+    });
+
+    testWidgets('移动端：滑动翻页不弹出控制条', (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      await pumpReady(
+        tester,
+        toc: const [TocEntry(title: '第一章', level: 0, anchor: 0)],
+      );
+
+      // 在中区做一次纵向滑动（翻页手势）→ 控制条不应被唤出。
+      await tester.drag(
+        find.byKey(const ValueKey('reader-hot-mid')),
+        const Offset(0, -220),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('reader-toc-button')));
+      await tester.pump();
+      expect(
+        find.text('第一章'),
+        findsNothing,
+        reason: '滑动后控制条仍是隐藏态（滑动不弹菜单）',
+      );
+    });
+
     testWidgets('左右翼区点击触发翻页（与 FR-209 音量键同一路径）', (tester) async {
       final renderer = await pumpReady(tester);
 
@@ -284,6 +347,79 @@ void main() {
     expect(renderer.controller.jumpCalls.single.title, '第二章 转折');
     // 抽屉已关闭（条目不再可见）。
     expect(find.text('第一章 起点'), findsNothing);
+  });
+
+  testWidgets('目录抽屉：应用外壳配色 + 336 宽 + 品牌色当前项（单元 3 对齐原型）', (
+    tester,
+  ) async {
+    final renderer = await pumpReady(
+      tester,
+      toc: const [
+        TocEntry(title: '第一章 起点', level: 0, anchor: 0),
+        TocEntry(title: '第二章 转折', level: 0, anchor: 1),
+        TocEntry(title: '小结', level: 1, anchor: 2),
+      ],
+    );
+    renderer.currentTocTitle = '第二章 转折';
+    await tester.pump();
+
+    await tester.tap(find.byKey(const ValueKey('reader-hot-mid')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('reader-toc-button')));
+    await tester.pumpAndSettle();
+
+    final scheme = Theme.of(
+      tester.element(find.descendant(of: find.byType(Drawer), matching: find.byType(Column)).first),
+    ).colorScheme;
+
+    // 宽度 336（原型 `.rd-drawer{width:336px}`，与 Aa 排版面板同宽）。
+    expect(tester.widget<Drawer>(find.byType(Drawer)).width, 336);
+
+    // 抽屉底色 = 应用外壳 surface（不是阅读主题底色）：由 Drawer 的
+    // Material 承载（内层不铺底色，条目 hover 的 `--surface-3` 才能透出）。
+    expect(tester.widget<Drawer>(find.byType(Drawer)).backgroundColor, scheme.surface);
+
+    // 当前项：底色 = 品牌色 14% 透明、文字 = 品牌色、字重 600。
+    final currentText = tester.widget<Text>(
+      find.descendant(of: find.byType(Drawer), matching: find.text('第二章 转折')),
+    );
+    expect(currentText.style!.color, scheme.primary);
+    expect(currentText.style!.fontWeight, FontWeight.w600);
+    final currentRowBg = tester
+        .widgetList<Container>(
+          find.descendant(of: find.byType(Drawer), matching: find.byType(Container)),
+        )
+        .map((c) => c.decoration)
+        .whereType<BoxDecoration>()
+        .map((d) => d.color)
+        .whereType<Color>()
+        .toList();
+    expect(
+      currentRowBg,
+      contains(scheme.primary.withValues(alpha: 0.14)),
+      reason: '当前项底色为品牌色 14% 透明',
+    );
+
+    // 「当前」徽标：字号 10、底 = 品牌色 18% 透明、字 = 品牌色。
+    final badge = tester.widget<Text>(
+      find.descendant(of: find.byType(Drawer), matching: find.text('当前')),
+    );
+    expect(badge.style!.fontSize, 10);
+    expect(badge.style!.color, scheme.primary);
+
+    // 普通一级项：字号 13、文字 = onSurface 82% 透明度。
+    final normalText = tester.widget<Text>(
+      find.descendant(of: find.byType(Drawer), matching: find.text('第一章 起点')),
+    );
+    expect(normalText.style!.fontSize, 13);
+    expect(normalText.style!.color, scheme.onSurface.withValues(alpha: 0.82));
+
+    // 二级项：字号 12.5、文字 = onSurface 72% 透明度。
+    final subText = tester.widget<Text>(
+      find.descendant(of: find.byType(Drawer), matching: find.text('小结')),
+    );
+    expect(subText.style!.fontSize, 12.5);
+    expect(subText.style!.color, scheme.onSurface.withValues(alpha: 0.72));
   });
 
   testWidgets('无 toc：不显示目录按钮（Aa 排版按钮常在）', (tester) async {

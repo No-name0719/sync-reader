@@ -58,6 +58,19 @@ void main() {
     matching: find.byType(Text),
   );
 
+  /// 预览里的段首缩进占位符数量（0 = 无缩进）。
+  ///
+  /// 缩进是**行内不可见盒**（WidgetSpan），不是空白字符——空白字符会被
+  /// 两端对齐吞掉（正文与预览同一机制）。
+  int previewIndentCount(Text text) {
+    var n = 0;
+    text.textSpan?.visitChildren((child) {
+      if (child is WidgetSpan) n++;
+      return true;
+    });
+    return n;
+  }
+
   testWidgets('拖动字号滑杆 → repository.save 持久化（内存实现）', (tester) async {
     await pumpPanel(tester);
 
@@ -68,7 +81,7 @@ void main() {
     await tester.pump();
 
     final repo = container.read(readerSettingsRepositoryProvider);
-    expect(repo.current.fontSize, greaterThan(18), reason: '默认 19，右拖应增大');
+    expect(repo.current.fontSize, greaterThan(16), reason: '默认 16，右拖应增大');
 
     final raw = await db.readerSettingsDao.getValue(
       ReaderSettingsRepository.storageKey,
@@ -84,8 +97,8 @@ void main() {
     await pumpPanel(tester);
 
     final before = tester.widget<Text>(previewText());
-    expect(before.data, startsWith(kReaderParagraphIndent), reason: '首行缩进 2em');
-    expect(before.style!.fontSize, 19, reason: '出厂字号 19（A14）');
+    expect(previewIndentCount(before), greaterThan(0), reason: '首行缩进 2em（行内占位符）');
+    expect(before.textSpan!.style!.fontSize, 16, reason: '出厂字号 16（v1.3 视觉对齐）');
 
     await tester.drag(
       find.byKey(const ValueKey('settings-font-size')),
@@ -95,8 +108,8 @@ void main() {
 
     final after = tester.widget<Text>(previewText());
     final repo = container.read(readerSettingsRepositoryProvider);
-    expect(after.style!.fontSize, repo.current.fontSize, reason: '预览随选项即时变化');
-    expect(after.style!.height, repo.current.lineHeight);
+    expect(after.textSpan!.style!.fontSize, repo.current.fontSize, reason: '预览随选项即时变化');
+    expect(after.textSpan!.style!.height, repo.current.lineHeight);
   });
 
   testWidgets('背景七选（B2）：米黄生效并持久化，七块齐备', (tester) async {
@@ -215,7 +228,8 @@ void main() {
         const Offset(0, -60),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('空一行').last);
+      // 单元 2：段距文案对齐原型「紧 / 疏 · 空一行 / 松 · 空两行」。
+      await tester.tap(find.text('疏 · 空一行').last);
       await tester.pump();
 
       final repo = container.read(readerSettingsRepositoryProvider);
@@ -240,8 +254,8 @@ void main() {
       final repo = container.read(readerSettingsRepositoryProvider);
       expect(repo.current.firstLineIndent, isFalse);
       expect(
-        tester.widget<Text>(previewText()).data,
-        isNot(startsWith(kReaderParagraphIndent)),
+        previewIndentCount(tester.widget<Text>(previewText())),
+        0,
         reason: '预览跟随缩进开关',
       );
     });
@@ -318,6 +332,123 @@ void main() {
         ReaderSettingsRepository.storageKey,
       );
       expect(raw, contains('"pageTurnAxis":"horizontal"'));
+    });
+  });
+
+  group('单元 2：Aa 面板原型对齐', () {
+    testWidgets('恢复默认：重置排版项但保留主题/翻页模式/动画/编码', (tester) async {
+      await pumpPanel(tester);
+
+      // 通过面板 UI 制造偏离默认的设置（面板持有本地状态，须走 UI 通道）。
+      await tester.drag(
+        find.byKey(const ValueKey('settings-font-size')),
+        const Offset(160, 0),
+      );
+      await tester.pump();
+      expect(
+        container.read(readerSettingsRepositoryProvider).current.fontSize,
+        greaterThan(16),
+        reason: '右拖应增大字号',
+      );
+
+      // 切夜间系背景（深灰）→ 保留项之一。
+      await tester.dragUntilVisible(
+        find.byKey(const ValueKey('settings-theme-dark')),
+        panelScroller(),
+        const Offset(0, -60),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('settings-theme-dark')));
+      await tester.pump();
+
+      // 切滚动模式（保留项之二）。
+      await tester.dragUntilVisible(
+        find.text('翻页模式'),
+        panelScroller(),
+        const Offset(0, -60),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('滚动').last);
+      await tester.pump();
+
+      // 面板头部（恢复默认按钮）随内容滚动，先滚回顶部再点。
+      await tester.ensureVisible(find.byKey(const ValueKey('aa-reset')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('aa-reset')));
+      await tester.pumpAndSettle();
+
+      final after = container.read(readerSettingsRepositoryProvider).current;
+      final d = ReaderSettings.defaults;
+      expect(after.fontSize, d.fontSize, reason: '字号恢复默认 16');
+      expect(after.lineHeight, d.lineHeight);
+      expect(after.pageMargin, d.pageMargin);
+      expect(after.paragraphGap, d.paragraphGap);
+      expect(after.firstLineIndent, d.firstLineIndent);
+      expect(after.fontFamily, isNull, reason: '字体恢复默认 = 衬线（null）');
+      expect(after.nightBrightness, d.nightBrightness);
+      // 保留项：主题 / 翻页模式 / 翻页动画 / 编码。
+      expect(after.theme, ReaderTheme.dark);
+      expect(after.pageMode, ReaderPageMode.scroll);
+      expect(after.pageTurnAxis, ReaderPageTurnAxis.vertical);
+      expect(after.txtEncodingOverride, ReaderTextEncoding.auto);
+
+      // 持久化同步。
+      final raw = await db.readerSettingsDao.getValue(
+        ReaderSettingsRepository.storageKey,
+      );
+      expect(raw, isNotNull);
+      expect(raw, contains('"fontSize":16.0'));
+      expect(raw, contains('"theme":"dark"'));
+    });
+
+    testWidgets('自绘分段控件：选中项无勾选图标，切换即时生效', (tester) async {
+      await pumpPanel(tester);
+      await tester.dragUntilVisible(
+        find.byKey(const ValueKey('settings-paragraph-gap')),
+        panelScroller(),
+        const Offset(0, -60),
+      );
+      await tester.pumpAndSettle();
+
+      // 原型 `.rd-seg` 形态：外层容器 + 三段文字，无 ✓ 图标。
+      expect(find.text('紧'), findsOneWidget);
+      expect(find.text('疏 · 空一行'), findsOneWidget);
+      expect(find.text('松 · 空两行'), findsOneWidget);
+      // Material SegmentedButton 的勾选图标（Icons.check）不应再出现。
+      expect(find.byIcon(Icons.check), findsNothing);
+
+      await tester.tap(find.text('松 · 空两行').last);
+      await tester.pump();
+      expect(
+        container.read(readerSettingsRepositoryProvider).current.paragraphGap,
+        ReaderParagraphGap.twoLines,
+      );
+    });
+
+    testWidgets('量程对齐原型：行距 1.2–2.4、页边距 8–72', (tester) async {
+      await pumpPanel(tester);
+
+      final lineHeight = tester.widget<Slider>(
+        find.byKey(const ValueKey('settings-line-height')),
+      );
+      expect(lineHeight.min, 1.2);
+      expect(lineHeight.max, 2.4);
+      expect(lineHeight.divisions, 24);
+
+      final pageMargin = tester.widget<Slider>(
+        find.byKey(const ValueKey('settings-page-margin')),
+      );
+      expect(pageMargin.min, 8);
+      expect(pageMargin.max, 72);
+      expect(pageMargin.divisions, 16);
+
+      // 字体与夜间亮度量程保持不变。
+      final fontSize = tester.widget<Slider>(
+        find.byKey(const ValueKey('settings-font-size')),
+      );
+      expect(fontSize.min, 12);
+      expect(fontSize.max, 32);
+      expect(fontSize.divisions, 20);
     });
   });
 }

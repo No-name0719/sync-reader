@@ -32,6 +32,7 @@ import 'package:sync_reader/features/reader/contract/reader_settings.dart';
 import 'package:sync_reader/features/reader/formats/txt/txt_format_handler.dart';
 import 'package:sync_reader/features/reader/formats/txt/txt_paginator.dart';
 import 'package:sync_reader/features/reader/reader_brightness.dart';
+import 'package:sync_reader/features/reader/reader_chrome.dart';
 
 /// 4 档视口（v1.1 逐屏比对同一组宽度）。
 const _viewports = <(String, Size)>[
@@ -167,10 +168,15 @@ void main() {
         debugShowCheckedModeBanner: false,
         home: Scaffold(
           body: Builder(
+            // v1.3：正文视图用与真实阅读页相同的垂直内缩包裹（顶条/底条
+            // 让位），保证金测产物与真实阅读页一致。
             builder: (context) => ReaderBrightnessFilter(
               isNightTheme: settings.theme.isNight,
               brightness: settings.nightBrightness,
-              child: renderer.buildView(context),
+              child: Padding(
+                padding: readerBodyInsets(context),
+                child: renderer.buildView(context),
+              ),
             ),
           ),
         ),

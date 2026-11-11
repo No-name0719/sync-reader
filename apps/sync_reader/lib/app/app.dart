@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -39,10 +40,34 @@ class SyncReaderApp extends ConsumerWidget {
           darkTheme: AppTheme.dark(accent),
           themeMode: themeMode,
           routerConfig: router,
+          scrollBehavior: const AppScrollBehavior(),
         ),
       ),
     );
   }
+}
+
+/// 应用级滚动行为（E5-2）：在 Flutter 默认的「触控类设备」拖拽集合上
+/// **追加鼠标**，使桌面端的滚动容器（如 Aa 排版面板）可以用鼠标按住拖动
+/// 滚动，而不必依赖触控板/滚轮。
+///
+/// 说明与影响范围：
+/// - 默认集合（touch / stylus / invertedStylus / trackpad / unknown）**保留**，
+///   只做追加，不替换；
+/// - 这是**全应用生效**的改动：所有继承 [ScrollConfiguration] 的滚动容器
+///   （书库列表、目录抽屉、排版面板、阅读页正文滚动区等）在桌面端都可用
+///   鼠标拖动滚动；
+/// - Flutter 官方提示：开启鼠标拖拽后，滚动容器内的文本选择会变难
+///   （鼠标拖动可能被识别为滚动手势）。本应用的阅读正文为只读渲染、
+///   不提供文本选择交互，故取此取舍。
+class AppScrollBehavior extends MaterialScrollBehavior {
+  const AppScrollBehavior();
+
+  @override
+  Set<PointerDeviceKind> get dragDevices => {
+    ...super.dragDevices,
+    PointerDeviceKind.mouse,
+  };
 }
 
 /// 同步触发器宿主：首帧挂载 [SyncTriggers]，卸载时 detach（清理定时器）。

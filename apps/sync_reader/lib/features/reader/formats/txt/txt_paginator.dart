@@ -36,13 +36,14 @@
 library;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/painting.dart';
+// WidgetSpan / SizedBox 在 widgets 库（widgets 库再导出 painting）。
+import 'package:flutter/widgets.dart';
 
-import '../../contract/reader_settings.dart' show kReaderParagraphIndent;
+import '../../reader_indent.dart';
+import 'txt_chapter_splitter.dart';
+/// 章题字号倍数（原型 `.rd-text .rd-chapter-title{font-size:1.32em}`）。
+const double kChapterTitleScale = 1.32;
 
-/// 段落首行缩进量（A10：2em 全角空格，单一事实源见
-/// reader_settings.dart 的 [kReaderParagraphIndent]）。
-const String txtParagraphIndent = kReaderParagraphIndent;
 
 /// 显示层变换的插入点：在显示文本 [offset] 处插入了 [length] 个字符。
 class TxtDisplayInsertion {
@@ -55,18 +56,25 @@ class TxtDisplayInsertion {
   final int length;
 }
 
-/// 显示层文本构建结果：变换文本 + 插入点表（显示坐标 → 原文坐标映射）。
+/// 显示层文本构建结果：变换后的 span 树 + 插入点表（显示坐标 → 原文坐标映射）。
 class TxtDisplayBuild {
   const TxtDisplayBuild({
-    required this.text,
+    required this.span,
     required this.insertions,
+    this.indentCount = 0,
   });
 
-  /// 变换后的显示文本（≥ 原区间长度，只插不删）。
-  final String text;
+  /// 变换后的显示层 span 树（段首缩进为行内占位符）。
+  final TextSpan span;
 
-  /// 插入点表（显示坐标升序）。
+  /// 插入点表（**扁平化文本坐标**，升序）。
   final List<TxtDisplayInsertion> insertions;
+
+  /// 行内缩进占位符数量（= span 树里 WidgetSpan 的个数）。
+  ///
+  /// 测量侧要用它给 [TextPainter.setPlaceholderDimensions] 喂同样数量的
+  /// 尺寸项（数量不等会触发引擎断言）。
+  final int indentCount;
 
   /// 显示文本偏移 → 原文偏移。
   ///
@@ -89,10 +97,10 @@ class TxtDisplayBuild {
   }
 }
 
-/// 章内区间 [start, end) → 显示文本构建（含插入点表）。
+/// 章内区间 [start, end) → 显示层 span 树构建（含插入点表）。
 ///
-/// 分页器测量与渲染视图**必须共用**本函数（[txtDisplayText] 为其纯文本
-/// 薄封装），保证两侧排版一致。规则：
+/// 分页器测量与渲染视图**必须共用**本函数（[txtDisplaySpan] 为其薄封装），
+/// 保证两侧排版一致。规则：
 /// - 区间起点在段落首（start == 0 或前一字符是 `\n`）且该段非空行 → 插入
 ///   缩进（不插段距：页首段落跨页收起段间距）；
 /// - 区间内每个 `\n` 之后（下一段非空行）→ 插入「段距空行 × N + 缩进」；
@@ -100,55 +108,147 @@ class TxtDisplayBuild {
 ///   叠加，避免双重空行）；
 /// - 空行（`\n\n`）与 `\r` 起始行（CRLF 空行/孤立回车）不插入——空行插入
 ///   缩进会平白多出一行占位，破坏与裸文本排版的一致性；
-/// - 只插入不删改：返回文本长度 ≥ 原区间长度，偏移坐标经
-///   [TxtDisplayBuild.originalOffsetOf] 还原。
-TxtDisplayBuild buildTxtDisplayText(
+/// - 只插入不删改：偏移坐标经 [TxtDisplayBuild.originalOffsetOf] 还原。
+///
+/// **坐标语义**：插入点表的长度用**扁平化文本坐标**——一个缩进占位符在
+/// 扁平文本里只占 1 个字符（U+FFFC），段距空行占 N 个 `\n`；源文本每个
+/// 字符占 1 个字符。
+TxtDisplayBuild buildTxtDisplaySpans(
   String chapterText,
   int start,
   int end, {
-  String indent = txtParagraphIndent,
+  required TextStyle style,
+  required double fontSize,
+  int indentEm = kReaderParagraphIndentEm,
   int paragraphGapLines = 0,
 }) {
   final raw = chapterText.substring(start, end);
   final insertions = <TxtDisplayInsertion>[];
   if (start >= end) {
-    return TxtDisplayBuild(text: raw, insertions: insertions);
+    return TxtDisplayBuild(
+      span: TextSpan(style: style, text: raw),
+      insertions: insertions,
+    );
   }
-  if (indent.isEmpty && paragraphGapLines <= 0) {
-    return TxtDisplayBuild(text: raw, insertions: insertions);
+  if (indentEm <= 0 && paragraphGapLines <= 0) {
+    return TxtDisplayBuild(
+      span: TextSpan(style: style, text: raw),
+      insertions: insertions,
+    );
   }
+  final children = <InlineSpan>[];
   final buffer = StringBuffer();
-  var inserted = 0; // 已插入的总长度（display = original + inserted）
+  var flattened = 0; // 已产出的扁平化字符数（源字符 + 插入字符）
+  var indentCount = 0;
 
-  /// 在当前 buffer 末尾插入 [extra]（段距空行 + 缩进）并记录插入点。
-  void insert(String extra) {
-    if (extra.isEmpty) return;
-    insertions.add(TxtDisplayInsertion(buffer.length, extra.length));
-    buffer.write(extra);
-    inserted += extra.length;
+  /// 把缓冲区里的连续文本作为一个 span 落盘。
+  ///
+  /// 必须成段提交：逐字符建 span 会把 UTF-16 代理对拆成两个非法字符串
+  /// （引擎报「string is not well-formed UTF-16」）。
+  void flush() {
+    if (buffer.isEmpty) return;
+    children.add(TextSpan(text: buffer.toString()));
+    buffer.clear();
+  }
+
+  void addText(String text) {
+    if (text.isEmpty) return;
+    buffer.write(text);
+    flattened += text.length;
+  }
+
+  /// 插入段距空行 + 段首缩进占位符，并记录插入点（扁平坐标）。
+  void insertGapAndIndent(int gapLines) {
+    final indentLength = indentEm > 0 ? 1 : 0; // 占位符在扁平文本里占 1 字符
+    final length = gapLines + indentLength;
+    if (length == 0) return;
+    insertions.add(TxtDisplayInsertion(flattened, length));
+    // 先把前面的正文落盘，再插空行与缩进占位符（span 顺序即显示顺序）。
+    flush();
+    if (gapLines > 0) {
+      children.add(TextSpan(text: '\n' * gapLines));
+      flattened += gapLines;
+    }
+    if (indentLength > 0) {
+      children.add(readerIndentSpan(fontSize));
+      flattened += 1;
+      indentCount++;
+    }
   }
 
   // 区间首段：段落首行且非空行才缩进（续页起点在段中则不缩进）；
   // 页首段落不插段距（跨页收起）。
   final atParagraphStart =
       start == 0 || chapterText.codeUnitAt(start - 1) == 0x0A;
-  if (atParagraphStart && _paragraphHasContent(chapterText, start, end)) {
-    insert(indent);
+
+  // 章题（章首行）：命中章节标题规则时用**标题样式**渲染（1.32em / 600），
+  // 不缩进；行盒高度仍等于正文的一行高（Flutter 的 height 乘的是该 span
+  // 的字号 → 取 行距倍数/1.32），行网格不被破坏。
+  // （原型 `.rd-text .rd-chapter-title`；测量与渲染同一函数 → 页界一致。）
+  final headingEnd = _chapterHeadingEnd(chapterText, start, end);
+  if (headingEnd > start) {
+    final headingStyle = _chapterHeadingStyle(style);
+    children.add(
+      TextSpan(
+        text: chapterText.substring(start, headingEnd),
+        style: headingStyle,
+      ),
+    );
+    flattened += headingEnd - start;
   }
-  for (var i = start; i < end; i++) {
+
+  if (atParagraphStart &&
+      headingEnd <= start &&
+      _paragraphHasContent(chapterText, start, end)) {
+    insertGapAndIndent(0);
+  }
+  for (var i = headingEnd > start ? headingEnd : start; i < end; i++) {
     final unit = chapterText.codeUnitAt(i);
-    buffer.writeCharCode(unit);
+    addText(String.fromCharCode(unit));
     if (unit == 0x0A &&
         i + 1 < end &&
         _paragraphHasContent(chapterText, i + 1, end)) {
       final gap = _prevLineHasContent(chapterText, i, start)
-          ? '\n' * paragraphGapLines
-          : '';
-      insert('$gap$indent');
+          ? paragraphGapLines
+          : 0;
+      insertGapAndIndent(gap);
     }
   }
-  assert(inserted == buffer.length - raw.length);
-  return TxtDisplayBuild(text: buffer.toString(), insertions: insertions);
+  flush();
+  return TxtDisplayBuild(
+    span: TextSpan(style: style, children: children),
+    insertions: insertions,
+    indentCount: indentCount,
+  );
+}
+
+/// 章题行的结束偏移（不含换行符）；无章题时返回 [start]。
+///
+/// 判定：区间起点必须是**章的起点**（start == 0）且首行命中章节标题规则
+/// （[TxtChapterSplitter.isHeadingLine]）——章题的样式由「章首行」决定，
+/// 与切分器用同一套规则，避免两处判定漂移。
+int _chapterHeadingEnd(String chapterText, int start, int end) {
+  if (start != 0 || start >= end) return start;
+  var lineEnd = chapterText.indexOf('\n', start);
+  if (lineEnd < 0 || lineEnd > end) lineEnd = end;
+  var line = chapterText.substring(start, lineEnd);
+  if (line.endsWith('\r')) line = line.substring(0, line.length - 1);
+  if (line.isEmpty || !TxtChapterSplitter.isHeadingLine(line)) return start;
+  return lineEnd;
+}
+
+/// 章题样式：字号 1.32em、字重 600、字距 0.02em；行盒高度仍等于正文一行高。
+///
+/// Flutter 的 `TextStyle.height` 乘的是**该 span 的字号**，故这里用
+/// `行距倍数 / 1.32`，让章题行的行盒 = 正文字号 × 行距倍数（行网格不破）。
+TextStyle _chapterHeadingStyle(TextStyle base) {
+  final size = base.fontSize ?? 16;
+  return base.copyWith(
+    fontSize: size * kChapterTitleScale,
+    fontWeight: FontWeight.w600,
+    letterSpacing: size * 0.02,
+    height: (base.height ?? 1.0) / kChapterTitleScale,
+  );
 }
 
 /// 段落首字符是否为可显示内容（`\n` 与 `\r` 视为空行/回车，不缩进）。
@@ -174,50 +274,61 @@ bool _prevLineHasContent(String text, int newlineIndex, int regionStart) {
   return end > i + 1;
 }
 
-/// 章内区间 [start, end) → 显示文本（不含插入点表的便捷封装）。
+/// 章内区间 [start, end) → 显示层 span 树（不含插入点表的便捷封装）。
 ///
-/// 渲染侧使用；分页测量请用 [buildTxtDisplayText]（需要坐标映射）。
-String txtDisplayText(
+/// 渲染侧使用；分页测量请用 [buildTxtDisplaySpans]（需要坐标映射）。
+TextSpan txtDisplaySpan(
   String chapterText,
   int start,
   int end, {
-  String indent = txtParagraphIndent,
+  required TextStyle style,
+  required double fontSize,
+  int indentEm = kReaderParagraphIndentEm,
   int paragraphGapLines = 0,
-}) => buildTxtDisplayText(
+}) => buildTxtDisplaySpans(
   chapterText,
   start,
   end,
-  indent: indent,
+  style: style,
+  fontSize: fontSize,
+  indentEm: indentEm,
   paragraphGapLines: paragraphGapLines,
-).text;
+).span;
 
-/// 章内区间 [start, end) → **单页渲染**显示文本。
+/// 章内区间 [start, end) → **单页渲染**显示层 span 树。
 ///
-/// 与 [txtDisplayText] 的差异：页界落在段首时区间以行终止符（`\n`/`\r\n`）
+/// 与 [txtDisplaySpan] 的差异：页界落在段首时区间以行终止符（`\n`/`\r\n`）
 /// 结尾，该终止符属于「分页符」而非页面内容——引擎会给尾随终止符渲染一个
 /// 空行盒（`'a\n'` 排出 2 行），把页尾撑出一行空白。剥掉它不改变任何可见
 /// 内容与行断点（空行盒本无字形），页高恰为整行数。
-String txtPageDisplayText(
+TextSpan txtPageDisplaySpan(
   String chapterText,
   int start,
   int end, {
-  String indent = txtParagraphIndent,
+  required TextStyle style,
+  required double fontSize,
+  int indentEm = kReaderParagraphIndentEm,
   int paragraphGapLines = 0,
 }) {
-  var display = txtDisplayText(
-    chapterText,
-    start,
-    end,
-    indent: indent,
-    paragraphGapLines: paragraphGapLines,
-  );
-  if (display.endsWith('\n')) {
-    display = display.substring(0, display.length - 1);
-    if (display.endsWith('\r')) {
-      display = display.substring(0, display.length - 1);
+  // 剥掉属于分页符的行终止符（源区间末尾的 `\r\n` / `\n`）。
+  var effectiveEnd = end;
+  if (effectiveEnd > start &&
+      chapterText.codeUnitAt(effectiveEnd - 1) == 0x0A) {
+    effectiveEnd--;
+    if (effectiveEnd > start &&
+        chapterText.codeUnitAt(effectiveEnd - 1) == 0x0D) {
+      effectiveEnd--;
     }
   }
-  return display;
+  return txtDisplaySpan(
+    chapterText,
+    start,
+    effectiveEnd,
+    style: style,
+    fontSize: fontSize,
+    indentEm: indentEm,
+    paragraphGapLines: paragraphGapLines,
+  );
 }
 
 /// 页区间：章内字符偏移 [start, end)。
@@ -252,7 +363,7 @@ class TxtPaginationRequest {
     required this.viewportHeight,
     this.fontFamily,
     this.fontFamilyFallback,
-    this.paragraphIndent = txtParagraphIndent,
+    this.indentEm = kReaderParagraphIndentEm,
     this.paragraphGapLines = 0,
     this.textAlign = TextAlign.left,
   });
@@ -272,8 +383,11 @@ class TxtPaginationRequest {
   /// 字体回退栈（v1.1 衬线/黑体/楷体系统栈）。
   final List<String>? fontFamilyFallback;
 
-  /// 段落首行缩进（A10；空串 = 不缩进，B4 开关）。
-  final String paragraphIndent;
+  /// 段落首行缩进（A10；单位 em，0 = 不缩进，B4 开关）。
+  ///
+  /// 渲染为**行内不可见盒**（宽 = indentEm × 字号），不用空白字符——
+  /// 两端对齐会吞掉行首空白（详见 [kReaderParagraphIndentEm] 的说明）。
+  final int indentEm;
 
   /// 段距空行数（B4：0 = 紧 / 1 = 空一行 / 2 = 空两行；以整行为单位）。
   final int paragraphGapLines;
@@ -369,23 +483,30 @@ final class TxtPaginator {
         final windowEnd = (start + windowChars) < length
             ? start + windowChars
             : length;
-        final build = buildTxtDisplayText(
+        final build = buildTxtDisplaySpans(
           text,
           start,
           windowEnd,
-          indent: request.paragraphIndent,
-          paragraphGapLines: request.paragraphGapLines,
-        );
-        painter.text = TextSpan(
-          text: build.text,
           style: TextStyle(
             fontSize: request.fontSize,
             height: request.lineHeight,
             fontFamily: request.fontFamily,
             fontFamilyFallback: request.fontFamilyFallback,
           ),
+          fontSize: request.fontSize,
+          indentEm: request.indentEm,
+          paragraphGapLines: request.paragraphGapLines,
         );
+        painter.text = build.span;
         painter.textAlign = request.textAlign;
+        // 行内缩进占位符的尺寸：裸 TextPainter 不会自动量 WidgetSpan，
+        // 必须手动喂（数量须与 span 树里的占位符个数一致）。
+        painter.setPlaceholderDimensions(
+          List<PlaceholderDimensions>.filled(
+            build.indentCount,
+            readerIndentPlaceholder(request.fontSize),
+          ),
+        );
         painter.layout(maxWidth: request.viewportWidth);
         final metrics = painter.computeLineMetrics();
 

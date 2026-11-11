@@ -9,6 +9,17 @@
 /// 形态由宿主（阅读页）决定：桌面（>860）右侧抽屉、移动（≤860）底部弹层
 /// （docs/10 §4.4），本 widget 只承载内容，两种形态共用。
 ///
+/// 视觉尺度对齐原型 `ui_prototype/reader.css` 的 `.rd-ty-*`（单元 2）：
+/// - 面板内边距 16；头部标题 14px/w600；
+/// - 分组标题 12px/w600/muted（`.rd-ty-group > label`）；
+/// - 右侧数值 12px/前景色/等宽数字（`.rd-val`）；
+/// - 说明小字 11px/行高 1.6/muted（`.rd-hint-text`）；对比度读数 11px
+///   （`.rd-ty-note`）；
+/// - 分段控件自绘（`_SegmentRow`，仿 `.rd-seg`）：surfaceContainerHighest
+///   底 + 圆角 8 + 内边距 3 + 子项间距 2；子项 12px muted，选中项白底
+///   + 600 字重 + 轻阴影，**不带 ✓ 勾选图标**；
+/// - 滑块统一细轨道（3px）+ 12px 圆点手柄（accent 色不变）。
+///
 /// 所有变更即时 `repository.save` 持久化（排版设置仅本地保存、不同步，
 /// docs/07 记录），阅读页监听 `repository.changes` 后经渲染器
 /// `applySettings` 热应用。面板初始值消费 `repository.current`，
@@ -23,6 +34,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../app/providers.dart';
 import '../../../core/design_tokens.dart';
 import '../contract/reader_settings.dart';
+import '../reader_indent.dart';
 
 /// 预览框示例文字（与原型 ui_prototype 一致）。
 const String _previewSample =
@@ -46,7 +58,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
     super.initState();
     final repo = ref.read(readerSettingsRepositoryProvider);
     _settings = repo.current;
-    // 面板通常由阅读页打开（仓库已 load）；兜底与持久化值对齐一次。
+    // 面板通常由阅读页打开（仓库已 load）；此处对齐同一前置。
     repo.load().then((loaded) {
       if (mounted && loaded != _settings) {
         setState(() => _settings = loaded);
@@ -61,51 +73,130 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
     ref.read(readerSettingsRepositoryProvider).save(next);
   }
 
+  /// 恢复默认（E5-1）：排版相关项回到 [ReaderSettings.defaults]，
+  /// 阅读主题 / 翻页模式 / 翻页动画 / 编码 / 音量键开关**原样保留**
+  /// （原型 `data-act="reset"` 同款语义：只重置排版）。
+  void _resetToDefaults() {
+    final d = ReaderSettings.defaults;
+    _update(
+      _settings.copyWith(
+        fontSize: d.fontSize,
+        lineHeight: d.lineHeight,
+        pageMargin: d.pageMargin,
+        paragraphGap: d.paragraphGap,
+        firstLineIndent: d.firstLineIndent,
+        // 字体：null = 衬线（copyWith 需显式 clear 才能置空）。
+        clearFontFamily: true,
+        nightBrightness: d.nightBrightness,
+      ),
+    );
+  }
+
+  // —— 排版尺度（原型 `.rd-ty-*`）——
+
+  /// 分组标题：12px / w600 / muted（原型 `--text-2`）。
+  TextStyle _labelStyle(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.textTheme.bodySmall!.copyWith(
+      fontSize: 12,
+      fontWeight: FontWeight.w600,
+      color: theme.colorScheme.onSurfaceVariant,
+    );
+  }
+
+  /// 右侧数值：12px / 前景色 / 等宽数字（原型 `.rd-val`）。
+  TextStyle _valueStyle(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.textTheme.bodySmall!.copyWith(
+      fontSize: 12,
+      color: theme.colorScheme.onSurface,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
+  }
+
+  /// 说明小字：11px / 行高 1.6 / muted（原型 `.rd-hint-text`）。
+  TextStyle _hintStyle(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.textTheme.bodySmall!.copyWith(
+      fontSize: 11,
+      height: 1.6,
+      color: theme.colorScheme.onSurfaceVariant,
+    );
+  }
+
+  /// 对比度读数：11px / muted（原型 `.rd-ty-note`）。
+  TextStyle _noteStyle(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.textTheme.bodySmall!.copyWith(
+      fontSize: 11,
+      color: theme.colorScheme.onSurfaceVariant,
+    );
+  }
+
+  /// 头部标题：14px / w600（原型 `.rd-drawer-head b`）。
+  TextStyle _headerTitleStyle(BuildContext context) {
+    final theme = Theme.of(context);
+    return theme.textTheme.titleMedium!.copyWith(fontSize: 14);
+  }
+
+  /// 滑块统一形态（原型原生 range：细轨道 + 小圆点手柄）。
+  /// 颜色沿用主题 accent（品牌色），只统一轨道/手柄形状。
+  SliderThemeData _sliderTheme(BuildContext context) {
+    return SliderTheme.of(context).copyWith(
+      trackHeight: 3,
+      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+      overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final palette = _settings.theme.palette;
     return SafeArea(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _buildHeader(context),
-            const SizedBox(height: AppSpacing.s4),
-            _buildPreview(),
-            const SizedBox(height: AppSpacing.s2),
-            _buildContrastNote(context, palette),
-            const SizedBox(height: AppSpacing.s5),
-            _buildFontSize(context),
-            _buildLineHeight(context),
-            _buildPageMargin(context),
-            const SizedBox(height: AppSpacing.s5),
-            _buildParagraphGap(context),
-            _buildFirstLineIndent(context),
-            const SizedBox(height: AppSpacing.s5),
-            _buildFontFamily(context),
-            const SizedBox(height: AppSpacing.s5),
-            _buildTheme(context),
-            if (_settings.theme.isNight) ...[
+      child: SliderTheme(
+        data: _sliderTheme(context),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(AppSpacing.s4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildHeader(context),
+              const SizedBox(height: AppSpacing.s4),
+              _buildPreview(),
+              const SizedBox(height: AppSpacing.s2),
+              _buildContrastNote(context, palette),
               const SizedBox(height: AppSpacing.s5),
-              _buildNightBrightness(context),
-            ],
-            const SizedBox(height: AppSpacing.s5),
-            _buildPageMode(context),
-            // 翻页动画仅分页模式有意义（原型行为）。
-            if (_settings.pageMode == ReaderPageMode.page) ...[
+              _buildFontSize(context),
+              _buildLineHeight(context),
+              _buildPageMargin(context),
               const SizedBox(height: AppSpacing.s5),
-              _buildPageTurnAxis(context),
-            ],
-            const SizedBox(height: AppSpacing.s5),
-            _buildEncoding(context),
-            // 音量键翻页（FR-209）为 Android 专属能力，其他平台不显示该行。
-            if (Platform.isAndroid) ...[
+              _buildParagraphGap(context),
+              _buildFirstLineIndent(context),
               const SizedBox(height: AppSpacing.s5),
-              _buildVolumeKeyPageTurn(context),
+              _buildFontFamily(context),
+              const SizedBox(height: AppSpacing.s5),
+              _buildTheme(context),
+              if (_settings.theme.isNight) ...[
+                const SizedBox(height: AppSpacing.s5),
+                _buildNightBrightness(context),
+              ],
+              const SizedBox(height: AppSpacing.s5),
+              _buildPageMode(context),
+              // 翻页动画仅分页模式有意义（原型行为）。
+              if (_settings.pageMode == ReaderPageMode.page) ...[
+                const SizedBox(height: AppSpacing.s5),
+                _buildPageTurnAxis(context),
+              ],
+              const SizedBox(height: AppSpacing.s5),
+              _buildEncoding(context),
+              // 音量键翻页（FR-209）为 Android 专属能力，其他平台不显示该行。
+              if (Platform.isAndroid) ...[
+                const SizedBox(height: AppSpacing.s5),
+                _buildVolumeKeyPageTurn(context),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -115,7 +206,14 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
     return Row(
       children: [
         Expanded(
-          child: Text('阅读设置', style: Theme.of(context).textTheme.titleMedium),
+          child: Text('阅读设置', style: _headerTitleStyle(context)),
+        ),
+        // 恢复默认（E5-1）：只重置排版项，保留主题/翻页模式/动画/编码等。
+        IconButton(
+          key: const ValueKey('aa-reset'),
+          icon: const Icon(Icons.adjust),
+          tooltip: '恢复默认',
+          onPressed: _resetToDefaults,
         ),
         IconButton(
           key: const ValueKey('aa-close'),
@@ -143,16 +241,24 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
         borderRadius: BorderRadius.circular(AppRadius.md),
         border: Border.all(color: palette.rule),
       ),
-      child: Text(
-        '${_settings.firstLineIndent ? kReaderParagraphIndent : ''}$_previewSample',
-        textAlign: TextAlign.justify,
-        style: TextStyle(
-          fontSize: _settings.fontSize,
-          height: _settings.lineHeight,
-          color: palette.fg,
-          fontFamily: font.family,
-          fontFamilyFallback: font.fallback,
+      child: Text.rich(
+        // 段首缩进用行内占位符（正文同一机制）：空白字符会被两端对齐吞掉，
+        // 预览里就看不到 2em 缩进了。
+        TextSpan(
+          style: TextStyle(
+            fontSize: _settings.fontSize,
+            height: _settings.lineHeight,
+            color: palette.fg,
+            fontFamily: font.family,
+            fontFamilyFallback: font.fallback,
+          ),
+          children: [
+            if (_settings.firstLineIndent)
+              readerIndentSpan(_settings.fontSize),
+            TextSpan(text: _previewSample),
+          ],
         ),
+        textAlign: TextAlign.justify,
       ),
     );
   }
@@ -165,7 +271,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
       '正文对比度 ${fg.toStringAsFixed(1)}:1 · ${wcagContrastLevel(fg)}'
       '　|　次级文字 ${muted.toStringAsFixed(1)}:1',
       key: const ValueKey('aa-contrast-note'),
-      style: Theme.of(context).textTheme.bodySmall,
+      style: _noteStyle(context),
     );
   }
 
@@ -186,10 +292,12 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(label),
-            Text(valueText, style: Theme.of(context).textTheme.bodySmall),
+            Text(label, style: _labelStyle(context)),
+            Text(valueText, style: _valueStyle(context)),
           ],
         ),
+        // 标签与手柄之间留 8px 空隙，避免粘连（原型 label 下缘即滑块）。
+        const SizedBox(height: AppSpacing.s2),
         Slider(
           key: sliderKey,
           value: value.clamp(min, max),
@@ -206,7 +314,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
   /// 字号滑杆（A14 核查结论：min=12 / max=32 / 步进 1 → divisions 应为
   /// `(32 - 12) / 1 = 20`，与现状一致——docs/10 I5 所记「divisions: 20 与
   /// min12/max32 不匹配」与代码不符，实际步长本就是 1，无需修正，仅在此
-  /// 注明核查依据。出厂字号改 19（docs/10 §4.4 正文 19px），19 = 12 + 7×1
+  /// 注明核查依据。出厂字号为 16（单元 1 起正文 16px），16 = 12 + 4×1
   /// 落在网格上；已持久化的用户设置不受影响（fromJson 原样读回）。
   Widget _buildFontSize(BuildContext context) {
     return _sliderRow(
@@ -222,9 +330,9 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
     );
   }
 
-  /// 行距滑杆：min=1.2 / max=2.2 / 步进 0.05 → divisions = 20（v1.0 为
-  /// 步进 0.1 的 10 格；出厂行距改 1.95（docs/10 §4.4），0.05 步进才能
-  /// 落在网格上，1.95 = 1.2 + 15×0.05）。
+  /// 行距滑杆：min=1.2 / max=2.4 / 步进 0.05 → divisions = 24（对齐原型
+  /// `#rdLh` 的 min 1.2 / max 2.4 / step 0.05）；出厂行距 1.95 =
+  /// 1.2 + 15×0.05 落在网格上。
   Widget _buildLineHeight(BuildContext context) {
     return _sliderRow(
       context,
@@ -233,14 +341,14 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
       sliderKey: const ValueKey('settings-line-height'),
       value: _settings.lineHeight,
       min: 1.2,
-      max: 2.2,
-      divisions: 20, // (2.2-1.2)/步进0.05 = 20
+      max: 2.4,
+      divisions: 24, // (2.4-1.2)/步进0.05 = 24
       onChanged: (value) => _update(_settings.copyWith(lineHeight: value)),
     );
   }
 
-  /// 页边距滑杆：min=8 / max=40 / 步进 1 → divisions = (40-8)/1 = 32，
-  /// 与现状一致（自洽，无需修正）。
+  /// 页边距滑杆：min=8 / max=72 / 步进 4 → divisions = 16（对齐原型
+  /// `#rdPad`）；出厂页边距 24 = 8 + 4×4 落在网格上。
   Widget _buildPageMargin(BuildContext context) {
     return _sliderRow(
       context,
@@ -249,8 +357,8 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
       sliderKey: const ValueKey('settings-page-margin'),
       value: _settings.pageMargin,
       min: 8,
-      max: 40,
-      divisions: 32, // (40-8)/步进1 = 32，自洽
+      max: 72,
+      divisions: 16, // (72-8)/步进4 = 16
       onChanged: (value) => _update(_settings.copyWith(pageMargin: value)),
     );
   }
@@ -274,37 +382,28 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
     );
   }
 
-  /// 段距三选（B4）：紧 / 空一行 / 空两行（以整行为单位，不破坏行网格）。
+  /// 段距三选（B4）：紧 / 疏·空一行 / 松·空两行（以整行为单位，不破坏行网格）。
   Widget _buildParagraphGap(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('段距', style: Theme.of(context).textTheme.titleSmall),
+        Text('段距', style: _labelStyle(context)),
         const SizedBox(height: AppSpacing.s2),
-        SizedBox(
-          width: double.infinity,
-          child: SegmentedButton<ReaderParagraphGap>(
-            key: const ValueKey('settings-paragraph-gap'),
-            segments: const [
-              ButtonSegment(value: ReaderParagraphGap.tight, label: Text('紧')),
-              ButtonSegment(
-                value: ReaderParagraphGap.oneLine,
-                label: Text('空一行'),
-              ),
-              ButtonSegment(
-                value: ReaderParagraphGap.twoLines,
-                label: Text('空两行'),
-              ),
-            ],
-            selected: {_settings.paragraphGap},
-            onSelectionChanged: (selection) =>
-                _update(_settings.copyWith(paragraphGap: selection.first)),
-          ),
+        _SegmentRow<ReaderParagraphGap>(
+          key: const ValueKey('settings-paragraph-gap'),
+          options: const [
+            (ReaderParagraphGap.tight, '紧'),
+            (ReaderParagraphGap.oneLine, '疏 · 空一行'),
+            (ReaderParagraphGap.twoLines, '松 · 空两行'),
+          ],
+          selected: _settings.paragraphGap,
+          onChanged: (value) =>
+              _update(_settings.copyWith(paragraphGap: value)),
         ),
         const SizedBox(height: AppSpacing.s1),
         Text(
           '以整行为单位：每页行数恒定，页底留白不随内容长短跳动',
-          style: Theme.of(context).textTheme.bodySmall,
+          style: _hintStyle(context),
         ),
       ],
     );
@@ -316,20 +415,14 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: AppSpacing.s5),
-        Text('首行缩进', style: Theme.of(context).textTheme.titleSmall),
+        Text('首行缩进', style: _labelStyle(context)),
         const SizedBox(height: AppSpacing.s2),
-        SizedBox(
-          width: double.infinity,
-          child: SegmentedButton<bool>(
-            key: const ValueKey('settings-first-line-indent'),
-            segments: const [
-              ButtonSegment(value: true, label: Text('缩进 2em')),
-              ButtonSegment(value: false, label: Text('不缩进')),
-            ],
-            selected: {_settings.firstLineIndent},
-            onSelectionChanged: (selection) =>
-                _update(_settings.copyWith(firstLineIndent: selection.first)),
-          ),
+        _SegmentRow<bool>(
+          key: const ValueKey('settings-first-line-indent'),
+          options: const [(true, '缩进 2em'), (false, '不缩进')],
+          selected: _settings.firstLineIndent,
+          onChanged: (value) =>
+              _update(_settings.copyWith(firstLineIndent: value)),
         ),
       ],
     );
@@ -341,7 +434,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('字体', style: Theme.of(context).textTheme.titleSmall),
+        Text('字体', style: _labelStyle(context)),
         const SizedBox(height: AppSpacing.s2),
         ...[
           (AppFonts.serif, '宋体 · 阅读', 'Noto Serif SC'),
@@ -400,7 +493,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
                   ),
                 ),
               ),
-              Text(note, style: Theme.of(context).textTheme.bodySmall),
+              Text(note, style: _hintStyle(context)),
             ],
           ),
         ),
@@ -414,7 +507,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('阅读背景', style: Theme.of(context).textTheme.titleSmall),
+        Text('阅读背景', style: _labelStyle(context)),
         const SizedBox(height: AppSpacing.s2),
         GridView.count(
           key: const ValueKey('settings-themes'),
@@ -431,7 +524,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
         const SizedBox(height: AppSpacing.s1),
         Text(
           '阅读背景与应用深浅色相互独立：应用是浅色时也可切夜间背景',
-          style: Theme.of(context).textTheme.bodySmall,
+          style: _hintStyle(context),
         ),
       ],
     );
@@ -475,7 +568,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
               theme.label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodySmall,
+              style: _hintStyle(context),
             ),
           ],
         ),
@@ -492,32 +585,21 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('翻页模式', style: Theme.of(context).textTheme.titleSmall),
+        Text('翻页模式', style: _labelStyle(context)),
         const SizedBox(height: AppSpacing.s2),
-        SizedBox(
-          width: double.infinity,
-          child: SegmentedButton<ReaderPageMode>(
-            segments: const [
-              ButtonSegment(
-                value: ReaderPageMode.page,
-                icon: Icon(Icons.auto_stories),
-                label: Text('分页'),
-              ),
-              ButtonSegment(
-                value: ReaderPageMode.scroll,
-                icon: Icon(Icons.swap_vert),
-                label: Text('滚动'),
-              ),
-            ],
-            selected: {_settings.pageMode},
-            onSelectionChanged: (selection) =>
-                _update(_settings.copyWith(pageMode: selection.first)),
-          ),
+        _SegmentRow<ReaderPageMode>(
+          key: const ValueKey('settings-page-mode'),
+          options: const [
+            (ReaderPageMode.page, '分页'),
+            (ReaderPageMode.scroll, '滚动'),
+          ],
+          selected: _settings.pageMode,
+          onChanged: (value) => _update(_settings.copyWith(pageMode: value)),
         ),
         const SizedBox(height: AppSpacing.s1),
         Text(
           '分页：txt 整行精确分页；epub 连续排版按屏吸附；md 暂按滚动呈现；pdf 按文件自带页呈现',
-          style: Theme.of(context).textTheme.bodySmall,
+          style: _hintStyle(context),
         ),
       ],
     );
@@ -529,28 +611,22 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('翻页动画', style: Theme.of(context).textTheme.titleSmall),
+        Text('翻页动画', style: _labelStyle(context)),
         const SizedBox(height: AppSpacing.s2),
-        SizedBox(
-          width: double.infinity,
-          child: SegmentedButton<ReaderPageTurnAxis>(
-            key: const ValueKey('settings-page-turn-axis'),
-            segments: const [
-              ButtonSegment(
-                value: ReaderPageTurnAxis.vertical,
-                icon: Icon(Icons.swipe_up),
-                label: Text('上下滑动'),
-              ),
-              ButtonSegment(
-                value: ReaderPageTurnAxis.horizontal,
-                icon: Icon(Icons.swipe),
-                label: Text('左右翻页'),
-              ),
-            ],
-            selected: {_settings.pageTurnAxis},
-            onSelectionChanged: (selection) =>
-                _update(_settings.copyWith(pageTurnAxis: selection.first)),
-          ),
+        _SegmentRow<ReaderPageTurnAxis>(
+          key: const ValueKey('settings-page-turn-axis'),
+          options: const [
+            (ReaderPageTurnAxis.vertical, '上下滑动'),
+            (ReaderPageTurnAxis.horizontal, '左右翻页'),
+          ],
+          selected: _settings.pageTurnAxis,
+          onChanged: (value) =>
+              _update(_settings.copyWith(pageTurnAxis: value)),
+        ),
+        const SizedBox(height: AppSpacing.s1),
+        Text(
+          '上下滑动 = 正文像滚动一样纵向推移；左右翻页 = 横向推移；仅分页模式有效',
+          style: _hintStyle(context),
         ),
       ],
     );
@@ -560,27 +636,21 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('txt 编码', style: Theme.of(context).textTheme.titleSmall),
+        Text('txt 编码', style: _labelStyle(context)),
         const SizedBox(height: AppSpacing.s2),
-        SizedBox(
-          width: double.infinity,
-          child: SegmentedButton<ReaderTextEncoding>(
-            segments: const [
-              ButtonSegment(value: ReaderTextEncoding.auto, label: Text('自动')),
-              ButtonSegment(
-                value: ReaderTextEncoding.utf8,
-                label: Text('UTF-8'),
-              ),
-              ButtonSegment(value: ReaderTextEncoding.gbk, label: Text('GBK')),
-            ],
-            selected: {_settings.txtEncodingOverride},
-            onSelectionChanged: (selection) => _update(
-              _settings.copyWith(txtEncodingOverride: selection.first),
-            ),
-          ),
+        _SegmentRow<ReaderTextEncoding>(
+          key: const ValueKey('settings-encoding'),
+          options: const [
+            (ReaderTextEncoding.auto, '自动'),
+            (ReaderTextEncoding.utf8, 'UTF-8'),
+            (ReaderTextEncoding.gbk, 'GBK'),
+          ],
+          selected: _settings.txtEncodingOverride,
+          onChanged: (value) =>
+              _update(_settings.copyWith(txtEncodingOverride: value)),
         ),
         const SizedBox(height: AppSpacing.s1),
-        Text('编码切换仅对 txt 生效', style: Theme.of(context).textTheme.bodySmall),
+        Text('编码切换仅对 txt 生效', style: _hintStyle(context)),
       ],
     );
   }
@@ -592,11 +662,109 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
       key: const ValueKey('settings-volume-key-page-turn'),
       contentPadding: EdgeInsets.zero,
       dense: true,
-      title: const Text('音量键翻页'),
-      subtitle: const Text('按下音量键翻页，不再调节音量'),
+      title: Text('音量键翻页', style: _labelStyle(context)),
+      subtitle: Text('按下音量键翻页，不再调节音量', style: _hintStyle(context)),
       value: _settings.volumeKeyPageTurn,
       onChanged: (value) =>
           _update(_settings.copyWith(volumeKeyPageTurn: value)),
+    );
+  }
+}
+
+/// 面板内私有分段控件（单元 2 自绘，替代 Material [SegmentedButton]）。
+///
+/// 形态对齐原型 `ui_prototype/reader.css` 的 `.rd-seg`：
+/// - 外层容器：surfaceContainerHighest 底、圆角 8、内边距 3、子项间距 2；
+/// - 子项：Expanded、垂直居中、padding 6/8、字号 12、muted 文字色；
+/// - 选中项：surface 底 + 前景色 600 字重 + 轻阴影，**不带 ✓ 勾选图标**。
+///
+/// 语义：以 [Semantics] 的 `button` + `selected` 暴露选中态（读屏可用），
+/// [InkWell] 保留点击/悬停/键盘（Enter/Space）操作能力。
+class _SegmentRow<T> extends StatelessWidget {
+  const _SegmentRow({
+    super.key,
+    required this.options,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  /// 选项列表：每项为 `(值, 文案)`。
+  final List<(T, String)> options;
+
+  /// 当前选中值。
+  final T selected;
+
+  /// 选中项变更回调。
+  final ValueChanged<T> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          for (var i = 0; i < options.length; i++) ...[
+            if (i > 0) const SizedBox(width: 2),
+            Expanded(child: _buildItem(context, options[i])),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildItem(BuildContext context, (T, String) option) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final isSelected = option.$1 == selected;
+    return Semantics(
+      button: true,
+      selected: isSelected,
+      child: Container(
+        decoration: isSelected
+            ? BoxDecoration(
+                borderRadius: BorderRadius.circular(6),
+                // 选中项：白底 + 很轻的阴影（原型 `.rd-seg button.is-on`）。
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.08),
+                    blurRadius: 4,
+                    offset: const Offset(0, 1),
+                  ),
+                ],
+              )
+            : null,        child: Material(
+          color: isSelected ? scheme.surface : Colors.transparent,
+          borderRadius: BorderRadius.circular(6),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: () => onChanged(option.$1),
+            borderRadius: BorderRadius.circular(6),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              child: Text(
+                option.$2,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodySmall!.copyWith(
+                  fontSize: 12,
+                  height: 1.3,
+                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+                  color: isSelected
+                      ? scheme.onSurface
+                      : scheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
