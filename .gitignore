@@ -31,16 +31,12 @@ apps/sync_reader/android/key/
 # UI 原型（本地生成，不入库）
 /ui_prototype
 
-# v1.1 界面重设计的截图基线与截图用字体（本地比对材料，不入库；
-# 重建步骤见 docs/10-界面重设计方案.md §9.4）
-/ui_audit/v11/
+# UI 验收产物（本地比对材料，整目录不入库）
+# - 截图基线与对照图（v11/v12_compare/cmp_v13/…）：原型 vs 实现逐屏比对
+# - 截图用字体与图标母版（重建见 docs/10-界面重设计方案.md §9.4、
+#   scripts/gen_app_icons.py）
+/ui_audit/
 /.shot_fonts/
-
-# 应用图标母版（本地生成，不入库；重建步骤见 scripts/gen_app_icons.py）
-/ui_audit/tmp/
-/ui_audit/reader_v12/
-/ui_audit/v12_compare/
-/ui_audit/fonts/
 
 # Flutter/Dart 构建产物（不入库）
 **/build/

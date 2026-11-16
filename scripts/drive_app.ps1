@@ -326,7 +326,11 @@ switch ($Action) {
         $notches = [math]::Abs($Delta)
         for ($i = 0; $i -lt $notches; $i++) {
             $d = if ($Delta -lt 0) { 120 } else { -120 }
-            [Win32Drive]::mouse_event([Win32Drive]::MOUSEEVENTF_WHEEL, 0, 0, [uint32]([int]$d -band 0xFFFFFFFF), [IntPtr]::Zero)
+            # 负 delta 转 uint32：PS 的 -band 会按 Int32 符号位得到负数，
+            # [uint32] 转换直接抛异常（Wheel 正向注入从未生效），手动加 2^32。
+            $u = $d
+            if ($u -lt 0) { $u = $u + 4294967296 }
+            [Win32Drive]::mouse_event([Win32Drive]::MOUSEEVENTF_WHEEL, 0, 0, [uint32]$u, [IntPtr]::Zero)
             Start-Sleep -Milliseconds 40
         }
         Start-Sleep -Milliseconds $Delay
