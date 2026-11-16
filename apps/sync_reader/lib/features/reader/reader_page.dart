@@ -25,6 +25,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:window_manager/window_manager.dart';
@@ -135,6 +136,13 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     with WidgetsBindingObserver {
   final _log = AppLogger();
   final _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  /// 阅读页键盘焦点（桌面端翻页按键的拦截点）。
+  ///
+  /// 包在正文 Stack 外层：无论焦点当前落在阅读页内哪个控件上（如刚拖完
+  /// 进度滑块），按键事件沿焦点链冒泡都会先经这里判给翻页——否则 Slider
+  /// 会吃掉方向键去改进度值，造成「按方向键进度乱跳」。
+  final FocusNode _readerFocus = FocusNode();
 
   // DAO 与设置仓库在 initState 取好引用（dispose 中不允许再用 ref）。
   late final ProgressDao _progressDao;
@@ -248,6 +256,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     // （先停用、后释放服务，保证 disable 请求先于通道释放完成）。
     unawaited(_disableVolumeKeys().then((_) => _volumeKeys.dispose()));
     _settingsSub?.cancel();
+    _readerFocus.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -596,6 +605,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   void _jumpToTocEntry(TocEntry entry) {
     Navigator.of(context).pop(); // 先关抽屉
     unawaited(_session?.renderer.controller.jumpTo(entry));
+    // 立即刷新一次控制条（页码/章名/滑块的精确值随后由节流上报收敛），
+    // 否则跳章后「当前章」标签要等下一次交互才更新。
+    setState(() {});
   }
 
   /// 返回书库前的结算（PopScope 拦截系统返回/手势，保证先落库再退出）。
@@ -655,39 +667,73 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     return ReaderBrightnessFilter(
       isNightTheme: _readerSettings.theme.isNight,
       brightness: _readerSettings.nightBrightness,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          ColoredBox(
-            // 内缩带（顶条/底条之下）用阅读背景色铺满，避免露出 Scaffold
-            // 底色形成色带。
-            color: _readerPalette.bg,
-            child: Padding(
-              padding: readerBodyInsets(context),
-              child: ready.session.renderer.buildView(context),
+      child: Focus(
+        focusNode: _readerFocus,
+        autofocus: true,
+        onKeyEvent: _onReaderKeyEvent,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            ColoredBox(
+              // 内缩带（顶条/底条之下）用阅读背景色铺满，避免露出 Scaffold
+              // 底色形成色带。
+              color: _readerPalette.bg,
+              child: Padding(
+                padding: readerBodyInsets(context),
+                child: ready.session.renderer.buildView(context),
+              ),
             ),
-          ),
-          _buildHotZones(ready),
-          _buildTopBar(context, book, ready.toc),
-          _buildBottomBar(context, ready),
-          _buildEntryHint(context),
-        ],
+            _buildHotZones(ready),
+            _buildTopBar(context, book, ready.toc),
+            _buildBottomBar(context, ready),
+            _buildEntryHint(context),
+          ],
+        ),
       ),
     );
   }
 
-  // —— 点击热区（A8 + B6）：左右两翼 22% 翻页，中间 56% 唤出/收起控制条 ——
+  /// 桌面端键盘翻页：↑/←/PageUp = 上一页，↓/→/PageDown/空格 = 下一页。
+  ///
+  /// 本节点是正文的焦点链祖先，按键从焦点控件冒泡上来时先到这里；命中
+  /// 翻页键即返回 handled，压掉 Slider 等控件的默认方向键行为（改进度值）。
+  /// 弹层（设置面板/目录抽屉）是独立路由焦点域，不受此影响。
+  KeyEventResult _onReaderKeyEvent(FocusNode node, KeyEvent event) {
+    if (_session == null) return KeyEventResult.ignored;
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final int delta;
+    switch (event.logicalKey) {
+      case LogicalKeyboardKey.arrowDown:
+      case LogicalKeyboardKey.arrowRight:
+      case LogicalKeyboardKey.pageDown:
+      case LogicalKeyboardKey.space:
+        delta = 1;
+      case LogicalKeyboardKey.arrowUp:
+      case LogicalKeyboardKey.arrowLeft:
+      case LogicalKeyboardKey.pageUp:
+        delta = -1;
+      default:
+        return KeyEventResult.ignored;
+    }
+    final controller = _session!.renderer.controller;
+    unawaited(delta > 0 ? controller.nextPage() : controller.previousPage());
+    return KeyEventResult.handled;
+  }
+
+  // —— 点击热区（A8）：左右两翼 22% 翻页，中间 56% 唤出/收起控制条 ——
 
   /// 热区始终生效（翻页是高频操作）；全部使用 translucent 命中行为：
   /// 快点由热区 onTap 接管（翻页/唤出），拖动在竞技场中让位给正文
   /// PageView/ListView（滚动不受影响）。翻页走 [ReaderController] 的
   /// nextPage/previousPage——与音量键翻页（FR-209）完全同一路径。
   ///
-  /// **移动端（窄视口）的交互模型**：点屏幕任意处唤出/收起控制条，**滑动
-  /// 才翻页**。原因是手机屏几乎被正文铺满，「点空白才出菜单」没有可点的
-  /// 空白（正文列 363 逻辑 px ≈ 屏宽的 88%），菜单几乎唤不出来。
-  /// 桌面端保留原模型：两翼点击翻页（鼠标用户习惯，且与原型一致）、中区
-  /// 点空白唤出菜单（B6 文字优先，为将来的正文可选中留出语义）。
+  /// 中区点击**一律**唤出/收起控制条（含点在正文上，桌面与移动端一致）：
+  /// 桌面正文列（720）占中区宽度的 90%+，「点空白才出菜单」没有可点的
+  /// 空白——实测字形盒 + 容差会把段落间隙也判成文字，菜单几乎唤不出来
+  /// （v1.2 B6 的「文字优先」判定已按实际使用反馈移除）。文字选择语义
+  /// 由拖拽承担：本回调只在 tap（无位移）时触发，与拖动选择不冲突。
   Widget _buildHotZones(_ReadyState ready) {
     final controller = ready.session.renderer.controller;
     final narrow = MediaQuery.sizeOf(context).width <= kReaderNarrowBreakpoint;
@@ -709,10 +755,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
             child: GestureDetector(
               key: const ValueKey('reader-hot-mid'),
               behavior: HitTestBehavior.translucent,
-              onTapUp: (details) => narrow
-                  // 移动端：点屏幕任意处都唤出控制条（正文上也可点）。
-                  ? _toggleControls()
-                  : _handleMidZoneTap(details.globalPosition),
+              onTapUp: (_) => _toggleControls(),
             ),
           ),
           Expanded(
@@ -728,17 +771,6 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
         ],
       ),
     );
-  }
-
-  /// 中区点击（B6 文字优先）：点在正文文字上不切换控件（保证文字区域的
-  /// 手势语义，对齐原型「点空白处显示菜单」）；空白处唤出/收起。
-  void _handleMidZoneTap(Offset globalPosition) {
-    final renderer = _session?.renderer;
-    if (renderer is ReaderTextProbe &&
-        (renderer as ReaderTextProbe).isTextAt(globalPosition)) {
-      return;
-    }
-    _toggleControls();
   }
 
   void _toggleControls() {
@@ -1014,6 +1046,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
           unawaited(jump.jumpToPercent(value));
         }
         setState(() {});
+        // 焦点归还阅读页根节点：Slider 点过即持有焦点，方向键会被它吃掉
+        // 去改进度值（表现为按↑↓时进度乱跳）；归还后方向键重新判给翻页。
+        _readerFocus.requestFocus();
       },
     );
   }

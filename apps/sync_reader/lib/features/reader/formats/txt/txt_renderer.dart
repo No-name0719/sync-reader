@@ -29,6 +29,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderParagraph;
 
@@ -309,9 +310,16 @@ class TxtRenderer extends BookRenderer
   // —— 页码信息与按比例跳转（v1.1 A8，契约外公开约定的能力接口）——
 
   /// 视图回报当前章内页码（page 模式面板调用；scroll 模式回报 null 清除）。
+  ///
+  /// 页码变化必须挂一次节流上报：宿主底部控制条的「本章 x / y 页」只在
+  /// onProgressChanged 触发的 setState 里重读 [_pageInfo]——没有上报，
+  /// 跳章/跳目录后的页码标签会一直停留在上一页（实测：跨章翻页后标签
+  /// 停在「3 / 3」，正文已是下一章第 1 页）。
   void notePagePosition((int, int)? info) {
     if (_disposed) return;
+    if (_pageInfo == info) return;
     _pageInfo = info;
+    _scheduleProgressReport();
   }
 
   /// 当前章内页码（[ReaderPageInfoProvider] 契约）。
@@ -724,6 +732,9 @@ bool _hitTestParagraph(RenderObject? renderObject, Offset global) {
 /// （下一章落章首 / 上一章落末页），页表在 isolate 计算期间显示加载态。
 /// B5：轴向随设置的翻页动画方式切换（上下滑动 = 纵轴 / 左右翻页 = 横轴），
 /// 委托翻页走 animateToPage 播放推移动画；拖拽翻页由 PageView 原生手势承担。
+/// 滚轮在页项内抢注 PointerSignalResolver（见 [_TxtPagePaneState
+/// ._onPointerSignal]）：一档滚轮 = 翻一页，绕开 PageView 的小幅滚动回弹。
+/// 视口尺寸变化防抖 150ms 后整章重分页（否则旧页表在新视口上出现半行）。
 class _TxtPagePane extends StatefulWidget {
   const _TxtPagePane({required this.renderer, required this.content});
 
@@ -748,6 +759,20 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
   /// 页面正文渲染盒的 Key（按全局页下标；B6 文字命中探测用）。
   final Map<int, GlobalKey> _pageTextKeys = {};
 
+  /// 章加载代数：丢弃过期的分页结果（连续切章/改排版/改视口尺寸时，
+  /// 先前发出的分页 future 不得覆盖最新状态）。
+  int _loadGeneration = 0;
+
+  /// 视口尺寸变化防抖：拖拽缩放窗口时 LayoutBuilder 每帧改尺寸，逐帧
+  /// 整章重分页会刷爆 isolate；静默 150ms 后一次性重载。
+  Timer? _resizeDebounce;
+
+  /// 滚轮累积量：一档滚轮 ≈ 96–120 逻辑像素，累积过阈值翻一页并清零。
+  double _wheelAccum = 0;
+
+  /// 首帧已画出：[[_loadChapter]] 首次经 initState 链调用，不得 setState。
+  bool _shownOnce = false;
+
   @override
   void initState() {
     super.initState();
@@ -761,6 +786,19 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
   @override
   void didUpdateWidget(_TxtPagePane oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.content != oldWidget.content) {
+      // 视口尺寸变化：旧页表按旧尺寸分页，继续用会出现半行——页内容
+      // 高度超出新视口被页缘裁掉一行（实测：缩窗后页尾整行被拦腰切断）。
+      // 防抖后按当前渲染器位置整章重载（新尺寸的 ensurePages 自动失效
+      // 旧缓存并重分页）。
+      _resizeDebounce?.cancel();
+      final chapter = widget.renderer.positionChapter;
+      final offset = widget.renderer.positionOffset;
+      _resizeDebounce = Timer(const Duration(milliseconds: 150), () {
+        if (mounted) _loadChapter(chapter, landingOffset: offset);
+      });
+      return;
+    }
     _syncWithRenderer();
   }
 
@@ -787,13 +825,20 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
   /// 加载章页表并重建 PageController（[landingOffset] 决定首屏页）。
   void _loadChapter(int chapter, {required int landingOffset}) {
     final r = widget.renderer;
+    _resizeDebounce?.cancel();
+    _resizeDebounce = null;
     _switching = true;
     _pagesChapter = chapter;
     _syncedOffset = landingOffset;
     _pages = null;
     _chapterText = r.chapterText(chapter);
     _pageTextKeys.clear(); // 章切换后旧页渲染盒全部失效
+    // 立即切到加载态：否则上一视图（如章间页图标）会一直挂到分页完成，
+    // 表现为「跨章后长时间停在只有图标的空白页」。
+    if (_shownOnce) setState(() {});
+    final gen = ++_loadGeneration;
     r.ensurePages(chapter, widget.content).then((pages) {
+      if (gen != _loadGeneration) return; // 过期加载：章/尺寸又被改变了
       if (!mounted || r._disposed) return;
       if (r.positionChapter != _pagesChapter) {
         // 加载期间位置又被外部改变（restore/jumpTo）：释放加载态并重新对齐。
@@ -804,16 +849,31 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
       setState(() {
         _pages = pages;
         _pageCtrl?.dispose();
+        // keepPage 必须关掉：PageStorage 按 Scrollable 槽位存取页号，会
+        // 用**旧**页号覆盖新控制器的 initialPage（跳章/跳目录/缩放重载后
+        // 实测复现：显示页与控制器页失同步、同章跳章首不生效）。
         _pageCtrl = PageController(
+          keepPage: false,
           initialPage: TxtPaginator.pageIndexOf(pages, landingOffset) + 1,
         );
         _switching = false;
       });
+      final int target = TxtPaginator.pageIndexOf(pages, landingOffset) + 1;
+      // keepPage 的 PageStorage 会按 Scrollable 槽位恢复**旧**页号，盖掉
+      // 新控制器的 initialPage（实测：缩放重载后落在章间页图标上）；挂载
+      // 后显式对齐一次，保证首屏就是 landingOffset 所在页。控制器实例若
+      // 已被更新的加载替换（identical 不成立），本次对齐作废。
+      final PageController ctrl = _pageCtrl!;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !identical(_pageCtrl, ctrl) || !ctrl.hasClients) {
+          return;
+        }
+        if ((ctrl.page ?? target.toDouble()) != target) {
+          ctrl.jumpToPage(target);
+        }
+      });
       // 页码信息回报（宿主底部控制条「第 x / y 页」）。
-      r.notePagePosition((
-        TxtPaginator.pageIndexOf(pages, landingOffset),
-        pages.length,
-      ));
+      r.notePagePosition((target - 1, pages.length));
     });
   }
 
@@ -861,10 +921,11 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
     final ctrl = _pageCtrl;
     if (pages == null || ctrl == null || _switching) return false;
     // 首帧构建时 PageView 尚未 attach：页码取语义值 1（与页脚读取一致）。
-    var global = 1;
-    if (ctrl.hasClients && ctrl.position.hasContentDimensions) {
-      global = ctrl.page?.round() ?? 1;
-    }
+    // 布局未就绪（hasContentDimensions false）时 page 不可信：放弃本次
+    // 翻页（等下一次滚动），避免按错误的当前页算目标导致来回弹。
+    if (!ctrl.hasClients || !ctrl.position.hasContentDimensions) return false;
+    final global = ctrl.page?.round();
+    if (global == null) return false;
     final atBookStart = _pagesChapter == 0 && global <= 1;
     final atBookEnd =
         _pagesChapter == widget.renderer.chapterCount - 1 &&
@@ -899,8 +960,40 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
     return _hitTestParagraph(context.findRenderObject(), global);
   }
 
+  /// 滚轮翻页：一档滚轮 = 翻一页（累积小步过阈值触发，触控板细步也能翻）。
+  ///
+  /// 必须挂在**每个页项内部**而不能包在 PageView 外面：滚轮经
+  /// PointerSignalResolver 分发，采用**最深（最先注册）**的回调——页项
+  /// 内部比 PageView 的 Scrollable 更深，这里抢先注册后 Scrollable 的
+  /// 滚轮注册失效，PageView 不再收到滚轮的小幅滚动 + 回弹（原表现：
+  /// 一档滚不动、缩回去）。触控/鼠标拖拽翻页走手势竞技场，不受影响。
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    final horizontal =
+        widget.renderer.settings.pageTurnAxis == ReaderPageTurnAxis.horizontal;
+    // 横轴模式优先取横向滚轮分量；普通鼠标只有纵向滚轮，同样接受。
+    final delta = horizontal
+        ? (event.scrollDelta.dx != 0 ? event.scrollDelta.dx : event.scrollDelta.dy)
+        : event.scrollDelta.dy;
+    if (delta == 0) return;
+    GestureBinding.instance.pointerSignalResolver.register(event, (event) {
+      _wheelAccum += delta;
+      const threshold = 60;
+      if (_wheelAccum >= threshold) {
+        _wheelAccum = 0;
+        unawaited(_turnPage(1));
+      } else if (_wheelAccum <= -threshold) {
+        _wheelAccum = 0;
+        unawaited(_turnPage(-1));
+      }
+      // 标记事件已处理：祖先滚动视图不得再用平台默认行为响应它。
+      (event as PointerScrollEvent).respond(allowPlatformDefault: false);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    _shownOnce = true;
     final colors = widget.renderer.themeColors;
     final pages = _pages;
     final pageCtrl = _pageCtrl;
@@ -920,37 +1013,48 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
               itemCount: pages.length + 2,
               onPageChanged: _onPageChanged,
               itemBuilder: (context, global) {
-                if (global == 0 || global == pages.length + 1) {
-                  return Center(
-                    child: Icon(Icons.auto_stories_outlined, color: colors.dim),
-                  );
-                }
-                final range = pages[global - 1];
-                return ClipRect(
-                  child: Align(
-                    alignment: Alignment.topCenter,
-                    child: SizedBox(
-                      width: widget.content.width,
-                      child: Text.rich(
-                        // 与分页器同一显示变换（缩进/段距）+ 页尾分页符
-                        // 不渲染空行盒（txtPageDisplaySpan，B1）。
-                        txtPageDisplaySpan(
-                          _chapterText,
-                          range.start,
-                          range.end,
-                          style: widget.renderer.bodyTextStyle(),
-                          fontSize: widget.renderer.settings.fontSize,
-                          indentEm: widget.renderer.settings.firstLineIndent
-                              ? kReaderParagraphIndentEm
-                              : 0,
-                          paragraphGapLines:
-                              widget.renderer.settings.paragraphGap.lines,
+                // 页项内的 Listener 抢注滚轮事件（见 _onPointerSignal 注释）；
+                // opaque 让页边空白处也命中。
+                return Listener(
+                  onPointerSignal: _onPointerSignal,
+                  behavior: HitTestBehavior.opaque,
+                  child: (global == 0 || global == pages.length + 1)
+                      ? Center(
+                          child: Icon(
+                            Icons.auto_stories_outlined,
+                            color: colors.dim,
+                          ),
+                        )
+                      : ClipRect(
+                          child: Align(
+                            alignment: Alignment.topCenter,
+                            child: SizedBox(
+                              width: widget.content.width,
+                              child: Text.rich(
+                                // 与分页器同一显示变换（缩进/段距）+ 页尾分页符
+                                // 不渲染空行盒（txtPageDisplaySpan，B1）。
+                                txtPageDisplaySpan(
+                                  _chapterText,
+                                  pages[global - 1].start,
+                                  pages[global - 1].end,
+                                  style: widget.renderer.bodyTextStyle(),
+                                  fontSize: widget.renderer.settings.fontSize,
+                                  indentEm: widget
+                                          .renderer.settings.firstLineIndent
+                                      ? kReaderParagraphIndentEm
+                                      : 0,
+                                  paragraphGapLines: widget
+                                      .renderer.settings.paragraphGap.lines,
+                                ),
+                                key: _pageTextKeys.putIfAbsent(
+                                  global,
+                                  GlobalKey.new,
+                                ),
+                                textAlign: TextAlign.justify,
+                              ),
+                            ),
+                          ),
                         ),
-                        key: _pageTextKeys.putIfAbsent(global, GlobalKey.new),
-                        textAlign: TextAlign.justify,
-                      ),
-                    ),
-                  ),
                 );
               },
             ),
@@ -965,6 +1069,8 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
     if (identical(widget.renderer._textProbeDelegate, _probeText)) {
       widget.renderer._textProbeDelegate = null;
     }
+    _resizeDebounce?.cancel();
+    _resizeDebounce = null;
     _pageCtrl?.dispose();
     super.dispose();
   }
