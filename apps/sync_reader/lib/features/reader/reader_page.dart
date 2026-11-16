@@ -49,6 +49,7 @@ import 'contract/reader_settings.dart';
 import 'contract/reader_settings_repository.dart';
 import 'contract/toc_entry.dart';
 import 'contract/toc_fingerprint.dart';
+import 'reader_key_action.dart';
 import 'reader_brightness.dart';
 import 'reader_chrome.dart';
 import 'reading_day.dart';
@@ -698,28 +699,32 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   /// 本节点是正文的焦点链祖先，按键从焦点控件冒泡上来时先到这里；命中
   /// 翻页键即返回 handled，压掉 Slider 等控件的默认方向键行为（改进度值）。
   /// 弹层（设置面板/目录抽屉）是独立路由焦点域，不受此影响。
+  ///
+  /// 判定规则见 [readerKeyAction]：**按键自动重复不翻页**（按住方向键时
+  /// 系统连发重复事件，旧实现每次重复都翻一页——表现是「按下后一直翻页
+  /// 停不下来」；现在按一次 = 翻一页，松手即停）。
   KeyEventResult _onReaderKeyEvent(FocusNode node, KeyEvent event) {
     if (_session == null) return KeyEventResult.ignored;
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
-    final int delta;
-    switch (event.logicalKey) {
-      case LogicalKeyboardKey.arrowDown:
-      case LogicalKeyboardKey.arrowRight:
-      case LogicalKeyboardKey.pageDown:
-      case LogicalKeyboardKey.space:
-        delta = 1;
-      case LogicalKeyboardKey.arrowUp:
-      case LogicalKeyboardKey.arrowLeft:
-      case LogicalKeyboardKey.pageUp:
-        delta = -1;
-      default:
+    final action = readerKeyAction(event);
+    switch (action) {
+      case ReaderKeyAction.ignore:
         return KeyEventResult.ignored;
+      case ReaderKeyAction.swallow:
+        // 自动重复：吃掉事件但不翻页（按住不放不再连翻）。
+        return KeyEventResult.handled;
+      case ReaderKeyAction.turnNext:
+      case ReaderKeyAction.turnPrevious:
+        final controller = _session!.renderer.controller;
+        unawaited(
+          action == ReaderKeyAction.turnNext
+              ? controller.nextPage()
+              : controller.previousPage(),
+        );
+        return KeyEventResult.handled;
     }
-    final controller = _session!.renderer.controller;
-    unawaited(delta > 0 ? controller.nextPage() : controller.previousPage());
-    return KeyEventResult.handled;
   }
 
   // —— 点击热区（A8）：左右两翼 22% 翻页，中间 56% 唤出/收起控制条 ——

@@ -203,6 +203,86 @@ void main() {
     await drainProgressThrottle(tester);
   });
 
+  testWidgets('page 模式：插图独占一页（不与上下文字挤在一起、不被切成两页）', (
+    tester,
+  ) async {
+    final bf = (await tester.runAsync(writeEpubBook))!;
+    final renderer = (await tester.runAsync(
+      () => openRenderer(
+        bf,
+        settings: ReaderSettings.defaults.copyWith(
+          pageMode: ReaderPageMode.page,
+        ),
+      ),
+    ))!;
+    addTearDown(renderer.dispose);
+    await pumpReader(tester, renderer);
+
+    // 插图块（原子区间）与页停候选——**翻页前**取（惰性窗口一旦滚过，块就
+    // 不再构建，量不到了）。
+    final images = epubImageBlocks(renderer);
+    expect(images, isNotEmpty, reason: '夹具含一张插图');
+    final stops = epubDocumentStops(renderer);
+
+    // 逐页前进，记录落点（直到离开插图所在章）。
+    final landings = <double>[];
+    for (var page = 0; page < 12; page++) {
+      final moved = await renderer.controller.nextPage();
+      await tester.pump();
+      if (!moved) break;
+      landings.add(renderer.scrollController.offset);
+    }
+    expect(landings.length, greaterThan(2), reason: '至少翻过 2 页');
+
+    // 页起点只能落在块顶或块底，绝不能落在内部。
+    for (final (top, bottom) in images) {
+      for (final landing in landings) {
+        final inside = landing > top + 0.5 && landing < bottom - 0.5;
+        expect(
+          inside,
+          isFalse,
+          reason: '落点 $landing 落在插图内部（$top..$bottom）→ 插图被切成两页',
+        );
+      }
+    }
+
+    // 插图块顶与块底都是页起点，且**相邻**（插图独占一页，页内无正文）。
+    for (final (top, bottom) in images) {
+      expect(
+        stops.any((s) => (s - top).abs() <= 1.0),
+        isTrue,
+        reason: '插图块顶 $top 必须是页起点（插图另起一页）',
+      );
+      expect(
+        stops.any((s) => (s - bottom).abs() <= 1.0),
+        isTrue,
+        reason: '插图块底 $bottom 必须是页起点（插图页到此结束）',
+      );
+      // 块顶与块底之间不得夹别的页起点（否则插图页里混进了正文）。
+      final between = stops
+          .where((s) => s > top + 1.0 && s < bottom - 1.0)
+          .toList();
+      expect(
+        between,
+        isEmpty,
+        reason: '插图区间 $top..$bottom 内不得有页起点（插图须独占一页）',
+      );
+      // 翻页过程中确实经过了插图页：块顶与块底都是落点。
+      expect(
+        landings.any((l) => (l - top).abs() <= 1.0),
+        isTrue,
+        reason: '插图块顶 $top 应是翻页落点（插图独占一页）',
+      );
+      expect(
+        landings.any((l) => (l - bottom).abs() <= 1.0),
+        isTrue,
+        reason: '插图块底 $bottom 应是翻页落点（插图页到此结束）',
+      );
+    }
+
+    await drainProgressThrottle(tester);
+  });
+
   testWidgets('scroll 模式：nextPage 仍为「滚一屏」，不受页停影响', (tester) async {
     final bf = (await tester.runAsync(writeEpubBook))!;
     final renderer = (await tester.runAsync(

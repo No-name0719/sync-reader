@@ -45,6 +45,7 @@ import 'epub_block_parser.dart';
 import 'epub_images.dart';
 import 'epub_line_meter.dart';
 import 'epub_locator.dart';
+import 'epub_page_structure.dart';
 import 'epub_theme.dart';
 
 /// 进度上报节流窗口（docs/03 §3.1：翻页/滚动 3s 防抖）。
@@ -55,10 +56,6 @@ const Duration epubProgressThrottle = Duration(seconds: 3);
 /// 不改 plainText/locator 坐标）。
 const String epubParagraphIndent = kReaderParagraphIndent;
 
-/// page 模式页停比较容差（逻辑像素）：落点与行盒顶的偏差小于此值即视为
-/// 「正落在行边界上」。
-const double _epubStopEpsilon = 0.5;
-
 /// spine 条目（解析产物：href + 该文件的块序列）。
 class _SpineItem {
   const _SpineItem({required this.href, required this.blocks});
@@ -68,20 +65,6 @@ class _SpineItem {
 
   /// 块序列（可为空：文件缺失/纯图片无 alt 等）。
   final List<EpubBlock> blocks;
-}
-
-/// page 模式页停候选（文档坐标 = 滚动偏移坐标系）。
-///
-/// - [isImage] 为真：图片块块顶（整页槽，原子单位——页界不得落其内部）；
-/// - 为假：文本行的行盒顶（行与行之间的安全落点，滚动到此处不切字）。
-class _EpubStop {
-  const _EpubStop(this.pos, {required this.isImage});
-
-  /// 落点（文档坐标）。
-  final double pos;
-
-  /// 是否为图片块块顶。
-  final bool isImage;
 }
 
 /// 某块的行盒缓存（块尺寸 + 块内行盒）：块布局未变则复用。
@@ -311,6 +294,14 @@ class EpubRenderer extends BookRenderer
   String blockHtml(int index) =>
       _blocks[index.clamp(0, _blocks.length - 1)].html;
 
+  /// 页停候选（诊断/测试用）：已累积的候选表（升序）。
+  ///
+  /// 断言用：插图必须登记为「块顶 + 块底」的原子区间（页界不得入其内）。
+  List<EpubStop> get pageStops => List<EpubStop>.unmodifiable(_pages.stops);
+
+  /// 页起点链（诊断/测试用）：走过的页起点（升序）。
+  List<double> get pageStarts => List<double>.unmodifiable(_pages.chain);
+
   /// 正文基础样式（字号/行距/字体/前景色随设置即时生效；衬线为默认，Q2）。
   TextStyle bodyTextStyle() {
     final font = resolveReaderFont(_settings.fontFamily);
@@ -487,8 +478,9 @@ class EpubRenderer extends BookRenderer
 
   // —— 翻页（音量键翻页 FR-209，契约 nextPage/previousPage）——
 
-  /// 翻到下一页：page 模式落到**下一个行边界页停**（页界不切字，见
-  /// [_nextStop]）；scroll 模式滚一屏。视图未挂载或已在文档末尾返回 false。
+  /// 翻到下一页：page 模式落到**下一个页起点**（页界不切字、插图独占一页，
+  /// 见 [EpubPageStructure]）；scroll 模式滚一屏。视图未挂载或已在文档末尾
+  /// 返回 false。
   Future<bool> nextPage() => _turnPage(1);
 
   /// 翻到上一页：语义同 [nextPage]，方向相反。
@@ -502,10 +494,13 @@ class EpubRenderer extends BookRenderer
     final viewport = position.viewportDimension;
     double target;
     if (_settings.pageMode == ReaderPageMode.page) {
-      // page 模式：页停（行边界）落点，页界落在行与行之间不切字。
+      // page 模式：页起点落点（行边界；插图独占整页）。
+      // 先用现测候选刷新页结构（翻页必须基于最新行盒——布局刚变时缓存是旧的）。
+      _pages.viewport = viewport;
+      _pages.setStops(_measureStops());
       final stop = delta > 0
-          ? _nextStop(ctrl.offset)
-          : _prevStop(ctrl.offset);
+          ? _pages.nextPageStart(ctrl.offset)
+          : _pages.prevPageStart(ctrl.offset);
       target = stop ?? (ctrl.offset + delta * viewport);
     } else {
       // scroll 模式：一页/一屏 = 视口高度（连续滚动，不吸附）。
@@ -517,53 +512,61 @@ class EpubRenderer extends BookRenderer
     return Future.value(true);
   }
 
-  // —— page 模式：行边界页停（页界不切字）——
+  // —— page 模式：页结构（页界不切字 + 插图独占一页）——
   //
   // 旧实现：page 模式用 `PageScrollPhysics`，吸附单位 = 视口高，页界落在
   // 视口高的整数倍上——而正文是连续排版的行，行与页界毫无关系，于是页界
   // 把行拦腰切断（章题只显示上半截、页尾只显示半行）。
   //
-  // 新实现：把「页界」定义成**行间安全落点**（行盒顶再上移一点余量，
-  // 见 [EpubLineBox.landing]）：
-  // - 候选 = 已构建块测得的行安全落点（正文）+ 图片块块顶（整页槽，原子）；
-  // - 下一个页停 = 一屏之内最靠下的候选（图片块存在时，页停落在图片块顶，
-  //   让插图独占一页）；
-  // - 视口按「本页内容高度」裁剪：页尾留白（不足一行），绝不把下一行的
-  //   上半截露在本页页尾。
+  // 现在：把「页界」定义成**页起点**（[EpubPageStructure]）：
+  // - 候选 = 已构建块测得的行安全落点（正文）+ 图片块的块顶/块底（原子）；
+  // - 文本页的终点 = 一屏之内最靠下的候选（页尾留白不足一行）；
+  // - **插图独占一页**：一屏之内出现图片 → 该页终点 = 图片块顶（插图另起
+  //   一页）；本页从图片块顶起 → 终点 = 图片块底（页界绝不入图片内部，
+  //   插图不会被切成两页各露一半）；
+  // - 走过的页起点记入页起点链 → 前后翻页**精确往返**（下一页→上一页回到
+  //   原落点），不再出现「按一次键翻两页 / 退不回去」。
   //
   // 文档坐标 = 视口顶在整书内容中的 y（滚动偏移即该坐标），故「滚动偏移 =
   // 某行安全落点」⇒ 页界正落在行与行之间。
   //
   // 测量时机：渲染树度量（读 size / localToGlobal）**只能在布局阶段之外**
   // 做（布局中读子节点 size 会被框架断言：只有父节点有此权限）。故：
-  // - 帧末（post-frame）刷新页停缓存 → 弹道物理（布局阶段创建仿真）读缓存；
+  // - 帧末（post-frame）刷新页停候选 → 弹道物理（布局阶段创建仿真）读缓存；
   // - 视口裁剪（绘制阶段）与翻页动作（事件回调）现测。
 
   /// 行盒缓存：块下标 → (块尺寸, 块内行盒)。块布局未变则复用（引擎取行盒
   /// 较贵，翻页/滚动时每帧都会用到）。
   final Map<int, _EpubBlockLines> _lineCache = {};
 
-  /// 页停候选缓存（文档坐标）：供布局阶段使用的弹道物理读取。
-  List<_EpubStop> _stopCache = const [];
+  /// 页结构：页停候选（累积）+ 页起点链（走过的页起点）。
+  ///
+  /// 候选表跨滚动累积：离开惰性窗口的块不再重建，但其行盒位置依然有效——
+  /// 「上一页」要能回到读过的地方。布局几何变化时整体作废（见
+  /// [_invalidateLineCache]）。
+  final EpubPageStructure _pages = EpubPageStructure(viewport: 600);
+
 
   /// 页停缓存刷新是否已排队。
   bool _stopRefreshScheduled = false;
 
-  /// 安排帧末刷新页停缓存（此时布局已定稿，可安全测量渲染树）。
+  /// 安排帧末刷新页停候选（此时布局已定稿，可安全测量渲染树）。
   void scheduleStopRefresh() {
     if (_stopRefreshScheduled || _disposed) return;
     _stopRefreshScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _stopRefreshScheduled = false;
       if (_disposed) return;
-      _stopCache = _measureStops();
+      _pages.setStops(_measureStops());
     });
   }
 
   /// 行盒缓存失效（排版几何变化时）：行盒位置全变，重测。
+  ///
+  /// 页停候选与页起点链一并作废（几何变了，旧落点全部失效）。
   void _invalidateLineCache() {
     _lineCache.clear();
-    _stopCache = const [];
+    _pages.clear();
   }
 
   /// 某块的行盒（块局部坐标）：块尺寸未变则复用缓存。
@@ -576,7 +579,7 @@ class EpubRenderer extends BookRenderer
   }
 
   /// 页停候选（文档坐标，升序）——**现测**（须在布局阶段之外调用）。
-  List<_EpubStop> _measureStops() {
+  List<EpubStop> _measureStops() {
     final viewportBox = _viewportKey.currentContext?.findRenderObject();
     if (viewportBox is! RenderBox || !viewportBox.hasSize) return const [];
     final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
@@ -584,110 +587,50 @@ class EpubRenderer extends BookRenderer
         _scrollController.hasClients && _scrollController.positions.length == 1
         ? _scrollController.offset
         : 0.0;
-    final stops = <_EpubStop>[];
+    final stops = <EpubStop>[];
     for (var i = _builtMin; i <= _builtMax && i < _blocks.length; i++) {
       final box = _keys[i].currentContext?.findRenderObject();
       if (box is! RenderBox || !box.attached || !box.hasSize) continue;
       final blockTop = base + box.localToGlobal(Offset.zero).dy - viewportTop;
       if (_isImageBlock(i)) {
-        // 图片块（整页槽）：块顶即页停候选——页界不得落在图片块内部。
-        stops.add(_EpubStop(blockTop, isImage: true));
+        // 图片块 = **原子区间** [块顶, 块底]：页界不得落在其内部 → 插图
+        // 独占一页（不会被切成两页各露一半）。块底同时登记为候选，插图页
+        // 的下一页就从块底起。
+        final bottom = blockTop + box.size.height;
+        stops.add(EpubStop.image(blockTop, bottom));
+        stops.add(EpubStop.text(bottom));
         continue;
       }
       for (final line in _blockLineBoxes(i, box)) {
         // 落点取「安全落点」（行盒顶上移余量），不是行盒顶——中日韩字面
         // 常高于字体 ascent 带，按行盒顶落点仍会削掉字形顶部。
-        stops.add(_EpubStop(blockTop + line.landing, isImage: false));
+        stops.add(EpubStop.text(blockTop + line.landing));
       }
     }
     stops.sort((a, b) => a.pos.compareTo(b.pos));
     return stops;
   }
 
-  /// 块是否为图片块（整页槽；解析层仍是 paragraph/see [_isImageOnlyBlock]）。
+  /// 块是否为图片块（整页槽；解析层仍是 paragraph/见 [_isImageOnlyBlock]）。
   bool _isImageBlock(int index) {
     final block = _blocks[index];
     if (block.kind == EpubBlockKind.image) return true;
     return block.kind == EpubBlockKind.paragraph && _isImageOnlyBlock(block);
   }
 
-  /// 下一个页停（文档坐标）：自 [from] 向下、一屏之内的最靠下候选。
+  /// page 模式本页内容高度：当前落点 → 下一个页起点的距离（≤ 一屏）。
   ///
-  /// 插图独占页：若一屏之内含图片块，页停落在**图片块顶**（图片块后的
-  /// 正文行不再被算作本页的落点），保证插图整页、不被页界切开。
-  double? _nextStop(double from) => _nextStopIn(_measureStops(), from);
-
-  /// 上一个页停（文档坐标）：自 [from] 向上回溯，落点满足「再翻一页正好
-  /// 回到 [from]」。
-  double? _prevStop(double from) => _prevStopIn(_measureStops(), from);
-
-  /// 下一个页停（读缓存）：布局阶段（弹道物理）只能用缓存。
-  double? _nextStopCached(double from) => _nextStopIn(_stopCache, from);
-
-  /// 上一个页停（读缓存）：布局阶段（弹道物理）只能用缓存。
-  double? _prevStopCached(double from) => _prevStopIn(_stopCache, from);
-
-  /// 距 [offset] 最近的页停（读缓存；布局阶段用）。
-  double? _nearestStopCached(double offset) {
-    final next = _nextStopCached(offset);
-    if (next == null) return null;
-    final prev = _prevStopCached(next);
-    if (prev == null) return next;
-    return (offset - prev).abs() <= (next - offset).abs() ? prev : next;
-  }
-
-  /// 候选表内向上回溯的上一页停（见 [_prevStop]）。
-  double? _prevStopIn(List<_EpubStop> candidates, double from) {
-    final viewport = _viewportHeight();
-    // 页链从「文档开头」起算：首个页停的上一页即文档开头（保留旧契约：
-    // 「回到首屏」回到文档顶部，首屏的空白留白也在页内）。
-    final first = _nextStopIn(candidates, 0);
-    if (first != null && (first - from).abs() <= _epubStopEpsilon) return 0;
-    for (var i = candidates.length - 1; i >= 0; i--) {
-      final pos = candidates[i].pos;
-      if (pos >= from - _epubStopEpsilon) continue;
-      if (from - pos > viewport + _epubStopEpsilon) break; // 再往前够不着一屏
-      final next = _nextStopIn(candidates, pos);
-      if (next != null && (next - from).abs() <= _epubStopEpsilon) return pos;
-    }
-    return null;
-  }
-
-  /// 一屏之内的下一个页停（候选表内计算；图片块独占页规则见 [_nextStop]）。
-  double? _nextStopIn(List<_EpubStop> candidates, double from) {
-    final limit = from + _viewportHeight() + _epubStopEpsilon;
-    double? best;
-    double? imageStop;
-    for (final stop in candidates) {
-      if (stop.pos <= from + _epubStopEpsilon) continue;
-      if (stop.pos > limit) break;
-      if (stop.isImage) {
-        if (imageStop == null || stop.pos > imageStop) imageStop = stop.pos;
-      }
-      if (best == null || stop.pos > best) best = stop.pos;
-    }
-    // 图片块独占页：候选落在图片块之后时，页停改落在图片块顶。
-    if (imageStop != null && (best == null || imageStop < best)) return imageStop;
-    return best;
-  }
-
-  /// 当前视口高度（逻辑像素；视图未挂载时为 0）。
-  double _viewportHeight() {
-    if (!_scrollController.hasClients) return 0;
-    return _scrollController.position.viewportDimension;
-  }
-
-  /// page 模式本页内容高度：当前落点 → 下一个页停的距离（≤ 一屏）。
-  ///
-  /// 视口按此高度裁剪：页尾不足一行处留白，页界不落在任何字形中间。
-  /// 返回 [viewportHeight] 表示不裁剪（拖拽中/未挂载/无下一页停）。
+  /// 视口按此高度裁剪：页尾不足一行处留白，页界不落在任何字形中间；插图
+  /// 页的高度 = 插图块高（插图独占一页，不与上下文字挤在一起）。
+  /// 返回 [viewportHeight] 表示不裁剪（拖拽中/未挂载/无下一页起点）。
   double pageContentHeight(double viewportHeight) {
     if (_disposed || !_scrollController.hasClients) return viewportHeight;
     // 面板重建期可能短暂挂了两个滚动视图（同一 controller）→ 不取位置。
     if (_scrollController.positions.length != 1) return viewportHeight;
     if (_userScrolling) return viewportHeight; // 拖拽中：连续内容，不裁剪
     final offset = _scrollController.offset;
-    final next = _nextStop(offset);
+    _pages.viewport = viewportHeight;
+    final next = _pages.peekNextPageStart(offset);
     if (next == null) return viewportHeight;
     return (next - offset).clamp(0.0, viewportHeight);
   }
@@ -1362,11 +1305,11 @@ class _EpubPageClipper extends CustomClipper<Rect> {
   bool shouldReclip(_EpubPageClipper oldClipper) => true;
 }
 
-/// page 模式物理：按**行边界页停**吸附（页界不切字）。
+/// page 模式物理：按**页起点**吸附（页界不切字；插图独占一页）。
 ///
 /// 与 Flutter 的 [PageScrollPhysics] 同构（按速度方向翻页 / 无速度时
-/// 就近吸附），差别只在吸附单位：不是视口高的整数倍，而是内容里的行边界
-/// （页停），故页界永远落在行与行之间。
+/// 就近吸附），差别只在吸附单位：不是视口高的整数倍，而是内容里的页起点
+/// （见 [EpubPageStructure]），故页界永远落在行与行之间，且插图整页。
 ///
 /// 公开类名：测试需要断言 page 模式用的是本物理（而非视口高吸附）。
 class EpubPageScrollPhysics extends ScrollPhysics {
@@ -1404,9 +1347,14 @@ class EpubPageScrollPhysics extends ScrollPhysics {
     return null;
   }
 
-  /// 吸附落点：有速度 → 翻到相邻页停；无速度 → 就近页停。
+  /// 吸附落点：有速度 → 翻到相邻页起点；无速度 → 就近页起点。
   ///
-  /// 布局阶段不能测量渲染树，故读页停缓存（[_EpubRenderer._stopCache]）。
+  /// 布局阶段不能测量渲染树，故读页结构里**已累积**的页停候选
+  /// （[_EpubRenderer._pages]）——候选表跨滚动累积，滚到哪都能吸到。
+  ///
+  /// 关键：翻页动作（`jumpTo`）末尾会触发一次 `goBallistic(0)`，若无速度
+  /// 吸附就会把页面**再挪一次**（按一次键翻两页）。故无速度时吸附到「
+  /// 就近页起点」——而翻页落点本身就是页起点，距离 0 → 不产生二次位移。
   double _targetPixels(
     ScrollMetrics position,
     Tolerance tolerance,
@@ -1414,11 +1362,11 @@ class EpubPageScrollPhysics extends ScrollPhysics {
   ) {
     final double? stop;
     if (velocity < -tolerance.velocity) {
-      stop = renderer._prevStopCached(position.pixels);
+      stop = renderer._pages.peekPrevPageStart(position.pixels);
     } else if (velocity > tolerance.velocity) {
-      stop = renderer._nextStopCached(position.pixels);
+      stop = renderer._pages.peekNextPageStart(position.pixels);
     } else {
-      stop = renderer._nearestStopCached(position.pixels);
+      stop = renderer._pages.nearestPageStart(position.pixels);
     }
     final double target =
         stop ??

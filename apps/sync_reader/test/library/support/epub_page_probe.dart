@@ -45,7 +45,10 @@ List<EpubLineBox> epubDocumentLineBoxes(EpubRenderer renderer) {
   return boxes;
 }
 
-/// 文档坐标系下的全部页停候选（安全落点 + 图片块块顶，升序）。
+/// 文档坐标系下的全部页停候选（安全落点 + 图片块块顶/块底，升序）。
+///
+/// 图片块是**原子**（页界不得落在其内部）：块顶与块底都是合法页起点——
+/// 插图独占一页，页起点落在块顶（插图另起一页）或块底（插图页结束）。
 List<double> epubDocumentStops(EpubRenderer renderer) {
   final viewportBox =
       renderer.viewportKey.currentContext?.findRenderObject() as RenderBox?;
@@ -63,6 +66,7 @@ List<double> epubDocumentStops(EpubRenderer renderer) {
     final top = base + box.localToGlobal(Offset.zero).dy - viewportTop;
     if (_isImageBlock(renderer, i)) {
       stops.add(top);
+      stops.add(top + box.size.height);
       continue;
     }
     for (final line in measureEpubLineBoxes(box)) {
@@ -81,6 +85,31 @@ List<EpubLineBox> epubCutLines(EpubRenderer renderer, double offset) {
   return epubDocumentLineBoxes(
     renderer,
   ).where((l) => l.top < offset - 0.5 && l.bottom > offset + 0.5).toList();
+}
+
+/// 图片块的原子区间（文档坐标：[块顶, 块底]）——已构建的插图块。
+///
+/// 插图独占一页：页起点只能落在块顶（插图另起一页）或块底（插图页结束），
+/// 绝不能落在区间内部（否则插图被切成两页、两页各露一半）。
+List<(double, double)> epubImageBlocks(EpubRenderer renderer) {
+  final viewportBox =
+      renderer.viewportKey.currentContext?.findRenderObject() as RenderBox?;
+  if (viewportBox == null || !viewportBox.hasSize) return const [];
+  final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
+  final base = renderer.scrollController.hasClients
+      ? renderer.scrollController.offset
+      : 0.0;
+  final blocks = <(double, double)>[];
+  for (var i = 0; i < renderer.blockCount; i++) {
+    if (!_isImageBlock(renderer, i)) continue;
+    final context = renderer.blockContextOf(i);
+    if (context == null) continue;
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.attached || !box.hasSize) continue;
+    final top = base + box.localToGlobal(Offset.zero).dy - viewportTop;
+    blocks.add((top, top + box.size.height));
+  }
+  return blocks;
 }
 
 /// 块是否为图片块（整页槽）：无文字且含 img。

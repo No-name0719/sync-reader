@@ -17,8 +17,8 @@
 
 param(
     [ValidateSet('Find', 'Focus', 'Click', 'ClickClient', 'Move', 'Drag', 'Wheel',
-        'Keys', 'Shot', 'ShotClient', 'ClientRect', 'ResizeClient', 'Screen',
-        'Rect', 'Resize', 'List')]
+        'Keys', 'HoldKey', 'Shot', 'ShotClient', 'ClientRect', 'ResizeClient', 'Screen',
+        'Rect', 'Resize', 'List', 'Displays', 'MoveToDisplay', 'RestoreFocus')]
     [string]$Action = 'List',
 
     # 按窗口标题模糊匹配（默认匹配标题含该子串的窗口）
@@ -39,7 +39,16 @@ param(
     [int]$Height = 0,
     [string]$Text = '',
     [string]$Out = '',
-    [int]$Delay = 350
+    [int]$Delay = 350,
+
+    # HoldKey：按住键的时长（毫秒）
+    [int]$HoldMs = 1500,
+
+    # 目标显示器：'primary'（主屏）/ 'secondary'（第二屏，通常是虚拟屏）/
+    # 序号（0,1…，按设备名里的数字排序）/ 设备名片段（如 'DISPLAY5'）。
+    # 屏幕截图（Screen）与 MoveToDisplay 均以此为准——**默认只碰主屏，
+    # 传 -Display secondary 才切到虚拟屏**，避免打扰主屏上的其他工作。
+    [string]$Display = 'primary'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -157,6 +166,9 @@ function Get-TargetWindow {
 
 function Set-WindowForeground {
     param($Win)
+    # 记录驱动前的前台窗口，便于驱动完把焦点还给用户（RestoreFocus 动作）——
+    # 合成点击/按键必须抢前台，但驱动不该把用户留在「被抢焦点」的状态。
+    $script:PrevForeground = [Win32Drive]::GetForegroundWindow()
     # Alt 消掉菜单态，再置前——否则 VS Code 会吃掉合成点击
     [Win32Drive]::keybd_event(0x12, 0, 0, [IntPtr]::Zero)      # ALT down
     [Win32Drive]::keybd_event(0x12, 0, 2, [IntPtr]::Zero)      # ALT up
@@ -164,6 +176,50 @@ function Set-WindowForeground {
     [void][Win32Drive]::BringWindowToTop($Win.Handle)
     [void][Win32Drive]::SetForegroundWindow($Win.Handle)
     Start-Sleep -Milliseconds 180
+}
+
+# —— 显示器（虚拟屏）——
+#
+# 本机接了虚拟屏：主屏 DISPLAY1（2048x1152，primary）+ 虚拟屏
+# DISPLAY5（1280x800，坐标 0,-1280，在主屏**上方**）。驱动与截图默认只碰
+# 主屏；跑验收一律显式 -Display secondary，把窗口搬到虚拟屏上，截图也只
+# 截虚拟屏那块矩形，绝不打扰用户在主屏上的操作。
+
+function Get-DisplayList {
+    # 显示器列表：按设备名里的数字排序（DISPLAY1, DISPLAY5, DISPLAY10…）。
+    $screens = [System.Windows.Forms.Screen]::AllScreens |
+        Sort-Object { [int](($_.DeviceName -replace '\D', '')) }
+    $i = 0
+    foreach ($s in $screens) {
+        [pscustomobject]@{
+            Index       = $i
+            DeviceName  = $s.DeviceName
+            X           = $s.Bounds.X
+            Y           = $s.Bounds.Y
+            Width       = $s.Bounds.Width
+            Height      = $s.Bounds.Height
+            Primary     = $s.Primary
+            BitsPerPixel = $s.BitsPerPixel
+        }
+        $i++
+    }
+}
+
+function Resolve-Display {
+    # -Display 规格 → 显示器对象：primary / secondary / 序号 / 设备名片段。
+    param([string]$Spec)
+    $list = @(Get-DisplayList)
+    if ($list.Count -eq 0) { throw 'no display found' }
+    if ($Spec -eq '' -or $Spec -eq 'primary') {
+        return $list | Where-Object { $_.Primary } | Select-Object -First 1
+    }
+    if ($Spec -eq 'secondary') {
+        return $list | Where-Object { -not $_.Primary } | Select-Object -First 1
+    }
+    if ($Spec -match '^\d+$') {
+        return $list[[int]$Spec]
+    }
+    return $list | Where-Object { $_.DeviceName -like "*$Spec*" } | Select-Object -First 1
 }
 
 function Invoke-Click {
@@ -213,16 +269,17 @@ function Save-WindowShot {
 }
 
 function Save-ScreenShot {
-    param([string]$Path)
-    $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-    $bmp = New-Object System.Drawing.Bitmap($b.Width, $b.Height)
+    param([string]$Path, [string]$Spec = 'primary')
+    $d = Resolve-Display -Spec $Spec
+    if ($null -eq $d) { throw "display not found: $Spec" }
+    $bmp = New-Object System.Drawing.Bitmap($d.Width, $d.Height)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($b.X, $b.Y, 0, 0, $bmp.Size)
+    $g.CopyFromScreen($d.X, $d.Y, 0, 0, $bmp.Size)
     $dir = Split-Path -Parent $Path
     if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
     $bmp.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
     $g.Dispose(); $bmp.Dispose()
-    Write-Host "saved $Path (screen $($b.Width) x $($b.Height))"
+    Write-Host "saved $Path (display $($d.DeviceName) $($d.Width) x $($d.Height) at $($d.X),$($d.Y))"
 }
 
 function Get-WindowScale {
@@ -343,6 +400,23 @@ switch ($Action) {
         Start-Sleep -Milliseconds $Delay
         Write-Host "sent keys"
     }
+    'HoldKey' {
+        # 按住某个键一段时间（KEYDOWN → 等待 → KEYUP）：验证**按键自动重复**
+        # 的行为（如阅读页「按住↓一直翻页停不下来」）。键名用虚拟键码名：
+        # DOWN/UP/LEFT/RIGHT/SPACE/PGUP/PGDN。
+        $w = Get-TargetWindow -Filter $Title -ProcName $Process
+        Set-WindowForeground -Win $w
+        $codes = @{ DOWN = 0x28; UP = 0x26; LEFT = 0x25; RIGHT = 0x27;
+                    SPACE = 0x20; PGUP = 0x21; PGDN = 0x22 }
+        $key = $Text.ToUpper()
+        if (-not $codes.ContainsKey($key)) { throw "unknown key: $Text" }
+        $vk = [byte]$codes[$key]
+        [Win32Drive]::keybd_event($vk, 0, 0, [IntPtr]::Zero)          # KEYDOWN
+        Start-Sleep -Milliseconds $HoldMs
+        [Win32Drive]::keybd_event($vk, 0, 2, [IntPtr]::Zero)          # KEYUP
+        Start-Sleep -Milliseconds $Delay
+        Write-Host "held $key for ${HoldMs}ms"
+    }
     'Shot' {
         $w = Get-TargetWindow -Filter $Title -ProcName $Process
         if ($Out -eq '') { $Out = "$PWD\shot.png" }
@@ -373,7 +447,10 @@ switch ($Action) {
         [void][Win32Drive]::GetWindowRect($w.Handle, [ref]$r)
         $targetW = $physW + 16
         $targetH = $physH + 60
-        [void][Win32Drive]::SetWindowPos($w.Handle, [IntPtr]::Zero, 0, 0, $targetW, $targetH, 0x0004 -bor 0x0010)
+        # SWP_NOMOVE(0x0002) | SWP_NOZORDER(0x0004) | SWP_NOACTIVATE(0x0010)：
+        # 只改尺寸、保留位置（否则会把窗口挪到屏幕原点 —— 旧代码漏了 NOMOVE，
+        # 一 resize 就把虚拟屏上的窗口弹回主屏左上角）。
+        [void][Win32Drive]::SetWindowPos($w.Handle, [IntPtr]::Zero, 0, 0, $targetW, $targetH, 0x0002 -bor 0x0004 -bor 0x0010)
         Start-Sleep -Milliseconds 600
         $w2 = Get-TargetWindow -Filter $Title -ProcName $Process
         $cr2 = Get-ClientRect -Win $w2
@@ -381,7 +458,37 @@ switch ($Action) {
     }
     'Screen' {
         if ($Out -eq '') { $Out = "$PWD\screen.png" }
-        Save-ScreenShot -Path $Out
+        Save-ScreenShot -Path $Out -Spec $Display
+    }
+    'Displays' {
+        # 列出全部显示器（含虚拟屏）及其矩形/DPI 缩放，供选屏用。
+        Get-DisplayList | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+    }
+    'MoveToDisplay' {
+        # 把目标窗口搬到指定显示器（左上角 + 铺满工作区），**不抢前台**：
+        # 用户在主屏上继续干活，应用只在虚拟屏上显示。
+        $w = Get-TargetWindow -Filter $Title -ProcName $Process
+        $d = Resolve-Display -Spec $Display
+        if ($null -eq $d) { throw "display not found: $Display" }
+        # SWP_NOZORDER(0x0004) | SWP_NOACTIVATE(0x0010)：不动 Z 序、不激活
+        # 先 SW_RESTORE：最大化窗口下 SetWindowPos 的尺寸会被系统忽略。
+        [void][Win32Drive]::ShowWindow($w.Handle, 9)
+        [void][Win32Drive]::SetWindowPos(
+            $w.Handle, [IntPtr]::Zero,
+            $d.X + 8, $d.Y + 8, $d.Width - 16, $d.Height - 16, 0x0004 -bor 0x0010)
+        Start-Sleep -Milliseconds 500
+        $w2 = Get-TargetWindow -Filter $Title -ProcName $Process
+        $sc = Get-WindowScale -Win $w2
+        Write-Host "moved to display $($d.DeviceName) ($($d.X),$($d.Y)) -> window $($w2.Width)x$($w2.Height) at $($w2.X),$($w2.Y) | scale=$sc"
+    }
+    'RestoreFocus' {
+        # 把前台焦点还给驱动前的窗口（用户的主屏工作不被夺走）。
+        if ($script:PrevForeground -eq [IntPtr]::Zero) {
+            Write-Host 'no previous foreground recorded'
+        } else {
+            [void][Win32Drive]::SetForegroundWindow($script:PrevForeground)
+            Write-Host "restored foreground $($script:PrevForeground)"
+        }
     }
     'Rect' {
         $w = Get-TargetWindow -Filter $Title -ProcName $Process
@@ -390,8 +497,8 @@ switch ($Action) {
     'Resize' {
         $w = Get-TargetWindow -Filter $Title -ProcName $Process
         Set-WindowForeground -Win $w
-        # SWP_NOMOVE | SWP_NOZORDER：只改尺寸，保留位置
-        [void][Win32Drive]::SetWindowPos($w.Handle, [IntPtr]::Zero, 0, 0, $Width, $Height, 0x0004 -bor 0x0010)
+        # SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE：只改尺寸，保留位置
+        [void][Win32Drive]::SetWindowPos($w.Handle, [IntPtr]::Zero, 0, 0, $Width, $Height, 0x0002 -bor 0x0004 -bor 0x0010)
         Start-Sleep -Milliseconds 500
         $w2 = Get-TargetWindow -Filter $Title -ProcName $Process
         Write-Host "resized to $($w2.Width)x$($w2.Height)"
