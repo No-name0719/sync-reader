@@ -1,7 +1,12 @@
-/// EpubRenderer 音量键翻页（FR-209）widget 测试：沿全书滚动位置按视口高度
-/// 前进/后退一页（page 模式 PageScrollPhysics 的吸附单位即视口高度），
-/// 文档端头返回 false。构造方式沿用 epub_renderer_test（真实解析链路 +
-/// runAsync IO + 同步分帧）。
+/// EpubRenderer 音量键翻页（FR-209）widget 测试：page 模式落到**行边界
+/// 页停**（页界不切字），scroll 模式滚一屏，文档端头返回 false。构造方式
+/// 沿用 epub_renderer_test（真实解析链路 + runAsync IO + 同步分帧）。
+///
+/// 契约（v1.4 收紧）：page 模式的翻页落点必须
+/// 1. 是**已知行边界**（行盒顶 / 图片块块顶）——比旧的「视口高整数倍」更强
+///    （视口高整数倍通常落在行的中间，正是本缺陷的成因）；
+/// 2. 落点处**没有行盒横跨**（没有任何字形被裁切）；
+/// 3. 本页内容高度 ≤ 视口高（页尾留白，不溢出）。
 library;
 
 import 'dart:io';
@@ -15,6 +20,7 @@ import 'package:sync_reader/features/reader/formats/epub/epub_format_handler.dar
 import 'package:sync_reader/features/reader/formats/epub/epub_renderer.dart';
 
 import '../../library/fake_handler.dart' show tinyPng;
+import '../../library/support/epub_page_probe.dart';
 import '../../library/support/rich_minimal_epub.dart';
 
 /// 写入富夹具 epub 到临时目录（真实文件 IO，runAsync 包裹调用）。
@@ -59,7 +65,7 @@ Future<void> drainProgressThrottle(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('page 模式：nextPage 前进一页、previousPage 返回、顶端边界 false', (
+  testWidgets('page 模式：nextPage 落到行边界页停（不切字）、previousPage 返回', (
     tester,
   ) async {
     final bf = (await tester.runAsync(writeEpubBook))!;
@@ -86,10 +92,34 @@ void main() {
     expect(await renderer.controller.nextPage(), isTrue);
     await tester.pump();
     final viewport = renderer.scrollController.position.viewportDimension;
+    final offset = renderer.scrollController.offset;
+
+    // ① 落点必须是已知行边界（行盒顶 / 图片块块顶）——比旧的「视口高整数倍」
+    //    更强：视口高整数倍一般落在行的中间（旧实现即如此，会切字）。
+    final stops = epubDocumentStops(renderer);
     expect(
-      renderer.scrollController.offset,
-      closeTo(viewport, 1.0),
-      reason: 'page 模式吸附单位 = 视口高度，jumpTo 落点与 snap 页一致',
+      stops.any((s) => (s - offset).abs() <= 1.0),
+      isTrue,
+      reason: '落点 $offset 必须是行边界页停之一（候选：$stops）',
+    );
+
+    // ② 落点处不得有被裁的字形：没有行盒横跨落点。
+    expect(
+      epubCutLines(renderer, offset),
+      isEmpty,
+      reason: '落点 $offset 处不得横跨任何行盒（否则行被页界切断）',
+    );
+
+    // ③ 本页内容高度 ≤ 视口高（页尾留白，不溢出、不切字）。
+    expect(
+      renderer.pageContentHeight(viewport),
+      lessThanOrEqualTo(viewport + 0.5),
+      reason: '本页内容高度不得超过一屏',
+    );
+    expect(
+      renderer.pageContentHeight(viewport),
+      greaterThan(viewport - 80),
+      reason: '本页内容高度应接近一屏（页尾最多留一行空白）',
     );
 
     expect(await renderer.controller.previousPage(), isTrue);

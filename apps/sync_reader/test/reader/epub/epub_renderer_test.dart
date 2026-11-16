@@ -158,7 +158,7 @@ void main() {
   });
 
   group('翻页模式', () {
-    testWidgets('page 模式：连续内容 + PageScrollPhysics 视口 snap，章首可见', (
+    testWidgets('page 模式：连续内容 + 行边界页停物理，章首可见', (
       tester,
     ) async {
       final bf = (await tester.runAsync(writeEpubBook))!;
@@ -174,7 +174,9 @@ void main() {
       await pumpReader(tester, renderer);
 
       final list = tester.widget<ListView>(find.byType(ListView));
-      expect(list.physics, isA<PageScrollPhysics>());
+      // page 模式用「行边界页停」物理（页界落在行与行之间，不切字），
+      // 不是 Flutter 的视口高整数倍吸附。
+      expect(list.physics, isA<EpubPageScrollPhysics>());
       expect(richTextContaining('第一章 起点'), findsWidgets);
       expect(tester.takeException(), isNull);
       await drainProgressThrottle(tester);
@@ -423,7 +425,7 @@ void main() {
       await drainProgressThrottle(tester);
     });
 
-    testWidgets('页模式切换：physics 变为 PageScrollPhysics，无异常', (tester) async {
+    testWidgets('页模式切换：physics 变为行边界页停物理，无异常', (tester) async {
       final bf = (await tester.runAsync(writeEpubBook))!;
       final renderer = (await tester.runAsync(() => openRenderer(bf)))!;
       addTearDown(renderer.dispose);
@@ -435,7 +437,7 @@ void main() {
       await tester.pumpAndSettle();
 
       final list = tester.widget<ListView>(find.byType(ListView));
-      expect(list.physics, isA<PageScrollPhysics>());
+      expect(list.physics, isA<EpubPageScrollPhysics>());
       expect(renderer.settings.pageMode, ReaderPageMode.page);
       expect(tester.takeException(), isNull);
       await drainProgressThrottle(tester);
