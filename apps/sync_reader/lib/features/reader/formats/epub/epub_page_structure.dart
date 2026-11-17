@@ -25,8 +25,9 @@
 ///   前后翻页据此**精确往返**（下一页 → 上一页 回到原落点），而不是每次重新
 ///   猜一个近似位置。
 ///
-/// 候选表是**累积**的：滚动时新测得的行盒合并进来（离开视口的块不再重建，
-/// 但它们的行盒位置仍然有效），于是「上一页」在读过之后随时可回溯。
+/// 候选表的**代次**（epoch）：候选与已测内容绑定——排版几何一变（字号/行高/
+/// 页边距/字体/翻页模式）就整体作废，避免「新旧两套坐标」混在一张表里把
+/// 页界算到旧位置（只增不删的代次号由渲染器提供，见 [setStops]）。
 library;
 
 /// 页停候选（文档坐标 = 视口顶在整书内容中的 y，即滚动偏移坐标系）。
@@ -74,6 +75,16 @@ class EpubPageStructure {
   /// ——页起点链（[chain]）另行记住走过的页起点，负责前后精确往返。
   final List<EpubStop> _stops = [];
 
+  /// **安全边界**（升序）：可安全裁剪的位置——行落点、插图块顶/底、无行盒
+  /// 块的块底。裁剪高度只能落在这些位置上（落在中间 = 把字拦腰切断）。
+  final List<double> _safe = [];
+
+  /// 已测内容的下边界（最后一块的底）：文档末尾时用它收尾（内容整段露出）。
+  double? _contentEnd;
+
+  /// 候选代次（epoch）：与排版代次绑定，几何一变即整体作废。
+  int _epoch = 0;
+
   /// 页起点链（升序）：走过的页起点。
   final List<double> _chain = [];
 
@@ -83,20 +94,80 @@ class EpubPageStructure {
   /// 候选表（升序；诊断/测试用）。
   List<EpubStop> get stops => List<EpubStop>.unmodifiable(_stops);
 
+  /// 安全边界（升序；诊断/测试用）。
+  List<double> get safeBounds => List<double>.unmodifiable(_safe);
+
+  /// 已测内容的下边界（诊断/测试用）。
+  double? get contentEnd => _contentEnd;
+
+  /// 候选代次（诊断/测试用）：几何变化后自增。
+  int get epoch => _epoch;
+
   /// 页起点链（升序；诊断/测试用）。
   List<double> get chain => List<double>.unmodifiable(_chain);
 
   /// 清空（排版几何变化 → 行盒全变 → 候选与链一并作废）。
   void clear() {
     _stops.clear();
+    _safe.clear();
+    _contentEnd = null;
     _chain.clear();
   }
 
   /// 整表替换候选（一次测量的结果；升序）。
-  void setStops(List<EpubStop> measured) {
+  ///
+  /// [epoch]：排版代次。代次变了 → 旧候选与旧页起点链一并作废（几何变了，
+  /// 旧坐标对应旧排版，留着会把页界算到错误位置）。
+  ///
+  /// [safeBounds]：本次测得的安全边界（行落点/块底等），供**保守裁剪**使用。
+  ///
+  /// [contentEnd]：本次测得的内容下边界（文档末尾收尾用）。
+  void setStops(
+    List<EpubStop> measured, {
+    int? epoch,
+    List<double> safeBounds = const [],
+    double? contentEnd,
+  }) {
+    if (epoch != null && epoch != _epoch) {
+      // 代次变了：旧候选与旧链整体作废（几何已变，旧坐标不再成立）。
+      _stops.clear();
+      _chain.clear();
+      _epoch = epoch;
+    }
     _stops
       ..clear()
       ..addAll(measured);
+    _safe
+      ..clear()
+      ..addAll(safeBounds)
+      ..sort();
+    _contentEnd = contentEnd;
+  }
+
+
+
+  /// 区间 (from, to] 内的**最大安全边界**（保守裁剪用；无则 null）。
+  ///
+  /// 裁剪高度未知时用它收尾：宁可页尾多留白（裁得更早），也不能让页界落在
+  /// 行中间（切字）。
+  double? largestSafeWithin(double from, double to) {
+    if (_safe.isEmpty || to <= from) return null;
+    var low = 0;
+    var high = _safe.length - 1;
+    var best = -1;
+    while (low <= high) {
+      final mid = (low + high) >> 1;
+      final pos = _safe[mid];
+      if (pos <= from + epsilon) {
+        low = mid + 1;
+      } else if (pos <= to + epsilon) {
+        best = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return best >= 0 ? _safe[best] : null;
   }
 
   // —— 翻页查询 ——
@@ -202,6 +273,7 @@ class EpubPageStructure {
     return best;
   }
 
+
   /// 上一个页起点（页结构规则，不经链）。
   ///
   /// 规则（与 [_successor] 对称）：
@@ -235,6 +307,8 @@ class EpubPageStructure {
     if (pos >= from - epsilon) return null; // 没有更早的候选
     return pos;
   }
+
+
 
   /// 位于 [pos] 的图片候选（[pos] 为图片块顶）。
   EpubStop? _imageAt(double pos) {
