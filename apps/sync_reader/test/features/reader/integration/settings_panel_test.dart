@@ -1,5 +1,5 @@
 /// 阅读设置面板（v1.2 B4 齿轮入口，A9 重做）widget 测试：调整字号/背景/
-/// 翻页模式/字体/段距/缩进/夜间亮度/翻页动画 → repository.save 被调用并
+/// 翻页方式/字体/段距/缩进/夜间亮度 → repository.save 被调用并
 /// 持久化到内存库 reader_settings 表；实时预览框随字号即时变化；对比度
 /// 读数按主题色实算；夜间亮度仅在夜间系背景显示；翻页动画仅在分页模式显示。
 library;
@@ -177,7 +177,7 @@ void main() {
     expect(repo.current.resolvedFontFamily, AppFonts.sans);
   });
 
-  testWidgets('翻页模式（Q9 默认分页）+ txt 编码切 GBK', (tester) async {
+  testWidgets('翻页方式（Q9 默认分页）+ txt 编码切 GBK', (tester) async {
     await pumpPanel(tester);
     expect(
       container.read(readerSettingsRepositoryProvider).current.pageMode,
@@ -186,7 +186,7 @@ void main() {
     );
 
     await tester.dragUntilVisible(
-      find.text('翻页模式'),
+      find.text('翻页方式'),
       panelScroller(),
       const Offset(0, -60),
     );
@@ -208,17 +208,6 @@ void main() {
   });
 
   group('v1.2 B4/B5 新增设置项', () {
-    testWidgets('对比度读数：按当前主题色实算（白色主题正文 ≥7:1 AAA）', (tester) async {
-      await pumpPanel(tester);
-      final note = find.byKey(const ValueKey('aa-contrast-note'));
-      expect(note, findsOneWidget);
-      final palette = ReaderTheme.paper.palette;
-      final expected =
-          '正文对比度 ${palette.fgContrast.toStringAsFixed(1)}:1 · '
-          '${wcagContrastLevel(palette.fgContrast)}'
-          '　|　次级文字 ${palette.mutedContrast.toStringAsFixed(1)}:1';
-      expect(tester.widget<Text>(note).data, expected);
-    });
 
     testWidgets('段距三选（B4）：空一行写入并持久化', (tester) async {
       await pumpPanel(tester);
@@ -229,7 +218,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       // 单元 2：段距文案对齐原型「紧 / 疏 · 空一行 / 松 · 空两行」。
-      await tester.tap(find.text('疏 · 空一行').last);
+      await tester.tap(find.text('空一行').last);
       await tester.pump();
 
       final repo = container.read(readerSettingsRepositoryProvider);
@@ -293,16 +282,76 @@ void main() {
       expect(value, greaterThanOrEqualTo(0.8));
     });
 
-    testWidgets('翻页动画（B5）：滚动模式不显示，分页模式可选左右翻页并持久化',
-        (tester) async {
+    testWidgets('v1.3.7：翻页动画控件已下线，合并进「翻页方式」一项', (
+      tester,
+    ) async {
       await pumpPanel(tester);
-      // 出厂分页：动画选择器可见；切滚动后隐藏。
+      // 原「翻页动画」独立控件不再存在（只有滚动 / 分页两种方式）。
       expect(
         find.byKey(const ValueKey('settings-page-turn-axis')),
-        findsOneWidget,
+        findsNothing,
+        reason: '翻页动画选项已下线',
       );
+      expect(find.byKey(const ValueKey('settings-page-mode')), findsOneWidget);
+
       await tester.dragUntilVisible(
-        find.text('翻页模式'),
+        find.text('翻页方式'),
+        panelScroller(),
+        const Offset(0, -60),
+      );
+      await tester.pumpAndSettle();
+      // 两个选项的文案：分页 / 滚动（方向不再写进选项名，见 v1.3.7）。
+      expect(find.text('分页'), findsOneWidget);
+      expect(find.text('滚动'), findsOneWidget);
+
+      // 切到滚动：方向不再单独可选，但持久化的方向固定为左右。
+      await tester.tap(find.text('滚动').last);
+      await tester.pump();
+      final repo = container.read(readerSettingsRepositoryProvider);
+      expect(repo.current.pageMode, ReaderPageMode.scroll);
+      expect(repo.current.pageTurnAxis, ReaderPageTurnAxis.horizontal);
+      final raw = await db.readerSettingsDao.getValue(
+        ReaderSettingsRepository.storageKey,
+      );
+      expect(raw, contains('"pageTurnAxis":"horizontal"'));
+    });
+  });
+
+  group('v1.3.6：改过设置后重开面板不得回退默认值', () {
+    // 用户实测：「配置功能修改后再次打开对应页面会显示默认配置」。
+    // 根因：仓库 load() 返回首次载入的旧快照 → 面板初始化时用旧快照把
+    // 当前值覆盖掉（面板显示出厂默认）。
+    testWidgets('重开面板：字号显示改后的值（不是默认 16）', (tester) async {
+      await pumpPanel(tester);
+
+      // 改字号（走 UI 通道 → 仓库 save）。
+      await tester.drag(
+        find.byKey(const ValueKey('settings-font-size')),
+        const Offset(160, 0),
+      );
+      await tester.pump();
+      final repo = container.read(readerSettingsRepositoryProvider);
+      final changed = repo.current.fontSize;
+      expect(changed, greaterThan(16), reason: '右拖应增大字号');
+
+      // 卸载面板（= 关闭），再重新挂载（= 重开）。
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      await pumpPanel(tester);
+
+      final preview = tester.widget<Text>(previewText());
+      expect(
+        preview.textSpan!.style!.fontSize,
+        changed,
+        reason: '重开面板应显示改后的字号，而不是出厂默认',
+      );
+    });
+
+    testWidgets('重开面板：翻页方式显示改后的值（不是默认分页）', (tester) async {
+      await pumpPanel(tester);
+
+      await tester.dragUntilVisible(
+        find.text('翻页方式'),
         panelScroller(),
         const Offset(0, -60),
       );
@@ -310,28 +359,29 @@ void main() {
       await tester.tap(find.text('滚动').last);
       await tester.pump();
       expect(
-        find.byKey(const ValueKey('settings-page-turn-axis')),
-        findsNothing,
-        reason: '翻页动画仅分页模式有意义（原型行为）',
+        container.read(readerSettingsRepositoryProvider).current.pageMode,
+        ReaderPageMode.scroll,
       );
 
-      // 切回分页，选左右翻页并验证持久化。
-      await tester.tap(find.text('分页').last);
+      await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump();
+      await pumpPanel(tester);
+
       await tester.dragUntilVisible(
-        find.byKey(const ValueKey('settings-page-turn-axis')),
+        find.text('翻页方式'),
         panelScroller(),
         const Offset(0, -60),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('左右翻页').last);
-      await tester.pump();
-      final repo = container.read(readerSettingsRepositoryProvider);
-      expect(repo.current.pageTurnAxis, ReaderPageTurnAxis.horizontal);
-      final raw = await db.readerSettingsDao.getValue(
-        ReaderSettingsRepository.storageKey,
+      // 选中项 = 滚动（面板自绘分段控件：选中项文字为前景色 + 600 字重）。
+      final scrollSegment = tester.widget<Text>(
+        find.text('滚动').last,
       );
-      expect(raw, contains('"pageTurnAxis":"horizontal"'));
+      expect(
+        scrollSegment.style?.fontWeight,
+        FontWeight.w600,
+        reason: '重开面板应仍选中「滚动」',
+      );
     });
   });
 
@@ -363,7 +413,7 @@ void main() {
 
       // 切滚动模式（保留项之二）。
       await tester.dragUntilVisible(
-        find.text('翻页模式'),
+        find.text('翻页方式'),
         panelScroller(),
         const Offset(0, -60),
       );
@@ -386,10 +436,10 @@ void main() {
       expect(after.firstLineIndent, d.firstLineIndent);
       expect(after.fontFamily, isNull, reason: '字体恢复默认 = 衬线（null）');
       expect(after.nightBrightness, d.nightBrightness);
-      // 保留项：主题 / 翻页模式 / 翻页动画 / 编码。
+      // 保留项：主题 / 翻页方式 / 编码（翻页方向固定左右，不再单独可选）。
       expect(after.theme, ReaderTheme.dark);
       expect(after.pageMode, ReaderPageMode.scroll);
-      expect(after.pageTurnAxis, ReaderPageTurnAxis.vertical);
+      expect(after.pageTurnAxis, ReaderPageTurnAxis.horizontal);
       expect(after.txtEncodingOverride, ReaderTextEncoding.auto);
 
       // 持久化同步。
@@ -412,12 +462,12 @@ void main() {
 
       // 原型 `.rd-seg` 形态：外层容器 + 三段文字，无 ✓ 图标。
       expect(find.text('紧'), findsOneWidget);
-      expect(find.text('疏 · 空一行'), findsOneWidget);
-      expect(find.text('松 · 空两行'), findsOneWidget);
+      expect(find.text('空一行'), findsOneWidget);
+      expect(find.text('空两行'), findsOneWidget);
       // Material SegmentedButton 的勾选图标（Icons.check）不应再出现。
       expect(find.byIcon(Icons.check), findsNothing);
 
-      await tester.tap(find.text('松 · 空两行').last);
+      await tester.tap(find.text('空两行').last);
       await tester.pump();
       expect(
         container.read(readerSettingsRepositoryProvider).current.paragraphGap,

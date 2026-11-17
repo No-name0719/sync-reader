@@ -58,13 +58,14 @@ void main() {
   });
 
   group('v1.2 新增排版字段（B3/B4/B5）', () {
-    test('出厂默认：段距紧 / 缩进开 / 亮度 100% / 上下滑动', () {
+    test('出厂默认：段距紧 / 缩进开 / 亮度 100% / 分页左右翻页', () {
       expect(ReaderSettings.defaults.paragraphGap, ReaderParagraphGap.tight);
       expect(ReaderSettings.defaults.firstLineIndent, isTrue);
       expect(ReaderSettings.defaults.nightBrightness, 1.0);
+      // v1.3.7：UI 只提供「滚动（上下）/ 分页（左右）」，分页方向固定左右。
       expect(
         ReaderSettings.defaults.pageTurnAxis,
-        ReaderPageTurnAxis.vertical,
+        ReaderPageTurnAxis.horizontal,
       );
     });
 
@@ -89,7 +90,7 @@ void main() {
       expect(v2.paragraphGap, ReaderParagraphGap.tight);
       expect(v2.firstLineIndent, isTrue);
       expect(v2.nightBrightness, 1.0);
-      expect(v2.pageTurnAxis, ReaderPageTurnAxis.vertical);
+      expect(v2.pageTurnAxis, ReaderPageTurnAxis.horizontal);
     });
 
     test('nightBrightness 越界钳制到 0.8–1.3', () {
@@ -116,7 +117,32 @@ void main() {
         'pageTurnAxis': 'diagonal',
       });
       expect(bad.paragraphGap, ReaderParagraphGap.tight);
-      expect(bad.pageTurnAxis, ReaderPageTurnAxis.vertical);
+      expect(bad.pageTurnAxis, ReaderPageTurnAxis.horizontal);
+    });
+  });
+
+  group('v1.3.7：翻页方向归一（分页一律左右翻页）', () {
+    test('旧数据里的 vertical（上下滑动翻页）读回时归一为 horizontal', () {
+      final restored = ReaderSettings.fromJson({
+        'v': 3,
+        'pageMode': 'page',
+        'pageTurnAxis': 'vertical',
+      });
+      expect(
+        restored.pageTurnAxis,
+        ReaderPageTurnAxis.horizontal,
+        reason: '「上下滑动翻页」选项已下线，分页一律左右翻页',
+      );
+    });
+
+    test('滚动模式下方向不参与行为，读回时保留原值', () {
+      final restored = ReaderSettings.fromJson({
+        'v': 3,
+        'pageMode': 'scroll',
+        'pageTurnAxis': 'vertical',
+      });
+      expect(restored.pageMode, ReaderPageMode.scroll);
+      expect(restored.pageTurnAxis, ReaderPageTurnAxis.vertical);
     });
   });
 

@@ -3,14 +3,20 @@
 /// - **外观**：主题风格三选（赭石/青瓷/墨绿，带配色预览）+ 外观模式
 ///   三选（浅色/深色/跟随系统）；经 `app_preferences.dart` 的 Notifier
 ///   即时生效（MaterialApp 重建）并同时落库（`app.accent` / `app.theme_mode`）。
-/// - **阅读**：全局阅读默认值（字体/字号/行距/背景/音量键翻页），经既有
+/// - **阅读**：全局阅读默认值（字体/字号/行距/背景/翻页方式/音量键翻页），经既有
 ///   `ReaderSettingsRepository` 读写 reader_settings 表；改动在阅读器
-///   下次打开时生效（本页不做热应用）。
+///   下次打开时生效（本页不做热应用）。**翻页方式**在本页也可切换——
+///   移动端的 Aa 面板是底部弹层，该项埋在面板下半部分不易发现
+///   （v1.3.6，用户反馈「移动端无法切换滚动和分页模式」）；
+///   v1.3.7 起只有「滚动（上下）/ 分页（左右）」两种方式（原「翻页模式 +
+///   翻页动画」两控件已合并，见 Aa 面板）。
 /// - **存储**：books/covers/tmp 三目录占用统计 + 清理缓存（确认弹窗后
 ///   清空 tmp 目录内容）。
 /// - **关于**：版本号（[appVersion]，与 pubspec 同步维护）、MIT、无账号
 ///   无遥测声明。
 library;
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -56,10 +62,25 @@ final class _SettingsPageState extends ConsumerState<SettingsPage> {
   /// 全局阅读默认值（initState 异步从仓库读回；读回前先按出厂默认展示）。
   ReaderSettings _reader = ReaderSettings.defaults;
 
+  /// 仓库变更订阅：阅读器内的 Aa 面板改了设置时，本页实时跟随
+  /// （v1.3.6：此前本页只在进入时读一次，改动后重进会显示旧值）。
+  StreamSubscription<ReaderSettings>? _readerSub;
+
   @override
   void initState() {
     super.initState();
     _loadReaderDefaults();
+    _readerSub = ref.read(readerSettingsRepositoryProvider).changes.listen((
+      next,
+    ) {
+      if (mounted && next != _reader) setState(() => _reader = next);
+    });
+  }
+
+  @override
+  void dispose() {
+    _readerSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadReaderDefaults() async {
@@ -162,7 +183,7 @@ final class _SettingsPageState extends ConsumerState<SettingsPage> {
       children: [
         _SettingRow(
           title: '默认字体',
-          description: '衬线更接近纸质书；阅读器内可随时再改',
+          description: '阅读器内可随时再改',
           bottom: SegmentedButton<String>(
             key: const ValueKey('app-settings-reader-font'),
             segments: const [
@@ -236,8 +257,27 @@ final class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         const Divider(height: AppSpacing.s6),
         _SettingRow(
+          title: '默认翻页方式',
+          bottom: SegmentedButton<ReaderPageMode>(
+            key: const ValueKey('app-settings-reader-page-mode'),
+            segments: const [
+              ButtonSegment(value: ReaderPageMode.page, label: Text('分页')),
+              ButtonSegment(value: ReaderPageMode.scroll, label: Text('滚动')),
+            ],
+            selected: {_reader.pageMode},
+            onSelectionChanged: (selection) => _updateReader(
+              _reader.copyWith(
+                pageMode: selection.first,
+                // 分页方向固定「左右」（上下滑动翻页选项已下线）。
+                pageTurnAxis: ReaderPageTurnAxis.horizontal,
+              ),
+            ),
+          ),
+        ),
+        const Divider(height: AppSpacing.s6),
+        _SettingRow(
           title: '音量键翻页',
-          description: 'Android 专属；按下音量键翻页',
+          description: 'Android 专属',
           trailing: Switch(
             key: const ValueKey('app-settings-volume-key'),
             value: _reader.volumeKeyPageTurn,
@@ -308,7 +348,7 @@ final class _SettingsPageState extends ConsumerState<SettingsPage> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('清理缓存'),
-        content: const Text('将清空临时目录中的下载与上传暂存文件，不影响书库与阅读进度。'),
+        content: const Text('将清空下载与上传暂存文件，不影响书库与阅读进度。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),

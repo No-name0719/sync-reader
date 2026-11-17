@@ -239,6 +239,68 @@ void main() {
     expect(settings.volumeKeyPageTurn, isTrue);
   });
 
+  group('v1.3.6/v1.3.7：翻页方式可在本页切换（移动端入口）', () {
+    // 用户实测：「移动端无法切换滚动和分页模式」——移动端的 Aa 面板是
+    // 底部弹层，翻页方式一项埋在面板下半部分不易发现；设置页补一个入口。
+    // v1.3.7：只有「滚动 / 分页」两种方式（合并原「翻页模式 + 翻页动画」
+    // 两个控件）；翻页方向不再作为选项（按设备形态自动选）。
+    testWidgets('切到滚动：落库 reader_settings 表', (tester) async {
+      await pumpSettings(tester);
+      addTearDown(() => shutdown(tester));
+
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('app-settings-reader-page-mode')),
+      );
+      await tester.pumpAndSettle();
+      await tapSegment(
+        tester,
+        const ValueKey('app-settings-reader-page-mode'),
+        '滚动',
+      );
+
+      final raw = await tester.runAsync(
+        () => db.readerSettingsDao.getValue(ReaderSettingsRepository.storageKey),
+      );
+      final settings = ReaderSettings.fromJson(
+        jsonDecode(raw!) as Map<String, Object?>,
+      );
+      expect(settings.pageMode, ReaderPageMode.scroll);
+    });
+
+    testWidgets('重开设置页：显示改后的翻页方式（不是默认分页）', (tester) async {
+      await pumpSettings(tester);
+      addTearDown(() => shutdown(tester));
+
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('app-settings-reader-page-mode')),
+      );
+      await tester.pumpAndSettle();
+      await tapSegment(
+        tester,
+        const ValueKey('app-settings-reader-page-mode'),
+        '滚动',
+      );
+
+      // 卸载 → 重挂（= 重开设置页）。
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      await pumpSettings(tester);
+
+      await tester.ensureVisible(
+        find.byKey(const ValueKey('app-settings-reader-page-mode')),
+      );
+      await tester.pumpAndSettle();
+      final selected = tester.widget<SegmentedButton<ReaderPageMode>>(
+        find.byKey(const ValueKey('app-settings-reader-page-mode')),
+      );
+      expect(
+        selected.selected,
+        {ReaderPageMode.scroll},
+        reason: '重开设置页应显示改后的翻页方式',
+      );
+    });
+  });
+
   testWidgets('390×844 手机宽度渲染无溢出（滚动查看）', (tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1.0;

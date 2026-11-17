@@ -2,9 +2,9 @@
 /// 实时预览框（跟随全部设置项）+ 实时对比度读数（WCAG 2.1 实算）+
 /// 字号/行距/页边距 + 段距（整行空行，B4）+ 首行缩进开关（B4）+
 /// 字体三选（衬线·黑体·楷体，带字体预览）+ 7 种背景（B2）+
-/// 夜间亮度（B3，仅夜间系背景显示）+ 翻页模式（Q9）+
-/// 翻页动画（B5，仅分页模式显示）+ txt 编码，另含 Android 专属的
-/// 音量键翻页开关（FR-209）。
+/// 夜间亮度（B3，仅夜间系背景显示）+ **翻页方式**（v1.3.7：滚动（上下）/
+/// 分页（左右）两种，原「翻页模式 + 翻页动画」两控件合并）+ txt 编码，
+/// 另含 Android 专属的音量键翻页开关（FR-209）。
 ///
 /// 形态由宿主（阅读页）决定：桌面（>860）右侧抽屉、移动（≤860）底部弹层
 /// （docs/10 §4.4），本 widget 只承载内容，两种形态共用。
@@ -23,9 +23,11 @@
 /// 所有变更即时 `repository.save` 持久化（排版设置仅本地保存、不同步，
 /// docs/07 记录），阅读页监听 `repository.changes` 后经渲染器
 /// `applySettings` 热应用。面板初始值消费 `repository.current`，
-/// 并在 open 后与持久化值对齐一次。
+/// 并在 open 后与持久化值对齐一次；面板打开期间跟随仓库变更流
+/// （v1.3.6：别处改过设置后，面板不再显示旧值）。
 library;
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -53,6 +55,9 @@ class ReaderSettingsPanel extends ConsumerStatefulWidget {
 class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
   late ReaderSettings _settings;
 
+  /// 仓库变更订阅：面板打开期间若别处改了设置（如设置页），面板实时跟随。
+  StreamSubscription<ReaderSettings>? _sub;
+
   @override
   void initState() {
     super.initState();
@@ -64,6 +69,15 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
         setState(() => _settings = loaded);
       }
     });
+    _sub = repo.changes.listen((next) {
+      if (mounted && next != _settings) setState(() => _settings = next);
+    });
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
   }
 
   /// 更新设置：UI 即时刷新 + 持久化（阅读页监听 changes 热应用）。
@@ -124,15 +138,6 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
     );
   }
 
-  /// 对比度读数：11px / muted（原型 `.rd-ty-note`）。
-  TextStyle _noteStyle(BuildContext context) {
-    final theme = Theme.of(context);
-    return theme.textTheme.bodySmall!.copyWith(
-      fontSize: 11,
-      color: theme.colorScheme.onSurfaceVariant,
-    );
-  }
-
   /// 头部标题：14px / w600（原型 `.rd-drawer-head b`）。
   TextStyle _headerTitleStyle(BuildContext context) {
     final theme = Theme.of(context);
@@ -151,7 +156,6 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final palette = _settings.theme.palette;
     return SafeArea(
       child: SliderTheme(
         data: _sliderTheme(context),
@@ -164,8 +168,6 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
               _buildHeader(context),
               const SizedBox(height: AppSpacing.s4),
               _buildPreview(),
-              const SizedBox(height: AppSpacing.s2),
-              _buildContrastNote(context, palette),
               const SizedBox(height: AppSpacing.s5),
               _buildFontSize(context),
               _buildLineHeight(context),
@@ -182,12 +184,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
                 _buildNightBrightness(context),
               ],
               const SizedBox(height: AppSpacing.s5),
-              _buildPageMode(context),
-              // 翻页动画仅分页模式有意义（原型行为）。
-              if (_settings.pageMode == ReaderPageMode.page) ...[
-                const SizedBox(height: AppSpacing.s5),
-                _buildPageTurnAxis(context),
-              ],
+              _buildTurnMode(context),
               const SizedBox(height: AppSpacing.s5),
               _buildEncoding(context),
               // 音量键翻页（FR-209）为 Android 专属能力，其他平台不显示该行。
@@ -260,18 +257,6 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
         ),
         textAlign: TextAlign.justify,
       ),
-    );
-  }
-
-  /// 实时对比度读数（B2/B4）：按当前主题色值 WCAG 2.1 实算，非写死数字。
-  Widget _buildContrastNote(BuildContext context, ReaderPalette palette) {
-    final fg = palette.fgContrast;
-    final muted = palette.mutedContrast;
-    return Text(
-      '正文对比度 ${fg.toStringAsFixed(1)}:1 · ${wcagContrastLevel(fg)}'
-      '　|　次级文字 ${muted.toStringAsFixed(1)}:1',
-      key: const ValueKey('aa-contrast-note'),
-      style: _noteStyle(context),
     );
   }
 
@@ -393,8 +378,8 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
           key: const ValueKey('settings-paragraph-gap'),
           options: const [
             (ReaderParagraphGap.tight, '紧'),
-            (ReaderParagraphGap.oneLine, '疏 · 空一行'),
-            (ReaderParagraphGap.twoLines, '松 · 空两行'),
+            (ReaderParagraphGap.oneLine, '空一行'),
+            (ReaderParagraphGap.twoLines, '空两行'),
           ],
           selected: _settings.paragraphGap,
           onChanged: (value) =>
@@ -402,7 +387,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
         ),
         const SizedBox(height: AppSpacing.s1),
         Text(
-          '以整行为单位：每页行数恒定，页底留白不随内容长短跳动',
+          '以整行为单位',
           style: _hintStyle(context),
         ),
       ],
@@ -437,9 +422,9 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
         Text('字体', style: _labelStyle(context)),
         const SizedBox(height: AppSpacing.s2),
         ...[
-          (AppFonts.serif, '宋体 · 阅读', 'Noto Serif SC'),
-          (AppFonts.sans, '黑体 · 清晰', '系统黑体'),
-          (AppFonts.kai, '楷体 · 温润', 'KaiTi'),
+          (AppFonts.serif, '宋体', 'Noto Serif SC'),
+          (AppFonts.sans, '黑体', '系统黑体'),
+          (AppFonts.kai, '楷体', 'KaiTi'),
         ].map(
           (option) => _fontOption(
             context,
@@ -523,7 +508,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
         ),
         const SizedBox(height: AppSpacing.s1),
         Text(
-          '阅读背景与应用深浅色相互独立：应用是浅色时也可切夜间背景',
+          '与应用深浅色相互独立',
           style: _hintStyle(context),
         ),
       ],
@@ -576,16 +561,23 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
     );
   }
 
-  /// 翻页模式（Q9：出厂默认分页；原型顺序 分页·滚动）。
+  /// 翻页方式（v1.3.7：原「翻页模式 + 翻页动画」两个控件合并为一个）。
   ///
-  /// 说明文字如实标注各格式支持现状（B 要求「不要假装支持」）：分页对
-  /// txt 为整行精确分页；epub 为连续排版按屏吸附；md 暂以滚动呈现；
-  /// pdf 的「页」由文件自带。
-  Widget _buildPageMode(BuildContext context) {
+  /// 只有两种方式：**滚动** 与 **分页**。翻页**方向**不再作为选项——
+  /// 电脑端翻页有两条与方向无关的路（点正文左右两侧热区、方向键；滚轮
+  /// 已在 v1.3.7 从分页模式移除），方向只影响「按住拖拽」这一个次要手势；
+  /// 而方向本身还随格式而异（txt 手机左右滑 / 电脑上下拖；epub 始终上下
+  /// 按屏吸附），写进选项名反而会误导 → 方向只在说明文字里逐格式标注。
+  ///
+  /// 说明文字如实标注各格式支持现状（B 要求「不要假装支持」）：滚动为
+  /// 上下滑动连续阅读；分页对 txt 为整行精确分页（方向按设备形态自动选）；
+  /// epub 为连续排版按屏吸附（纵向滑动）；md 暂以滚动呈现；pdf 的「页」
+  /// 由文件自带。
+  Widget _buildTurnMode(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('翻页模式', style: _labelStyle(context)),
+        Text('翻页方式', style: _labelStyle(context)),
         const SizedBox(height: AppSpacing.s2),
         _SegmentRow<ReaderPageMode>(
           key: const ValueKey('settings-page-mode'),
@@ -594,38 +586,19 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
             (ReaderPageMode.scroll, '滚动'),
           ],
           selected: _settings.pageMode,
-          onChanged: (value) => _update(_settings.copyWith(pageMode: value)),
+          onChanged: (value) => _update(
+            _settings.copyWith(
+              pageMode: value,
+              // 分页方向已不是用户选项（按设备形态自动选），这里写横轴只是
+              // 让持久化值保持一致（旧键只增不删）。
+              pageTurnAxis: ReaderPageTurnAxis.horizontal,
+            ),
+          ),
         ),
         const SizedBox(height: AppSpacing.s1),
         Text(
-          '分页：txt 整行精确分页；epub 连续排版按屏吸附；md 暂按滚动呈现；pdf 按文件自带页呈现',
-          style: _hintStyle(context),
-        ),
-      ],
-    );
-  }
-
-  /// 翻页动画（B5）：上下滑动（默认，正文像滚动一样纵向推移）/ 左右翻页。
-  /// 仅分页模式显示；两种动画共用同一排版与翻页路径（ReaderController）。
-  Widget _buildPageTurnAxis(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('翻页动画', style: _labelStyle(context)),
-        const SizedBox(height: AppSpacing.s2),
-        _SegmentRow<ReaderPageTurnAxis>(
-          key: const ValueKey('settings-page-turn-axis'),
-          options: const [
-            (ReaderPageTurnAxis.vertical, '上下滑动'),
-            (ReaderPageTurnAxis.horizontal, '左右翻页'),
-          ],
-          selected: _settings.pageTurnAxis,
-          onChanged: (value) =>
-              _update(_settings.copyWith(pageTurnAxis: value)),
-        ),
-        const SizedBox(height: AppSpacing.s1),
-        Text(
-          '上下滑动 = 正文像滚动一样纵向推移；左右翻页 = 横向推移；仅分页模式有效',
+          '滚动 = 上下滑动连续阅读；分页 = 一页一页翻'
+          '（epub 按屏吸附；md 暂按滚动；pdf 按文件自带页）',
           style: _hintStyle(context),
         ),
       ],
@@ -649,8 +622,6 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
           onChanged: (value) =>
               _update(_settings.copyWith(txtEncodingOverride: value)),
         ),
-        const SizedBox(height: AppSpacing.s1),
-        Text('编码切换仅对 txt 生效', style: _hintStyle(context)),
       ],
     );
   }
@@ -663,7 +634,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
       contentPadding: EdgeInsets.zero,
       dense: true,
       title: Text('音量键翻页', style: _labelStyle(context)),
-      subtitle: Text('按下音量键翻页，不再调节音量', style: _hintStyle(context)),
+      subtitle: Text('不再调节音量', style: _hintStyle(context)),
       value: _settings.volumeKeyPageTurn,
       onChanged: (value) =>
           _update(_settings.copyWith(volumeKeyPageTurn: value)),

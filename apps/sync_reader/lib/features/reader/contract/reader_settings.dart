@@ -21,6 +21,13 @@
 ///   原型每行约 45 字，而 19px 时只有约 38 字，密度观感差一截；
 /// - 仅改出厂默认值，**JSON schema 版本不变**（仍为 3）；[fromJson] 的
 ///   缺省回落逻辑不动——老用户已持久化的值仍优先，不被新默认覆盖。
+///
+/// v1.3.7（2026-11-17，用户实测反馈）：设置 UI 的「翻页模式 + 翻页动画」
+/// 两个控件**合并为一个**「翻页方式」——只有「滚动（上下）」与「分页（左右）」
+/// 两种方式。因此「上下滑动翻页」这一选项下线：[pageTurnAxis] 在**分页模式**
+/// 下**一律归一为 [ReaderPageTurnAxis.horizontal]**（[fromJson] 读回时归一，
+/// UI 写入时也写 horizontal）。JSON schema 版本**不变**（仍为 3，只增不删：
+/// `pageTurnAxis` 键仍在，只是不再产生 vertical 值）。
 library;
 
 import '../../../core/design_tokens.dart'
@@ -79,11 +86,14 @@ enum ReaderTheme {
   ReaderPalette get palette => toAppReaderTheme().palette;
 }
 
-/// 翻页模式。
+/// 翻页模式：滚动（连续上下滑动）/ 分页（一页一页翻）。
 enum ReaderPageMode { scroll, page }
 
-/// 翻页动画方式（B5）：上下滑动为默认（正文像滚动一样纵向推移），
-/// 左右翻页横向推移。仅分页模式有意义。
+/// 翻页方向（B5 起存在；**v1.3.7 起 UI 不再单独暴露**——设置里只有
+/// 「滚动（上下）/ 分页（左右）」一种选择，分页模式一律「左右翻页」）。
+///
+/// 仅 txt 渲染器读它（PageView 轴向）；epub 的分页是「连续排版 + 按屏
+/// 吸附」（纵向），md 始终滚动。
 enum ReaderPageTurnAxis { vertical, horizontal }
 
 /// 段距（B4）：以**整行**为单位的段间空行数——「紧」= 段间无空行仅靠
@@ -125,7 +135,7 @@ class ReaderSettings {
     this.theme = ReaderTheme.paper,
     this.fontFamily,
     this.pageMode = ReaderPageMode.page,
-    this.pageTurnAxis = ReaderPageTurnAxis.vertical,
+    this.pageTurnAxis = ReaderPageTurnAxis.horizontal,
     this.paragraphGap = ReaderParagraphGap.tight,
     this.firstLineIndent = true,
     this.nightBrightness = 1.0,
@@ -135,7 +145,8 @@ class ReaderSettings {
 
   /// 出厂默认（v1.3 视觉对齐：正文 16px / 行高 1.95 / 页边距 24，依据原型
   /// 16px 正文 + 720px 正文列；Q9 默认分页；
-  /// Q2 默认衬线——由字体解析把 null 解析为衬线栈；B5 默认上下滑动）。
+  /// Q2 默认衬线——由字体解析把 null 解析为衬线栈；
+  /// v1.3.7：翻页方向默认「左右」（UI 只提供滚动（上下）/ 分页（左右）两种方式）。
   static const ReaderSettings defaults = ReaderSettings();
 
   /// 正文字号（逻辑像素；出厂默认 16，范围 12–32、步进 1，A14）。
@@ -227,6 +238,16 @@ class ReaderSettings {
       _ => 1,
     };
     final readsEnumThemeDirectly = schemaVersion >= 2;
+    final pageMode =
+        enumByName(ReaderPageMode.values, json['pageMode']) ??
+        defaults.pageMode;
+    // 翻页方向（v1.3.7）：UI 只提供「滚动（上下）/ 分页（左右）」两种方式，
+    // 「上下滑动翻页」选项已下线 → **分页模式一律归一为「左右翻页」**。
+    // 旧数据里的 vertical 读回时即归一（存量用户升级后行为一致）。
+    final pageTurnAxis = pageMode == ReaderPageMode.page
+        ? ReaderPageTurnAxis.horizontal
+        : (enumByName(ReaderPageTurnAxis.values, json['pageTurnAxis']) ??
+              defaults.pageTurnAxis);
     return ReaderSettings(
       fontSize: switch (json['fontSize']) {
         final num n => n.toDouble(),
@@ -247,12 +268,8 @@ class ReaderSettings {
         final String s => s,
         _ => null,
       },
-      pageMode:
-          enumByName(ReaderPageMode.values, json['pageMode']) ??
-          defaults.pageMode,
-      pageTurnAxis:
-          enumByName(ReaderPageTurnAxis.values, json['pageTurnAxis']) ??
-          defaults.pageTurnAxis,
+      pageMode: pageMode,
+      pageTurnAxis: pageTurnAxis,
       paragraphGap:
           enumByName(ReaderParagraphGap.values, json['paragraphGap']) ??
           defaults.paragraphGap,
