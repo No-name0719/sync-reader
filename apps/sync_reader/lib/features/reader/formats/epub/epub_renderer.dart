@@ -1562,9 +1562,27 @@ class _EpubContentPaneState extends State<_EpubContentPane> {
           },
         );
         if (!isPage) return list;
-        // page 模式：视口按「本页内容高度」裁剪——页尾留白（不足一行），
-        // 不把下一行的上半截露在本页页尾（页界切字的老毛病）。
-        return _EpubPageViewport(renderer: r, child: list);
+        // page 模式（分页视图）**不挂框架自动滚动条**。
+        //
+        // 原因：滚动条滑块的长度与位置来自惰性列表的**估算**总高——未构建的
+        // 块按原型估高、离开惰性窗口被回收的块退回估高。epub 的块高差异
+        // 极大（整页插图 ≈500px、普通段落 ≈50px），于是每翻一页（构建/回收
+        // 一批块）总高估计就跳变数百像素 → 滑块一边变长一边跳位，正是用户
+        // 实测的「往下翻页时右侧滚动条上下挑动」。
+        //
+        // 分页视图里像素级滚动条本就没有意义（翻页是离散的，拖滚动条也无法
+        // 定位到"第几页"），阅读位置由阅读器底部的进度轨承载（与 txt 分页
+        // 的 PageView 一致：分页视图本就没有滚动条）。
+        //
+        // 注意：[ScrollBehavior.copyWith] 会把 delegate 原样包一层
+        // （_WrappedScrollBehavior），应用自定义的 dragDevices（桌面鼠标
+        // 拖拽）仍然生效——这里只关 scrollbars。
+        return ScrollConfiguration(
+          behavior: ScrollConfiguration.of(context).copyWith(
+            scrollbars: false,
+          ),
+          child: _EpubPageViewport(renderer: r, child: list),
+        );
       },
     );
   }
