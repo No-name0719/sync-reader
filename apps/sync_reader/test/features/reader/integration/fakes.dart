@@ -142,6 +142,9 @@ class FakeHandler implements BookFormatHandler {
   /// createRenderer 调用次数。
   int createRendererCount = 0;
 
+  /// createRenderer 每次收到的设置（按序；用于断言「渲染器按什么设置创建」）。
+  final List<ReaderSettings> createdSettings = [];
+
   @override
   bool canHandle(String ext, Uint8List magicHeader) =>
       extensions.contains(ext.toLowerCase());
@@ -161,6 +164,7 @@ class FakeHandler implements BookFormatHandler {
     ProgressAnchor anchor,
   ) async {
     createRendererCount++;
+    createdSettings.add(settings);
     final error = createRendererError;
     if (error != null) throw error;
     return renderer ?? FakeRenderer();

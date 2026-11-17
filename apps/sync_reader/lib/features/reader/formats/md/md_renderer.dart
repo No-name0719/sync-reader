@@ -34,6 +34,7 @@ import '../../contract/progress_anchor.dart';
 import '../../contract/reader_controller.dart';
 import '../../contract/reader_settings.dart';
 import '../../contract/toc_entry.dart';
+import '../../reader_scroll_physics.dart';
 import 'md_block_parser.dart';
 import 'md_locator.dart';
 import 'md_style.dart';
@@ -646,6 +647,8 @@ class _MdReaderViewState extends State<_MdReaderView> {
                 );
                 return ListView.builder(
                   controller: renderer.scrollController,
+                  // 甩动位移封顶（阅读要可控，见 reader_scroll_physics）。
+                  physics: const ReaderScrollPhysics(),
                   padding: EdgeInsets.symmetric(
                     horizontal: horizontal,
                     vertical: margin,

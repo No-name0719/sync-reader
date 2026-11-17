@@ -2,7 +2,8 @@
 /// （排版计算用 debugSyncPagination 同步化以适配 FakeAsync）。
 /// v1.1：渲染器内置页脚已移除（页码/进度由宿主底部控制条承载，A8），
 /// 正文段落带 2em 首行缩进并两端对齐（A10）。
-/// v1.2：page 模式 PageView 轴向随翻页动画设置切换（B5），正文渲染用
+/// v1.2：page 模式 PageView 轴向随翻页方向切换（B5；v1.3.7 起方向固定
+/// 左右，UI 只提供「滚动（上下）/ 分页（左右）」两种方式），正文渲染用
 /// 页显示文本（页尾分页符不产生空行盒，B1）。
 library;
 
@@ -10,6 +11,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:flutter_test/flutter_test.dart';
@@ -121,7 +123,7 @@ void main() {
     renderer.dispose();
   });
 
-  group('v1.2 B5 翻页动画轴向', () {
+  group('翻页方向轴向（v1.3.7：按设备形态自动选）', () {
     Future<TxtRenderer> pumpPageMode(
       WidgetTester tester,
       ReaderSettings settings,
@@ -147,7 +149,11 @@ void main() {
       matching: find.byType(PageView),
     );
 
-    testWidgets('出厂默认（上下滑动）→ PageView 纵轴', (tester) async {
+    testWidgets('桌面视口（宽）→ PageView 纵轴（与滚轮/鼠标拖拽同向）', (
+      tester,
+    ) async {
+      // v1.3.7：翻页方向不再是用户选项，按**设备形态**自动选——
+      // 电脑端用纵轴（鼠标滚轮与按住拖拽都是纵向的）。
       final renderer = await pumpPageMode(
         tester,
         ReaderSettings.defaults.copyWith(pageMode: ReaderPageMode.page),
@@ -155,11 +161,32 @@ void main() {
       final scrollable = tester.widget<Scrollable>(
         find.descendant(of: pageViewFinder(), matching: find.byType(Scrollable)),
       );
-      expect(scrollable.axis, Axis.vertical, reason: 'B5：上下滑动为默认');
+      expect(scrollable.axis, Axis.vertical, reason: '电脑端分页 = 上下拖拽翻页');
       renderer.dispose();
     });
 
-    testWidgets('左右翻页设置 → PageView 横轴', (tester) async {
+    testWidgets('手机视口（窄 ≤460）→ PageView 横轴（左右翻页手感）', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+      tester.view.devicePixelRatio = 3.0;
+      addTearDown(tester.view.reset);
+      final renderer = await pumpPageMode(
+        tester,
+        ReaderSettings.defaults.copyWith(pageMode: ReaderPageMode.page),
+      );
+      final scrollable = tester.widget<Scrollable>(
+        find.descendant(of: pageViewFinder(), matching: find.byType(Scrollable)),
+      );
+      expect(scrollable.axis, Axis.horizontal, reason: '手机端分页 = 左右翻页');
+      renderer.dispose();
+    });
+
+    testWidgets('持久化的翻页方向不再被采纳（方向按设备形态自动选）', (
+      tester,
+    ) async {
+      // v1.3.7：翻页方向从「用户选项」降级为「设备形态决定」，持久化里的
+      // 旧值（horizontal/vertical）一律不采纳——桌面视口下恒为纵轴。
       final renderer = await pumpPageMode(
         tester,
         ReaderSettings.defaults.copyWith(
@@ -170,7 +197,100 @@ void main() {
       final scrollable = tester.widget<Scrollable>(
         find.descendant(of: pageViewFinder(), matching: find.byType(Scrollable)),
       );
-      expect(scrollable.axis, Axis.horizontal, reason: 'B5：左右翻页切横轴');
+      expect(scrollable.axis, Axis.vertical, reason: '桌面视口恒为纵轴');
+      renderer.dispose();
+    });
+
+    testWidgets('v1.3.7：分页模式滚轮无效（只由键盘/触摸滑动翻页）', (
+      tester,
+    ) async {
+      final renderer = await pumpPageMode(
+        tester,
+        ReaderSettings.defaults.copyWith(pageMode: ReaderPageMode.page),
+      );
+      /// PageView 的滚动偏移（分页位置；null = 尚未挂载）。
+      double? pageOffset() {
+        final scrollable = tester.widget<Scrollable>(
+          find.descendant(
+            of: pageViewFinder(),
+            matching: find.byType(Scrollable),
+          ),
+        );
+        final controller = scrollable.controller;
+        if (controller == null || !controller.hasClients) return null;
+        return controller.position.pixels;
+      }
+
+      final before = pageOffset();
+
+      // 滚一格（纵向 100 = Windows 一档）：分页模式下不得翻页、也不得滚动。
+      await tester.sendEventToBinding(
+        const PointerScrollEvent(
+          position: Offset(200, 300),
+          scrollDelta: Offset(0, 100),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        pageOffset(),
+        before,
+        reason: '滚轮不得驱动 PageView 翻页（分页模式只认键盘与触摸滑动）',
+      );
+      renderer.dispose();
+    });
+
+    testWidgets('v1.3.7：分页模式鼠标拖动不翻页（触摸滑动仍可）', (
+      tester,
+    ) async {
+      final renderer = await pumpPageMode(
+        tester,
+        ReaderSettings.defaults.copyWith(pageMode: ReaderPageMode.page),
+      );
+
+      /// PageView 的滚动偏移（分页位置）。
+      double? pageOffset() {
+        final scrollable = tester.widget<Scrollable>(
+          find.descendant(
+            of: pageViewFinder(),
+            matching: find.byType(Scrollable),
+          ),
+        );
+        final controller = scrollable.controller;
+        if (controller == null || !controller.hasClients) return null;
+        return controller.position.pixels;
+      }
+
+      final before = pageOffset();
+
+      // 鼠标拖动：分页模式不得被拖动翻页。
+      // 滑动幅度须超过半页（PageView 的翻页阈值 ≈ 284px），否则会被吸附回去。
+      final mouse = await tester.startGesture(
+        const Offset(200, 400),
+        kind: PointerDeviceKind.mouse,
+      );
+      await mouse.moveBy(const Offset(0, -400));
+      await mouse.up();
+      await tester.pumpAndSettle();
+      expect(
+        pageOffset(),
+        before,
+        reason: '分页模式不得用鼠标拖动翻页（只用键盘与触摸滑动）',
+      );
+
+      // 触摸滑动仍可翻页（手机端主交互不能被误伤）。
+      final touch = await tester.startGesture(
+        const Offset(200, 400),
+        kind: PointerDeviceKind.touch,
+      );
+      await touch.moveBy(const Offset(0, -400));
+      await touch.up();
+      await tester.pumpAndSettle();
+      expect(
+        pageOffset(),
+        isNot(before),
+        reason: '触摸滑动仍应能翻页',
+      );
       renderer.dispose();
     });
 

@@ -13,6 +13,7 @@
 /// `@container vp (max-width: 460px)` 一致。
 library;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 /// 顶部控制条高度（原型 `.rd-top`：54px）。
@@ -26,6 +27,23 @@ const double kReaderBottomBarHeightNarrow = 54;
 
 /// 窄视口断点（原型 `@container vp (max-width: 460px)`）。
 const double kReaderNarrowBreakpoint = 460;
+
+/// 分页模式的**拖拽设备集合：不含鼠标**。
+///
+/// 用户决定（v1.3.7）：分页模式的翻页只由**键盘**（↑/↓/PageUp/PageDown/
+/// 空格）与**触摸滑动**控制——鼠标拖动与滚轮都不参与（鼠标拖动会把正文在
+/// 页中间拖着走，页界随之失效；滚轮同理）。
+///
+/// 生效方式：Scrollable 的拖拽识别器按 `supportedDevices` 过滤（见 Flutter
+/// `Scrollable.build`），把 mouse 从设备集合里去掉，鼠标拖动即失效，触摸
+/// 滑动照常。滚动模式**不受影响**（桌面端仍可按住拖动滚动正文）。
+const Set<PointerDeviceKind> kReaderTouchOnlyDragDevices =
+    <PointerDeviceKind>{
+      PointerDeviceKind.touch,
+      PointerDeviceKind.stylus,
+      PointerDeviceKind.invertedStylus,
+      PointerDeviceKind.unknown,
+    };
 
 /// 正文区垂直内缩：保证正文不被顶条/底条/系统栏遮挡。
 ///

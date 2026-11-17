@@ -40,6 +40,7 @@ import '../../contract/progress_anchor.dart';
 import '../../contract/reader_controller.dart';
 import '../../contract/reader_settings.dart';
 import '../../contract/toc_entry.dart';
+import '../../reader_chrome.dart';
 import '../../reader_indent.dart';
 import 'txt_book_parser.dart';
 import 'txt_chapter_anchor.dart';
@@ -730,10 +731,11 @@ bool _hitTestParagraph(RenderObject? renderObject, Offset global) {
 ///
 /// PageView itemCount = 章页数 + 2：首尾各一"章间页"，滑入即切换到相邻章
 /// （下一章落章首 / 上一章落末页），页表在 isolate 计算期间显示加载态。
-/// B5：轴向随设置的翻页动画方式切换（上下滑动 = 纵轴 / 左右翻页 = 横轴），
-/// 委托翻页走 animateToPage 播放推移动画；拖拽翻页由 PageView 原生手势承担。
-/// 滚轮在页项内抢注 PointerSignalResolver（见 [_TxtPagePaneState
-/// ._onPointerSignal]）：一档滚轮 = 翻一页，绕开 PageView 的小幅滚动回弹。
+/// B5/v1.3.7：轴向**按设备形态自动选**（窄视口 = 横轴左右翻页，宽视口 =
+/// 纵轴），委托翻页走 animateToPage 播放推移动画；**鼠标拖动翻页已禁用**
+/// （见 [kReaderTouchOnlyDragDevices]），触摸滑动翻页由 PageView 原生手势承担。
+/// 分页模式下滚轮被**吞掉**（见 [_TxtPagePaneState._swallowWheel]）：
+/// 翻页只由键盘与触摸滑动控制（v1.3.7 用户决定）。
 /// 视口尺寸变化防抖 150ms 后整章重分页（否则旧页表在新视口上出现半行）。
 class _TxtPagePane extends StatefulWidget {
   const _TxtPagePane({required this.renderer, required this.content});
@@ -766,9 +768,6 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
   /// 视口尺寸变化防抖：拖拽缩放窗口时 LayoutBuilder 每帧改尺寸，逐帧
   /// 整章重分页会刷爆 isolate；静默 150ms 后一次性重载。
   Timer? _resizeDebounce;
-
-  /// 滚轮累积量：一档滚轮 ≈ 96–120 逻辑像素，累积过阈值翻一页并清零。
-  double _wheelAccum = 0;
 
   /// 首帧已画出：[[_loadChapter]] 首次经 initState 链调用，不得 setState。
   bool _shownOnce = false;
@@ -960,33 +959,20 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
     return _hitTestParagraph(context.findRenderObject(), global);
   }
 
-  /// 滚轮翻页：一档滚轮 = 翻一页（累积小步过阈值触发，触控板细步也能翻）。
+  /// 分页模式：**吞掉滚轮事件**（不翻页，正文也不因滚轮而动）。
+  ///
+  /// v1.3.7：分页模式的翻页**只由键盘**（↑/↓/PageUp/PageDown/空格）与
+  /// **触摸滑动**控制——滚轮在分页模式下既不翻页也不滚动（用户实测：分页模式
+  /// 下用滚轮会乱翻）。
   ///
   /// 必须挂在**每个页项内部**而不能包在 PageView 外面：滚轮经
-  /// PointerSignalResolver 分发，采用**最深（最先注册）**的回调——页项
-  /// 内部比 PageView 的 Scrollable 更深，这里抢先注册后 Scrollable 的
-  /// 滚轮注册失效，PageView 不再收到滚轮的小幅滚动 + 回弹（原表现：
-  /// 一档滚不动、缩回去）。触控/鼠标拖拽翻页走手势竞技场，不受影响。
-  void _onPointerSignal(PointerSignalEvent event) {
+  /// PointerSignalResolver 分发，采用**最深（最先注册）**的回调——页项内部
+  /// 比 PageView 的 Scrollable 更深，这里抢先注册后 Scrollable 的滚轮注册
+  /// 失效，PageView 不再收到滚轮（否则桌面端竖轴 PageView 会被滚轮推动）。
+  void _swallowWheel(PointerSignalEvent event) {
     if (event is! PointerScrollEvent) return;
-    final horizontal =
-        widget.renderer.settings.pageTurnAxis == ReaderPageTurnAxis.horizontal;
-    // 横轴模式优先取横向滚轮分量；普通鼠标只有纵向滚轮，同样接受。
-    final delta = horizontal
-        ? (event.scrollDelta.dx != 0 ? event.scrollDelta.dx : event.scrollDelta.dy)
-        : event.scrollDelta.dy;
-    if (delta == 0) return;
     GestureBinding.instance.pointerSignalResolver.register(event, (event) {
-      _wheelAccum += delta;
-      const threshold = 60;
-      if (_wheelAccum >= threshold) {
-        _wheelAccum = 0;
-        unawaited(_turnPage(1));
-      } else if (_wheelAccum <= -threshold) {
-        _wheelAccum = 0;
-        unawaited(_turnPage(-1));
-      }
-      // 标记事件已处理：祖先滚动视图不得再用平台默认行为响应它。
+      // 标记事件已处理：Scrollable 不得再用滚轮滚动正文。
       (event as PointerScrollEvent).respond(allowPlatformDefault: false);
     });
   }
@@ -998,25 +984,32 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
     final pages = _pages;
     final pageCtrl = _pageCtrl;
     final margin = widget.renderer.settings.pageMargin;
-    // B5：翻页动画方式 → PageView 轴向（上下滑动 = 纵轴，左右翻页 = 横轴）。
-    final axis = widget.renderer.settings.pageTurnAxis ==
-            ReaderPageTurnAxis.horizontal
-        ? Axis.horizontal
-        : Axis.vertical;
-    return Padding(
-      padding: EdgeInsets.symmetric(vertical: margin),
-      child: (pageCtrl == null || pages == null)
-          ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
-          : PageView.builder(
+    // 翻页方向（v1.3.7）：**按设备形态自动选**，不再作为用户选项——
+    // 移动端（窄视口 ≤460）用横轴（左右翻页的翻书手感）；
+    // 桌面端用纵轴（正文纵向排版，纵轴翻页与阅读方向一致）。
+    final narrow = MediaQuery.sizeOf(context).width <= kReaderNarrowBreakpoint;
+    final axis = narrow ? Axis.horizontal : Axis.vertical;
+    // 分页模式：**不接受鼠标拖动**（见 [kReaderTouchOnlyDragDevices]）——
+    // 鼠标拖动翻页与滚轮一样会打乱页界；触摸滑动与键盘照常。
+    return ScrollConfiguration(
+      behavior: ScrollConfiguration.of(context).copyWith(
+        dragDevices: kReaderTouchOnlyDragDevices,
+      ),
+      child: Padding(
+        padding: EdgeInsets.symmetric(vertical: margin),
+        child: (pageCtrl == null || pages == null)
+            ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+            : PageView.builder(
               controller: pageCtrl,
               scrollDirection: axis,
               itemCount: pages.length + 2,
               onPageChanged: _onPageChanged,
               itemBuilder: (context, global) {
-                // 页项内的 Listener 抢注滚轮事件（见 _onPointerSignal 注释）；
-                // opaque 让页边空白处也命中。
+                // 页项内的 Listener 抢注滚轮事件（见 _swallowWheel 注释）：
+                // 分页模式下滚轮被吞掉（不翻页、不滚动）；opaque 让页边空白
+                // 处也命中。
                 return Listener(
-                  onPointerSignal: _onPointerSignal,
+                  onPointerSignal: _swallowWheel,
                   behavior: HitTestBehavior.opaque,
                   child: (global == 0 || global == pages.length + 1)
                       ? Center(
@@ -1058,6 +1051,7 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
                 );
               },
             ),
+      ),
     );
   }
 

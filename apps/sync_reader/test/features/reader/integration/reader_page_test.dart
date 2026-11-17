@@ -268,12 +268,12 @@ void main() {
       await tester.pump();
 
       // 提示可见（Q10：进入阅读器即显示）。
-      expect(find.text('点按空白处显示菜单 · 上滑／下滑翻页'), findsOneWidget);
+      expect(find.text('滑动翻页'), findsOneWidget);
       double hintOpacity() => tester
           .widget<AnimatedOpacity>(
             find
                 .ancestor(
-                  of: find.text('点按空白处显示菜单 · 上滑／下滑翻页'),
+                  of: find.text('滑动翻页'),
                   matching: find.byType(AnimatedOpacity),
                 )
                 .first,
@@ -349,7 +349,7 @@ void main() {
     expect(find.text('第一章 起点'), findsNothing);
   });
 
-  testWidgets('目录抽屉：应用外壳配色 + 336 宽 + 品牌色当前项（单元 3 对齐原型）', (
+  testWidgets('目录抽屉：应用外壳配色 + 420 宽 + 品牌色当前项', (
     tester,
   ) async {
     final renderer = await pumpReady(
@@ -372,8 +372,8 @@ void main() {
       tester.element(find.descendant(of: find.byType(Drawer), matching: find.byType(Column)).first),
     ).colorScheme;
 
-    // 宽度 336（原型 `.rd-drawer{width:336px}`，与 Aa 排版面板同宽）。
-    expect(tester.widget<Drawer>(find.byType(Drawer)).width, 336);
+    // 宽度 420（v1.3.7 由原型的 336 调宽：电脑端章名长，336 下大量截断）。
+    expect(tester.widget<Drawer>(find.byType(Drawer)).width, 420);
 
     // 抽屉底色 = 应用外壳 surface（不是阅读主题底色）：由 Drawer 的
     // Material 承载（内层不铺底色，条目 hover 的 `--surface-3` 才能透出）。
@@ -544,5 +544,66 @@ void main() {
     expect(renderer.applySettingsCount, 1);
     expect(renderer.lastApplied?.fontSize, 26);
     expect(renderer.lastApplied?.theme, ReaderTheme.beige);
+  });
+
+  group('v1.3.6：新打开的书必须用当前设置（不得回退出厂默认）', () {
+    // 用户实测：「移动端无法切换滚动和分页模式」——切到滚动后换一本书，
+    // 翻页模式又变回默认分页：打开链路取的是仓库 load() 的**首次快照**。
+    testWidgets('改过设置后新开的书：渲染器按新设置创建', (tester) async {
+      final handler = FakeHandler();
+      await makeEnv(handler);
+      await db!.booksDao.upsertCompanion(bookRow('b1'));
+      await db!.booksDao.upsertCompanion(bookRow('b2'));
+
+      // 先开第一本（触发仓库首次 load → 旧实现此后一直返回该快照）。
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container!,
+          child: const MaterialApp(
+            home: ReaderPage(key: ValueKey('b1'), bookId: 'b1'),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      // 用户把翻页模式切到滚动（等价于在 Aa 面板里切）。
+      await container!
+          .read(readerSettingsRepositoryProvider)
+          .save(
+            ReaderSettings.defaults.copyWith(
+              pageMode: ReaderPageMode.scroll,
+              fontSize: 24,
+            ),
+          );
+      await tester.pump();
+
+      // 再开第二本：渲染器创建时用的设置必须是**当前**设置。
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container!,
+          child: const MaterialApp(
+            home: ReaderPage(key: ValueKey('b2'), bookId: 'b2'),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+      // 打开链路（查书行 → 读设置 → 建渲染器）跨多个异步轮次：再泵几帧。
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(
+        handler.createdSettings,
+        isNotEmpty,
+        reason: '第二本应创建渲染器',
+      );
+      expect(
+        handler.createdSettings.last.pageMode,
+        ReaderPageMode.scroll,
+        reason: '换书后翻页模式不得回退默认分页',
+      );
+      expect(handler.createdSettings.last.fontSize, 24, reason: '字号也不得回退默认');
+    });
   });
 }

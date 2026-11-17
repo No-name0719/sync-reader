@@ -22,8 +22,9 @@
 /// 本测试钉死三条契约：
 /// 1. page 模式（桌面平台）：正文视图里**没有** [Scrollbar]；
 /// 2. scroll 模式（桌面平台）：**仍有** [Scrollbar]（滚动视图要能拖）；
-/// 3. 关滚动条**不得**影响桌面鼠标拖拽（[ScrollBehavior.copyWith] 只包一层
-///    delegate，dragDevices 仍由应用自己的 [AppScrollBehavior] 提供）。
+/// 3. page 模式的拖拽设备集合 = **仅触摸**（v1.3.7 用户决定：分页模式不用
+///    鼠标拖动翻页，见 [kReaderTouchOnlyDragDevices]）；而**滚动模式**仍由
+///    应用自己的 [AppScrollBehavior] 提供（含鼠标，桌面可拖动滚动）。
 library;
 
 import 'dart:io';
@@ -134,7 +135,7 @@ void main() {
     );
   });
 
-  testWidgets('关滚动条不影响桌面鼠标拖拽（dragDevices 仍含 mouse）', (
+  testWidgets('page 模式：拖拽设备仅触摸（分页模式禁用鼠标拖动翻页）', (
     tester,
   ) async {
     final bf = (await tester.runAsync(writeEpubBook))!;
@@ -145,19 +146,41 @@ void main() {
 
     await pumpReader(tester, renderer);
 
-    // 视图**内部**的 ScrollConfiguration（渲染器为分页视图关掉滚动条的那层）。
-    final inner = find.descendant(
-      of: find.byKey(readerRootKey),
-      matching: find.byType(ScrollConfiguration),
+    // v1.3.7 用户决定：分页模式**不用鼠标拖动翻页**（只用键盘 + 触摸滑动）。
+    final behavior = ScrollConfiguration.of(
+      tester.element(find.byType(ListView)),
     );
-    expect(inner, findsOneWidget, reason: '分页视图内应有一层 ScrollConfiguration');
-    final behavior = tester.widget<ScrollConfiguration>(inner).behavior;
+    expect(
+      behavior.dragDevices,
+      isNot(contains(PointerDeviceKind.mouse)),
+      reason: '分页模式不得接受鼠标拖动',
+    );
+    expect(
+      behavior.dragDevices,
+      contains(PointerDeviceKind.touch),
+      reason: '触摸滑动仍须可用（手机端主交互）',
+    );
+  });
+
+  testWidgets('scroll 模式：拖拽设备仍含 mouse（桌面可拖动滚动正文）', (
+    tester,
+  ) async {
+    final bf = (await tester.runAsync(writeEpubBook))!;
+    final renderer = (await tester.runAsync(
+      () => openRenderer(bf, mode: ReaderPageMode.scroll),
+    ))!;
+    addTearDown(renderer.dispose);
+
+    await pumpReader(tester, renderer);
+
+    // 滚动模式不受「仅触摸」限制——桌面仍可按住鼠标拖动滚动正文。
+    final behavior = ScrollConfiguration.of(
+      tester.element(find.byType(ListView)),
+    );
     expect(
       behavior.dragDevices,
       contains(PointerDeviceKind.mouse),
-      reason:
-          'ScrollBehavior.copyWith 只包一层 delegate，应用自定义的'
-          'AppScrollBehavior.dragDevices（桌面鼠标拖拽）必须仍然生效',
+      reason: '滚动模式仍应允许桌面鼠标拖动滚动正文',
     );
   });
 }

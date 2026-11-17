@@ -1107,12 +1107,14 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   }
 
   /// 首次进入轻提示文案（随翻页方式变化，B5/B6；对齐原型 rd-hint）。
+  ///
+  /// v1.3.7：分页只提示「滑动翻页」不写方向——txt 的分页是左右滑动翻页，
+  /// epub 的分页是纵向滑动按屏吸附（连续排版），统一措辞不误导。
+  /// 只留手势提示，不再写「点按空白处显示菜单」——桌面端点击正文同样会
+  /// 切换控件，原措辞不准确。
   String get _entryHintText => switch (_readerSettings.pageMode) {
-    ReaderPageMode.page => switch (_readerSettings.pageTurnAxis) {
-      ReaderPageTurnAxis.horizontal => '点按空白处显示菜单 · 左右滑动翻页',
-      ReaderPageTurnAxis.vertical => '点按空白处显示菜单 · 上滑／下滑翻页',
-    },
-    ReaderPageMode.scroll => '点按空白处显示菜单 · 滚动阅读',
+    ReaderPageMode.page => '滑动翻页',
+    ReaderPageMode.scroll => '上下滑动滚动阅读',
   };
 
   /// 当前章标题（顶/底条与目录抽屉共用；经渲染器的
@@ -1188,8 +1190,11 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     final scheme = Theme.of(context).colorScheme;
     final brand = scheme.primary;
     return Drawer(
-      // 336 = 原型 `.rd-drawer{width:336px}`（与 Aa 排版面板同宽）。
-      width: 336,
+      // 目录抽屉宽度：v1.3.7 由 336（原型的 `.rd-drawer{width:336px}`）
+      // 调宽到 **420** —— 电脑端章名较长，336 下大量截断（用户反馈
+      // 「调宽电脑端右侧栏」）。Aa 排版面板仍为 336（面板内容固定宽，
+      // 无需放宽）。
+      width: 420,
       // 底色 = 应用外壳 surface（原型 `--surface`）：抽屉 Material 自身也要
       // 用外壳色，否则 M3 默认 surfaceContainerLow 会在边缘露出来。
       backgroundColor: scheme.surface,
@@ -1397,7 +1402,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
           const Text('正文尚未下载'),
           const SizedBox(height: 8),
           Text(
-            '该书来自云端同步，下载正文后即可阅读',
+            '下载正文后即可阅读',
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: 16),
