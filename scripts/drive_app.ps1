@@ -18,7 +18,7 @@
 param(
     [ValidateSet('Find', 'Focus', 'Click', 'ClickClient', 'Move', 'Drag', 'Wheel',
         'Keys', 'HoldKey', 'Shot', 'ShotClient', 'ClientRect', 'ResizeClient', 'Screen',
-        'Rect', 'Resize', 'List', 'Displays', 'MoveToDisplay', 'RestoreFocus')]
+        'Rect', 'Resize', 'List', 'Displays', 'MoveToDisplay', 'RestoreFocus', 'Close')]
     [string]$Action = 'List',
 
     # 按窗口标题模糊匹配（默认匹配标题含该子串的窗口）
@@ -88,6 +88,8 @@ public class Win32Drive {
     public static extern int GetClassNameW(IntPtr hWnd, StringBuilder text, int count);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc proc, IntPtr lParam);
     [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc proc, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hWnd, ref POINT pt);
     [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr hWnd);
@@ -480,6 +482,26 @@ switch ($Action) {
         $w2 = Get-TargetWindow -Filter $Title -ProcName $Process
         $sc = Get-WindowScale -Win $w2
         Write-Host "moved to display $($d.DeviceName) ($($d.X),$($d.Y)) -> window $($w2.Width)x$($w2.Height) at $($w2.X),$($w2.Y) | scale=$sc"
+    }
+    'Close' {
+        # 关闭耗时实测：发 WM_CLOSE（等同点标题栏的 X）→ 轮询窗口何时消失，
+        # 再等进程退出 → 分别报「窗口消失」与「进程退出」的耗时（毫秒）。
+        $w = Get-TargetWindow -Filter $Title -ProcName $Process
+        $pid0 = $w.ProcessId
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        [void][Win32Drive]::PostMessage($w.Handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)  # WM_CLOSE
+        $gone = -1
+        while ($sw.ElapsedMilliseconds -lt 120000) {
+            if (-not [Win32Drive]::IsWindow($w.Handle)) { $gone = $sw.ElapsedMilliseconds; break }
+            Start-Sleep -Milliseconds 20
+        }
+        $exited = -1
+        while ($sw.ElapsedMilliseconds -lt 120000) {
+            $alive = Get-Process -Id $pid0 -ErrorAction SilentlyContinue
+            if (-not $alive) { $exited = $sw.ElapsedMilliseconds; break }
+            Start-Sleep -Milliseconds 20
+        }
+        Write-Host "close: window-gone=$gone ms, process-exit=$exited ms"
     }
     'RestoreFocus' {
         # 把前台焦点还给驱动前的窗口（用户的主屏工作不被夺走）。
