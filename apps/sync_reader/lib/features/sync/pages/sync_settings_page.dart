@@ -29,6 +29,7 @@ import '../../../app/providers.dart';
 import '../../../core/app_logger.dart';
 import '../../../core/design_tokens.dart';
 import '../../../core/log_exporter.dart';
+import '../../../shared/copy.dart';
 import '../../../shared/format_utils.dart';
 import '../../library/orphan/orphan_book_file.dart';
 import '../../library/orphan/orphan_panel_controller.dart';
@@ -650,7 +651,7 @@ final class _MainCardState extends ConsumerState<_MainCard> {
       result = const ConnectionTestResult(
         steps: [],
         success: false,
-        failureText: '连接测试执行异常，请稍后重试',
+        failureText: kConnectionTestExceptionText,
       );
     }
     if (!mounted) return;
@@ -776,7 +777,7 @@ final class _MainCardState extends ConsumerState<_MainCard> {
 
         // ── 「立即同步」独立行（FR-409）──
         _SettingsRow(
-          title: '立即同步',
+          title: '手动同步',
           desc: _syncDesc(),
           descColor: memory.id == SyncStateId.failed ? t.text3 : null,
           trailing: FilledButton.icon(
@@ -817,7 +818,7 @@ final class _MainCardState extends ConsumerState<_MainCard> {
               '自动同步',
               style: t.sm.copyWith(fontWeight: FontWeight.w600),
             ),
-            subtitle: Text('启动 / 回前台 / 定时 / 网络恢复时自动触发', style: t.tertiary),
+            subtitle: Text('定时与网络恢复时自动触发', style: t.tertiary),
             value: prefs.autoSyncEnabled,
             onChanged: (value) => ref
                 .read(syncPreferencesProvider.notifier)
@@ -833,7 +834,7 @@ final class _MainCardState extends ConsumerState<_MainCard> {
               '仅 Wi-Fi 下载正文',
               style: t.sm.copyWith(fontWeight: FontWeight.w600),
             ),
-            subtitle: Text('元数据不受限；正文下载避开移动网络', style: t.tertiary),
+            subtitle: Text('正文下载避开移动网络', style: t.tertiary),
             value: prefs.wifiOnlyContent,
             onChanged: (value) => ref
                 .read(syncPreferencesProvider.notifier)
@@ -852,8 +853,8 @@ final class _MainCardState extends ConsumerState<_MainCard> {
             ),
             subtitle: Text(
               prefs.quotaOverride
-                  ? '已越权放行：本月正文下载将继续，额度管控次月自动恢复'
-                  : '流量超限后手动放行，继续下载正文（消耗坚果云额度）',
+                  ? '本月正文下载将继续'
+                  : '流量超限后放行，继续下载正文',
               style: t.tertiary,
             ),
             value: prefs.quotaOverride,
@@ -953,9 +954,9 @@ class _QuotaCard extends ConsumerWidget {
     // 提示条优先级：100% 挂起 > 80% 提醒 > 内存侧实时告警兜底（docs/04 §8.3）。
     final String? bannerText;
     if (snap.downExceeded) {
-      bannerText = '正文传输已全部挂起，可通过「配额越权」开关继续（将消耗坚果云额度）';
+      bannerText = '正文传输已全部挂起，可在「配额越权」开关继续（将消耗坚果云额度）';
     } else if (snap.warn) {
-      bannerText = '坚果云流量已用超 80%，自动下载已暂停；元数据同步不受影响。正文仍可手动继续下载。';
+      bannerText = '本月同步流量已超过 80%，自动下载已暂停；元数据同步不受影响。正文仍可手动继续下载。';
     } else {
       bannerText = statusWarnText;
     }
@@ -1201,7 +1202,6 @@ final class _NotUploadedCardState extends ConsumerState<_NotUploadedCard> {
         ],
       ),
       children: [
-        Text('本地有正文、但不在云端。它们不会自动上传（其它设备看不到），可以随时手动上架。', style: t.tertiary),
         if (total == 0) ...[
           const SizedBox(height: AppSpacing.s3),
           widget.configured
@@ -1336,7 +1336,7 @@ class _CloudLibCard extends StatelessWidget {
           ),
         ),
         const SizedBox(height: AppSpacing.s2),
-        Text('云端已有的书（含其它设备上传的）。可以从中移除不再需要的，减少云端书库数量。', style: t.tertiary),
+        Text('含其它设备上传的书', style: t.tertiary),
       ],
     );
   }
@@ -1346,6 +1346,8 @@ class _CloudLibCard extends StatelessWidget {
 
 class _MaintenanceCard extends ConsumerWidget {
   const _MaintenanceCard();
+
+  static final _log = AppLogger();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1359,7 +1361,7 @@ class _MaintenanceCard extends ConsumerWidget {
         _SettingsRow(
           leading: Icons.article_outlined,
           title: '导出诊断日志',
-          desc: '最近日志经二次脱敏后另存为 txt 文件',
+          desc: '另存为 txt 文件',
           trailing: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1404,7 +1406,8 @@ class _MaintenanceCard extends ConsumerWidget {
         ),
       );
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('导出失败：$e')));
+      _log.error('导出诊断日志失败', e);
+      messenger.showSnackBar(const SnackBar(content: Text('导出失败，请稍后重试')));
     }
   }
 
@@ -1419,7 +1422,7 @@ class _MaintenanceCard extends ConsumerWidget {
       builder: (context) => AlertDialog(
         title: const Text('清空日志？'),
         content: const Text(
-          '将清空内存中的诊断日志缓冲，'
+          '将清空诊断日志，'
           '书库、阅读进度与云端数据不受影响。',
         ),
         actions: [
@@ -1476,7 +1479,7 @@ class _DangerCard extends ConsumerWidget {
       builder: (context) => AlertDialog(
         title: const Text('清除凭据？'),
         content: const Text(
-          '将删除安全存储中的账号与应用密码，'
+          '将删除账号与应用密码，'
           '本地书库与阅读进度不受影响。',
         ),
         actions: [

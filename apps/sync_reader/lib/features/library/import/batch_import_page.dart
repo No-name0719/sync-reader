@@ -16,6 +16,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/design_tokens.dart';
+import '../../../shared/copy.dart';
 import '../../../shared/format_utils.dart';
 import 'batch_import_controller.dart';
 import 'book_import_service.dart' show ImportProgress, ImportSummary;
@@ -49,7 +50,7 @@ class _BatchImportPageState extends ConsumerState<BatchImportPage> {
       directoryPath = await picker.pickDirectory();
     } catch (e) {
       if (!mounted) return;
-      setState(() => _pickerError = '无法打开文件夹选择器：$e');
+      setState(() => _pickerError = '无法打开文件夹选择器');
       return;
     }
     if (directoryPath == null) return; // 用户取消：静默返回。
@@ -146,15 +147,7 @@ class _ChooserCard extends StatelessWidget {
                         color: t.brand,
                       ),
                       const SizedBox(height: AppSpacing.s3),
-                      Text('批量导入（文件夹）', style: t.h3),
-                      const SizedBox(height: AppSpacing.s2),
-                      Text(
-                        '选择一个文件夹，SyncReader 将递归扫描其中所有支持的'
-                        '书籍文件（txt / epub / md / pdf），列出清单供你确认后'
-                        '一次导入。已在本库的书会按内容去重标注。',
-                        style: t.sm.copyWith(color: t.text2),
-                        textAlign: TextAlign.center,
-                      ),
+                      Text(kBatchImportFolderTitle, style: t.h3),
                       const SizedBox(height: AppSpacing.s5),
                       FilledButton.icon(
                         key: const ValueKey('batch-pick-folder'),
@@ -472,8 +465,11 @@ class _ImportProgressStrip extends StatelessWidget {
                 child: Text(
                   progress == null
                       ? '准备导入…'
-                      : '正在导入（${progress!.completed}/${progress!.total}）：'
-                            '${progress!.currentName}',
+                      : importProgressLabel(
+                          progress!.completed,
+                          progress!.total,
+                          progress!.currentName,
+                        ),
                   style: t.sm.copyWith(fontWeight: FontWeight.w600),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -770,7 +766,7 @@ class _BottomBar extends StatelessWidget {
                 const SizedBox(width: AppSpacing.s2),
                 Expanded(
                   child: Text(
-                    '同时上传到云端',
+                    kImportUploadToCloudLabel,
                     style: t.sm.copyWith(fontWeight: FontWeight.w600),
                   ),
                 ),
@@ -784,7 +780,7 @@ class _BottomBar extends StatelessWidget {
                   bottom: AppSpacing.s1,
                 ),
                 child: Text(
-                  '不上传：不消耗上行流量，其它设备看不到这几本书',
+                  kImportNotUploadHint,
                   style: t.caption.copyWith(color: t.text2),
                 ),
               ),

@@ -525,7 +525,7 @@ void main() {
     expect(find.text('继续阅读（42%）'), findsNothing);
     expect(find.text('开始阅读'), findsNothing);
     expect(find.text('上传到云端'), findsNothing);
-    expect(find.text('设为仅本地（不上传）'), findsNothing);
+    expect(find.text('设为仅本地'), findsNothing);
     expect(find.text('书籍信息'), findsOneWidget);
     expect(find.text('移动到分组…'), findsOneWidget);
     expect(find.text('删除本书'), findsOneWidget);
@@ -548,7 +548,7 @@ void main() {
     await tester.longPress(find.text('仅本地书').first);
     await tester.pumpAndSettle();
     expect(find.text('上传到云端'), findsOneWidget);
-    expect(find.text('设为仅本地（不上传）'), findsNothing);
+    expect(find.text('设为仅本地'), findsNothing);
     expect(find.text('开始阅读'), findsOneWidget); // 有正文 → 阅读/继续阅读
     expect(find.text('书籍信息'), findsOneWidget);
     // 点空白处关闭菜单。
@@ -558,7 +558,7 @@ void main() {
     // 已同步书：反之。
     await tester.longPress(find.text('已同步书').first);
     await tester.pumpAndSettle();
-    expect(find.text('设为仅本地（不上传）'), findsOneWidget);
+    expect(find.text('设为仅本地'), findsOneWidget);
     expect(find.text('上传到云端'), findsNothing);
     await shutdown(tester);
   });
@@ -716,7 +716,7 @@ void main() {
     // 取消勾选 → 提示切换为不上传说明；确认返回 false。
     await tester.tap(find.text('同时上传到云端'));
     await tester.pumpAndSettle();
-    expect(find.text('不上传：不消耗上行流量，其它设备看不到这几本书'), findsOneWidget);
+    expect(find.text('其它设备看不到这几本书'), findsOneWidget);
     await tester.tap(find.text('导入 2 本'));
     await tester.pumpAndSettle();
     expect(result, isFalse);

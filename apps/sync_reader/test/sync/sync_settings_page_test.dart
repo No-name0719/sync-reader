@@ -164,7 +164,7 @@ void main() {
     final container = await pumpPage(tester);
     container
         .read(syncMemoryStatusProvider.notifier)
-        .setQuotaWarn('本月同步流量已超过 80%，自动下载已放缓');
+        .setQuotaWarn('本月同步流量已超过 80%，自动下载已暂停');
     await tester.pump();
     expect(find.textContaining('80%'), findsWidgets);
   });
@@ -173,7 +173,7 @@ void main() {
     await pumpPage(tester);
     expect(find.text('导出诊断日志'), findsOneWidget);
     expect(find.text('清空日志'), findsOneWidget);
-    expect(find.textContaining('二次脱敏'), findsOneWidget);
+    expect(find.textContaining('另存为 txt 文件'), findsOneWidget);
   });
 
   testWidgets('分区顺序：后端 → 立即同步/开关 → 流量 → 未上传的书 → 云端书库 → 维护 → 危险区', (

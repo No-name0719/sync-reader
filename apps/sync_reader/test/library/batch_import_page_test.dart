@@ -257,13 +257,13 @@ void main() {
     final switches = tester.widgetList<Switch>(find.byType(Switch)).toList();
     expect(switches, hasLength(1));
     expect(switches.single.value, isTrue);
-    expect(find.textContaining('不上传：不消耗上行流量'), findsNothing);
+    expect(find.textContaining('其它设备看不到这几本书'), findsNothing);
 
     // 关上 → 提示行出现。
     await tester.tap(find.byType(Switch));
     await tester.pump();
     expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
-    expect(find.text('不上传：不消耗上行流量，其它设备看不到这几本书'), findsOneWidget);
+    expect(find.text('其它设备看不到这几本书'), findsOneWidget);
 
     // 关上导入：新书 + 被勾选的重复书都落仅本地标记（勾选状态落到已有书上）。
     // （排序：乙 < 旧 < 甲 → 行 0 = 旧书.md 重复项，行 1 = 甲.txt 新书。）

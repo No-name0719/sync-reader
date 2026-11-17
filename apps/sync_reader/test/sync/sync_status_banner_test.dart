@@ -57,7 +57,7 @@ void main() {
         .applyOutcome(
           const SyncStatusOutcome(
             stateId: SyncStateId.idle,
-            quotaWarnText: '本月同步流量已超过 80%，自动下载已放缓',
+            quotaWarnText: '本月同步流量已超过 80%，自动下载已暂停',
           ),
         );
     await tester.pump();

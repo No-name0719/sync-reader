@@ -133,8 +133,8 @@ final class SyncQuotaGate {
   static String? warnText(QuotaSnapshot snapshot) {
     if (!snapshot.warn) return null;
     if (snapshot.downExceeded) {
-      return '本月同步流量已达上限，正文下载已挂起（可在下方手动放行）';
+      return '本月同步流量已达上限，正文下载已挂起';
     }
-    return '本月同步流量已超过 80%，自动下载已放缓';
+    return '本月同步流量已超过 80%，自动下载已暂停';
   }
 }

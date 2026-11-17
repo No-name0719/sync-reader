@@ -108,7 +108,7 @@ void main() {
     String password = _password,
   }) async {
     await tester.enterText(
-      find.widgetWithText(TextField, '坚果云账号（邮箱）'),
+      find.widgetWithText(TextField, '坚果云账号'),
       account,
     );
     await tester.enterText(find.widgetWithText(TextField, '应用密码'), password);
@@ -129,11 +129,11 @@ void main() {
     await pumpGuide(tester);
 
     // 默认收起：只看到按钮，看不到四行指引标题。
-    expect(find.text('图文指引（截图演示）'), findsOneWidget);
+    expect(find.text('图文指引'), findsOneWidget);
     expect(find.text('下载并安装客户端'), findsNothing);
     expect(find.text('添加应用密码'), findsNothing);
 
-    await tester.tap(find.text('图文指引（截图演示）'));
+    await tester.tap(find.text('图文指引'));
     await tester.pumpAndSettle();
 
     // 展开：四行指引标题都在。
@@ -150,7 +150,7 @@ void main() {
     await tester.tap(find.text('收起图文指引'));
     await tester.pumpAndSettle();
     expect(find.text('下载并安装客户端'), findsNothing);
-    expect(find.text('图文指引（截图演示）'), findsOneWidget);
+    expect(find.text('图文指引'), findsOneWidget);
   });
 
   testWidgets('图文指引展开态：390x844 窄窗无溢出异常', (tester) async {
@@ -159,7 +159,7 @@ void main() {
     addTearDown(tester.view.reset);
 
     await pumpGuide(tester);
-    await tester.tap(find.text('图文指引（截图演示）'));
+    await tester.tap(find.text('图文指引'));
     await tester.pumpAndSettle();
 
     expect(find.text('下载并安装客户端'), findsOneWidget);
@@ -168,7 +168,7 @@ void main() {
 
   testWidgets('图文指引：点击缩略图弹出大图预览', (tester) async {
     await pumpGuide(tester);
-    await tester.tap(find.text('图文指引（截图演示）'));
+    await tester.tap(find.text('图文指引'));
     await tester.pumpAndSettle();
 
     await tester.tap(find.byType(Image).first);
@@ -193,8 +193,8 @@ void main() {
     expect(controlText('上一步', 0), findsNothing);
     expect(controlText('下一步', 0), findsNothing);
 
-    // 点未到达的头部（"完成"）：不允许跳过。
-    await tester.tap(find.text('完成'));
+    // 点未到达的头部（"保存配置"）：不允许跳过。
+    await tester.tap(find.text('保存配置'));
     await tester.pumpAndSettle();
     expect(controlText('开始配置', 0), findsOneWidget, reason: '仍停在步骤 0');
     expect(tester.takeException(), isNull);
@@ -212,7 +212,7 @@ void main() {
     expect(find.text('生成应用密码'), findsOneWidget);
     expect(find.text('输入账号与应用密码'), findsOneWidget);
     expect(find.text('自动连接测试'), findsOneWidget);
-    expect(find.text('完成'), findsOneWidget);
+    expect(find.text('保存配置'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

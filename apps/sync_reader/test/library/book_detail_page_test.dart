@@ -226,13 +226,13 @@ void main() {
     await shutdown(tester);
   });
 
-  testWidgets('Hero 进度：无进度 → 「尚未开始」+ 零宽进度条', (tester) async {
+  testWidgets('Hero 进度：无进度 → 「未读」+ 零宽进度条', (tester) async {
     useTallViewport(tester);
     await bootstrap(tester);
     await seedBook(tester, withProgress: false);
     await pumpDetail(tester);
 
-    expect(find.text('尚未开始'), findsOneWidget);
+    expect(find.text('未读'), findsOneWidget);
     final fill = tester.widget<FractionallySizedBox>(
       find.byKey(const Key('detail_progress_fill')),
     );
@@ -429,7 +429,7 @@ void main() {
     await seedBook(tester, withLocalFile: false);
     await pumpDetail(tester);
 
-    expect(find.text('暂不可得（占位书或文件缺失）'), findsOneWidget);
+    expect(find.text('暂不可得'), findsOneWidget);
     expect(find.textContaining('共'), findsNothing); // 头部无章数胶囊
     await shutdown(tester);
   });
@@ -570,8 +570,7 @@ void main() {
     await tester.pumpAndSettle();
     // 语义警示 + 进度保留说明 + 未配置同步说明（内存凭据为空 → 未配置）。
     expect(find.text('替换《三体》的正文文件？'), findsOneWidget);
-    expect(find.textContaining('下次同步后更新'), findsOneWidget);
-    expect(find.textContaining('大致位置（百分比）恢复'), findsOneWidget);
+    expect(find.textContaining('阅读进度保留'), findsOneWidget);
     expect(find.textContaining('当前未配置同步，仅替换本地文件'), findsOneWidget);
 
     await tester.tap(find.text('取消'));

@@ -44,7 +44,7 @@ class StubReaderController extends ReaderController {
   void dispose() {}
 }
 
-/// 占位渲染器：显示"该格式渲染器将在后续集成"提示页。
+/// 占位渲染器：显示该格式的占位页（只给格式名，不描述内部实现）。
 class StubRenderer extends BookRenderer {
   /// 创建（[formatId] 用于展示说明）。
   StubRenderer({required this.formatId});
@@ -66,12 +66,7 @@ class StubRenderer extends BookRenderer {
           color: Theme.of(context).colorScheme.outline,
         ),
         const SizedBox(height: 16),
-        Text('「$formatId」渲染器将在后续集成'),
-        const SizedBox(height: 8),
-        Text(
-          '书籍导入与目录解析已就绪，排版与进度管线由各格式代理实现',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
+        Text(formatId, style: Theme.of(context).textTheme.titleMedium),
       ],
     ),
   );

@@ -17,6 +17,7 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../core/design_tokens.dart';
 import '../../data/db/app_database.dart';
+import '../../shared/copy.dart';
 import '../../shared/cover_view.dart';
 import '../../shared/format_utils.dart';
 import '../reader/contract/book_file.dart';
@@ -200,9 +201,9 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
       builder: (dialogContext) => AlertDialog(
         title: Text('替换《${book.title}》的正文文件？'),
         content: Text(
-          '· 新文件将替换本书正文，云端与其他设备的正文在下次同步后更新；\n'
-          '· 阅读进度保留，其他设备会按大致位置（百分比）恢复。'
-          '${syncConfigured ? '' : '\n· 当前未配置同步，仅替换本地文件。'}',
+          syncConfigured
+              ? '新文件将替换本书正文，阅读进度保留；云端与其他设备在下次同步后更新。'
+              : '新文件将替换本书正文，阅读进度保留；当前未配置同步，仅替换本地文件。',
         ),
         actions: [
           TextButton(
@@ -257,15 +258,8 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text('删除《${book.title}》？'),
-        content: const Text(
-          '删除后的行为：\n'
-          '· 本地正文文件立即删除（释放磁盘空间，不可恢复）；\n'
-          '· 元数据保留，本书会移到书库的「未下载」区；\n'
-          '· 删除标记会同步到云端，其他设备的此书也会从书库移除'
-          '（它们的正文文件仍保留）。\n\n'
-          '不会删除你磁盘上的原始书籍文件。',
-        ),
+        title: Text(deleteBookDialogTitle(book.title)),
+        content: const Text(kDeleteBookDialogBody),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -466,7 +460,7 @@ class _Hero extends ConsumerWidget {
     final chapter = progress == null
         ? null
         : locatorChapterNumber(progress.locatorJson);
-    final percentText = progress == null ? '尚未开始' : formatPercent(percent);
+    final percentText = progress == null ? '未读' : formatPercent(percent);
     // locator 无章节语义坐标（pdf / 空 locator）时只显示百分比。
     final valueText = chapter == null
         ? percentText
@@ -941,12 +935,12 @@ class _TocCard extends ConsumerWidget {
       loading: () => Text('解析中…', style: t.sm.copyWith(color: t.text3)),
       error: (_, _) => Text(
         // provider 内已兜底，理论上不触达。
-        '暂不可得（占位书或文件缺失）',
+        kTocUnavailableText,
         style: t.sm.copyWith(color: t.text3),
       ),
       data: (entries) {
         if (entries == null) {
-          return Text('暂不可得（占位书或文件缺失）', style: t.sm.copyWith(color: t.text3));
+          return Text(kTocUnavailableText, style: t.sm.copyWith(color: t.text3));
         }
         if (entries.isEmpty) {
           // txt 章节切分失败等 → 优雅降级。

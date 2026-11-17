@@ -78,7 +78,7 @@ class _CloudLibraryPageState extends ConsumerState<CloudLibraryPage> {
         error: (e, _) => _GuideView(
           icon: Icons.cloud_off_outlined,
           title: '无法确认同步配置',
-          desc: '读取同步配置失败：$e',
+          desc: '读取同步配置失败',
           actionLabel: '重试',
           onAction: () => ref.invalidate(syncConfigProvider),
         ),
@@ -88,9 +88,7 @@ class _CloudLibraryPageState extends ConsumerState<CloudLibraryPage> {
             return const _GuideView(
               icon: Icons.cloud_off_outlined,
               title: '尚未配置同步',
-              desc:
-                  '配置坚果云账号后，这里会列出云端全部书籍：'
-                  '含其它设备上传的、本端没有的书，可从中移除不再需要的。',
+              desc: '配置坚果云账号后，这里会列出云端全部书籍。',
               actionLabel: '去配置',
               route: '/sync/guide',
             );
@@ -100,7 +98,7 @@ class _CloudLibraryPageState extends ConsumerState<CloudLibraryPage> {
             error: (e, _) => _GuideView(
               icon: Icons.error_outline,
               title: '清单获取失败',
-              desc: '$e',
+              desc: '无法读取云端书目，请检查网络后重试',
               actionLabel: '重试',
               onAction: () => ref.invalidate(cloudBooksProvider),
             ),
@@ -180,8 +178,7 @@ class _CloudLibraryPageState extends ConsumerState<CloudLibraryPage> {
       SnackBar(
         content: Text(
           ok
-              ? '《${book.title}》已从云端移除：本地副本保留，照常可读，'
-                    '但不会再自动上传'
+              ? '《${book.title}》已从云端移除'
               : '《${book.title}》移除失败，请检查网络后重试',
         ),
       ),
@@ -227,8 +224,7 @@ class _CloudLibraryPageState extends ConsumerState<CloudLibraryPage> {
       SnackBar(
         content: Text(
           failures.isEmpty
-              ? '已从云端移除 $okCount 本：本地副本保留，照常可读，'
-                    '但不会再自动上传'
+              ? '已从云端移除 $okCount 本'
               : '移除完成：成功 $okCount 本，失败 ${failures.length} 本'
                     '（${failures.first}）',
         ),
@@ -354,7 +350,7 @@ class _LibraryView extends StatelessWidget {
                       text: '各端本地文件保留、照常可读',
                       style: TextStyle(fontWeight: FontWeight.w700),
                     ),
-                    TextSpan(text: '，但也不会自动再传回云端；任一端都可以随时重新上传。'),
+                    TextSpan(text: '，但也不会自动再传回云端。'),
                   ],
                 ),
               ),
@@ -386,7 +382,7 @@ class _LibraryView extends StatelessWidget {
                         ),
                         child: Row(
                           children: [
-                            Expanded(child: Text('云端书库', style: t.h3)),
+                            const Spacer(),
                             _CountPill(
                               text:
                                   '${books.length} 本 · '

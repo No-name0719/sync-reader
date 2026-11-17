@@ -63,7 +63,9 @@ class _GroupManageDialogState extends ConsumerState<GroupManageDialog> {
       // 分组上云（FR-107）：失败不影响本地，下次全量同步补推。
       unawaited(ref.read(syncFacadeProvider).pushGroupMeta(group.groupId));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('新建分组失败：$e')));
+      messenger.showSnackBar(
+        const SnackBar(content: Text('新建分组失败，请稍后重试')),
+      );
     }
   }
 
@@ -86,7 +88,9 @@ class _GroupManageDialogState extends ConsumerState<GroupManageDialog> {
       // 分组改名上云（FR-107）：失败不影响本地，下次全量同步补推。
       unawaited(ref.read(syncFacadeProvider).pushGroupMeta(group.groupId));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('重命名分组失败：$e')));
+      messenger.showSnackBar(
+        const SnackBar(content: Text('重命名分组失败，请稍后重试')),
+      );
     }
   }
 
@@ -116,7 +120,9 @@ class _GroupManageDialogState extends ConsumerState<GroupManageDialog> {
       // 分组墓碑上云（FR-107）：其它设备同步后移除该分组。
       unawaited(ref.read(syncFacadeProvider).deleteGroup(group.groupId));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('删除分组失败：$e')));
+      messenger.showSnackBar(
+        const SnackBar(content: Text('删除分组失败，请稍后重试')),
+      );
     }
   }
 
@@ -159,7 +165,7 @@ class _GroupManageDialogState extends ConsumerState<GroupManageDialog> {
                   ? const Padding(
                       padding: EdgeInsets.symmetric(vertical: 16),
                       child: Text(
-                        '暂无分组，先建一个吧',
+                        '暂无分组',
                         style: TextStyle(color: Colors.grey),
                       ),
                     )

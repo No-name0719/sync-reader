@@ -17,6 +17,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../shared/copy.dart';
 import '../library/import/cover_generator.dart';
 import '../library/library_providers.dart' show bookDetailProvider;
 import 'sync_facade.dart';
@@ -34,7 +35,7 @@ Future<bool> downloadPlaceholderBook(
     if (await facade.readConfig() == null) {
       messenger.showSnackBar(
         const SnackBar(
-          content: Text('尚未配置同步账号，请先在"同步设置"中完成配置'),
+          content: Text(kSyncNotConfiguredHint),
           duration: Duration(seconds: 5),
         ),
       );
@@ -44,7 +45,7 @@ Future<bool> downloadPlaceholderBook(
     // 安全存储不可用（如无平台通道的测试环境）：按未配置处理。
     messenger.showSnackBar(
       const SnackBar(
-        content: Text('尚未配置同步账号，请先在"同步设置"中完成配置'),
+        content: Text(kSyncNotConfiguredHint),
         duration: Duration(seconds: 5),
       ),
     );
@@ -70,7 +71,7 @@ Future<bool> downloadPlaceholderBook(
   }
   messenger.showSnackBar(
     const SnackBar(
-      content: Text('下载未完成，可稍后重试（失败不影响云端书目）'),
+      content: Text('下载未完成，可稍后重试'),
       duration: Duration(seconds: 5),
     ),
   );

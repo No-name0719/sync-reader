@@ -22,6 +22,7 @@ import 'package:sync_core/sync_core.dart';
 
 import '../../../core/design_tokens.dart';
 import '../../../data/secure/secure_credential_store.dart';
+import '../../../shared/copy.dart';
 import '../connection_test.dart';
 import '../connection_test_result_view.dart';
 import '../connection_test_runner.dart';
@@ -141,7 +142,7 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
       result = const ConnectionTestResult(
         steps: [],
         success: false,
-        failureText: '连接测试执行异常，请稍后重试',
+        failureText: kConnectionTestExceptionText,
       );
     }
     if (!mounted) return;
@@ -189,7 +190,7 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
       result = const ConnectionTestResult(
         steps: [],
         success: false,
-        failureText: '连接测试执行异常，请稍后重试',
+        failureText: kConnectionTestExceptionText,
       );
     }
     if (!mounted) return;
@@ -403,7 +404,7 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
         const SizedBox(height: AppSpacing.s2),
         const _CopyableCommand(),
         const SizedBox(height: AppSpacing.s2),
-        const _Notice('应用密码与登录密码不同：仅开放 WebDAV 文件权限，可随时撤销。'),
+        const _Notice('应用密码与登录密码不同，仅开放文件权限。'),
         const SizedBox(height: AppSpacing.s2),
         // 图文指引默认收起，点「图文指引」按钮展开（避免一进来就是一大串图）。
         TextButton.icon(
@@ -412,7 +413,7 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
             _showImageGuide ? Icons.expand_less : Icons.help_outline,
             size: 18,
           ),
-          label: Text(_showImageGuide ? '收起图文指引' : '图文指引（截图演示）'),
+          label: Text(_showImageGuide ? '收起图文指引' : '图文指引'),
         ),
         if (_showImageGuide) ...[
           const SizedBox(height: AppSpacing.s2),
@@ -431,7 +432,7 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
         TextField(
           controller: _accountController,
           decoration: const InputDecoration(
-            labelText: '坚果云账号（邮箱）',
+            labelText: '坚果云账号',
             prefixIcon: Icon(Icons.person_outline),
           ),
           keyboardType: TextInputType.emailAddress,
@@ -452,7 +453,7 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
           onChanged: (_) => setState(() {}),
         ),
         const SizedBox(height: AppSpacing.s2),
-        // FR-502：WebDAV 通用模式（P1 功能提前放出并标注）。
+        // FR-502：WebDAV 通用模式（高级项，收起时不占版面）。
         _AdvancedWebDav(
           baseUrl: _baseUrlController,
           rootPath: _rootPathController,
@@ -466,7 +467,7 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
   Widget _step3() {
     final result = _result;
     if (result == null) {
-      return const Text('点击下方"开始连接测试"，将依次检查目录读写与 MOVE 能力。');
+      return const Text('检查目录读写与 MOVE 能力');
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -590,7 +591,7 @@ class _TrackCard extends StatelessWidget {
   final int maxVisitedStep;
   final ValueChanged<int> onStepTapped;
 
-  static const _titles = <String>['生成应用密码', '输入账号与应用密码', '自动连接测试', '完成'];
+  static const _titles = <String>['生成应用密码', '输入账号与应用密码', '自动连接测试', '保存配置'];
 
   @override
   Widget build(BuildContext context) {
@@ -1015,10 +1016,6 @@ class _AdvancedWebDav extends StatelessWidget {
           tilePadding: EdgeInsets.zero,
           childrenPadding: EdgeInsets.zero,
           title: const Text('高级：自定义 WebDAV 地址/根目录'),
-          subtitle: const Text(
-            'P1 功能（兼容其他 WebDAV 服务）',
-            style: TextStyle(fontSize: 11),
-          ),
           children: [
             _GuideTextField(controller: baseUrl, label: 'WebDAV 地址'),
             const SizedBox(height: 12),

@@ -206,7 +206,6 @@ void main() {
 
       // 轻提示说清「本地保留、不会自动再传回」。
       expect(find.textContaining('已从云端移除'), findsOneWidget);
-      expect(find.textContaining('本地副本保留'), findsOneWidget);
 
       // 云端 meta 消失（若走 deleteBook 会留下 deleted=true 的墓碑 meta）。
       expect(adapter.metas.containsKey(cloudOnlyId), isFalse);

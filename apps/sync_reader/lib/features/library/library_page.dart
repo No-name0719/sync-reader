@@ -12,10 +12,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
+import '../../core/app_logger.dart';
 import '../../core/design_tokens.dart';
 import '../../core/startup_timer.dart';
 import '../../data/db/app_database.dart';
 import '../../data/db/daos/books_dao.dart' show BookSort;
+import '../../shared/copy.dart';
 import '../../shared/cover_view.dart';
 import '../../shared/format_utils.dart';
 import '../sync/placeholder_download.dart';
@@ -45,6 +47,8 @@ class LibraryPage extends ConsumerStatefulWidget {
 }
 
 class _LibraryPageState extends ConsumerState<LibraryPage> {
+  static final _log = AppLogger();
+
   final _searchController = TextEditingController();
   Timer? _debounce;
 
@@ -123,10 +127,11 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
       );
     } catch (e) {
       if (mounted) setState(() => _importProgress = null);
+      _log.error('导入失败', e);
       messenger.showSnackBar(
-        SnackBar(
-          content: Text('导入失败：$e'),
-          duration: const Duration(seconds: 5),
+        const SnackBar(
+          content: Text('导入失败，请稍后重试'),
+          duration: Duration(seconds: 5),
         ),
       );
     }
@@ -221,7 +226,7 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
           value: 'localonly',
           child: _MenuItemRow(
             icon: Icons.cloud_off_outlined,
-            label: '设为仅本地（不上传）',
+            label: '设为仅本地',
           ),
         ),
       const PopupMenuDivider(),
@@ -278,7 +283,7 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('已设为仅本地：不会上传到云端，其它设备看不到这本书'),
+              content: Text('已设为仅本地'),
               duration: Duration(seconds: 3),
             ),
           );
@@ -295,7 +300,7 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
     final ok = await ref.read(syncFacadeProvider).uploadToCloud(book.bookId);
     messenger.showSnackBar(
       SnackBar(
-        content: Text(ok ? '已上架到云端，其它设备可见' : '上传未完成，可稍后重试'),
+        content: Text(ok ? '已上架到云端' : '上传未完成，可稍后重试'),
         duration: const Duration(seconds: 4),
       ),
     );
@@ -324,15 +329,8 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text('删除《${book.title}》？'),
-        content: const Text(
-          '删除后的行为：\n'
-          '· 本地正文文件立即删除（释放磁盘空间，不可恢复）；\n'
-          '· 元数据保留，本书会移到书库的「未下载」区；\n'
-          '· 删除标记会同步到云端，其他设备的此书也会从书库移除'
-          '（它们的正文文件仍保留）。\n\n'
-          '不会删除你磁盘上的原始书籍文件。',
-        ),
+        title: Text(deleteBookDialogTitle(book.title)),
+        content: const Text(kDeleteBookDialogBody),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -474,13 +472,13 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
                             // 永续动画帧导致 pumpAndSettle 不收敛）。
                             // Riverpod 3：首帧即失败的流错误停留在
                             // AsyncLoading(error) 而非 AsyncError，两种状态都给提示。
-                            loading: () => _EmptyView(
-                              hint: booksAsync.hasError
-                                  ? '书库加载失败：${booksAsync.error}\n请重启应用重试'
-                                  : '正在加载书库…',
-                            ),
-                            error: (error, _) =>
-                                _EmptyView(hint: '书库加载失败：$error\n请重启应用重试'),
+            loading: () => _EmptyView(
+              hint: booksAsync.hasError
+                  ? '书库加载失败，请重启应用重试'
+                  : '正在加载书库…',
+            ),
+            error: (error, _) =>
+                const _EmptyView(hint: '书库加载失败，请重启应用重试'),
                             data: (_) => _buildContent(
                               libraryData: libraryData,
                               progressMap: progressMap,
@@ -806,7 +804,7 @@ class _FilterEmptyView extends ConsumerWidget {
           Text('没有符合条件的书', style: t.h3.copyWith(fontSize: 17)),
           const SizedBox(height: 6),
           Text(
-            '当前的状态筛选与分组筛选没有交集，换一个条件试试。',
+            '试试调整筛选条件。',
             style: t.caption.copyWith(color: t.text3),
           ),
           const SizedBox(height: AppSpacing.s5),
@@ -932,8 +930,11 @@ class _ImportProgressLine extends StatelessWidget {
           const SizedBox(width: AppSpacing.s3),
           Expanded(
             child: Text(
-              '正在导入（${progress.completed}/${progress.total}）：'
-              '${progress.currentName}',
+              importProgressLabel(
+                progress.completed,
+                progress.total,
+                progress.currentName,
+              ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: t.caption.copyWith(color: t.text2),
@@ -969,7 +970,7 @@ class _ImportSplitButton extends StatelessWidget {
       },
       itemBuilder: (context) => const [
         PopupMenuItem(value: 'pick', child: Text('导入文件…')),
-        PopupMenuItem(value: 'batch', child: Text('批量导入（文件夹）')),
+        PopupMenuItem(value: 'batch', child: Text(kBatchImportFolderTitle)),
       ],
       icon: Icon(Icons.arrow_drop_down, color: onBrand),
     );
@@ -1102,15 +1103,10 @@ class _ImportConfirmDialogState extends State<ImportConfirmDialog> {
             const SizedBox(height: AppSpacing.s3),
             CheckboxListTile(
               value: _uploadToCloud,
-              // Q18 取消勾选的语义说明（docs/10 §4.7c）。
-              subtitle: const Text(
-                '勾选后本次导入的书会推送到云端，其它设备即可同步。'
-                '取消则只留在本机（标记为「仅本地」），可随时再上传。',
-              ),
               contentPadding: EdgeInsets.zero,
               controlAffinity: ListTileControlAffinity.leading,
               title: const Text(
-                '同时上传到云端',
+                kImportUploadToCloudLabel,
                 style: TextStyle(fontWeight: FontWeight.w600),
               ),
               onChanged: (value) =>
@@ -1120,7 +1116,7 @@ class _ImportConfirmDialogState extends State<ImportConfirmDialog> {
             Text(
               _uploadToCloud
                   ? uploadEstimateText(totalBytes)
-                  : '不上传：不消耗上行流量，其它设备看不到这几本书',
+                  : kImportNotUploadHint,
               style: t.caption.copyWith(
                 color: _uploadToCloud ? t.text3 : t.warn,
               ),
@@ -1292,7 +1288,7 @@ class _EmptyView extends StatelessWidget {
           Text('书库为空', style: t.h3.copyWith(fontSize: 17)),
           const SizedBox(height: AppSpacing.s2),
           Text(
-            hint ?? '点击右上角导入按钮，添加 txt / epub / md / pdf 书籍',
+            hint ?? '添加 txt / epub / md / pdf 书籍',
             textAlign: TextAlign.center,
             style: t.caption.copyWith(color: t.text3),
           ),
@@ -1326,7 +1322,9 @@ Future<void> _setBookGroup(
     // 归组变更上云（FR-107）：书籍 meta 携带 groupId。
     unawaited(ref.read(syncFacadeProvider).pushBookMeta(bookId));
   } catch (e) {
-    messenger.showSnackBar(SnackBar(content: Text('分组操作失败：$e')));
+    messenger.showSnackBar(
+      const SnackBar(content: Text('分组操作失败，请稍后重试')),
+    );
   }
 }
 

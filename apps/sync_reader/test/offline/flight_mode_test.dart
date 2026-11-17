@@ -64,7 +64,7 @@ void main() {
     // 应用名不再作书库页标题（v1.1 外壳品牌区承载）。
     expect(find.text('SyncReader'), findsNothing);
     expect(find.text('书库为空'), findsOneWidget);
-    expect(find.textContaining('导入按钮'), findsOneWidget);
+    expect(find.textContaining('添加 txt / epub / md / pdf 书籍'), findsOneWidget);
     // v1.1 A3：常驻状态横幅移出书库内容区（未配置态只进外壳左下角胶囊，
     // 本骨架无外壳 → 不出现），内容区仅在配额超限/同步失败时才出提示条。
     expect(find.byType(SyncStatusBanner), findsNothing);

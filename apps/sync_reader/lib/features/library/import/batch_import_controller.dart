@@ -234,7 +234,7 @@ class BatchImportController extends Notifier<BatchImportState> {
     } catch (e) {
       state = state.copyWith(
         phase: BatchImportPhase.ready,
-        errorMessage: '扫描失败：$e',
+        errorMessage: '扫描失败',
       );
     } finally {
       _pipelineRunning = false;
@@ -341,7 +341,7 @@ class BatchImportController extends Notifier<BatchImportState> {
     } catch (e) {
       state = state.copyWith(
         phase: BatchImportPhase.done,
-        errorMessage: '导入失败：$e',
+        errorMessage: '导入失败',
         clearProgress: true,
       );
       return null;

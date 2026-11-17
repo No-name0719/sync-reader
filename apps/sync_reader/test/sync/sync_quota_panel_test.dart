@@ -95,13 +95,13 @@ void main() {
         month: '2026-10',
       ),
     );
-    expect(find.textContaining('坚果云流量已用超 80%，自动下载已暂停'), findsOneWidget);
+    expect(find.textContaining('本月同步流量已超过 80%，自动下载已暂停'), findsOneWidget);
     expect(find.byIcon(Icons.warning_amber_rounded), findsOneWidget);
     // 头部用量胶囊（取上行/下行较大者）。
     expect(find.text('已用 83%'), findsOneWidget);
     // 提示条位于「下行」条目下方（原型 notice 在 bars 之后）。
     final downLabelTop = tester.getTopLeft(find.text('下行（云端正文下载）')).dy;
-    final noticeTop = tester.getTopLeft(find.textContaining('坚果云流量已用超 80%')).dy;
+    final noticeTop = tester.getTopLeft(find.textContaining('本月同步流量已超过 80%')).dy;
     expect(noticeTop, greaterThan(downLabelTop));
     // 未达 100%：无挂起文案。
     expect(find.textContaining('正文传输已全部挂起'), findsNothing);
@@ -127,7 +127,7 @@ void main() {
 
     // 越权生效：开关行说明切换为已放行文案。
     expect(container.read(syncPreferencesProvider).quotaOverride, isTrue);
-    expect(find.textContaining('已越权放行'), findsOneWidget);
+    expect(find.textContaining('本月正文下载将继续'), findsOneWidget);
 
     // 关闭开关 = 恢复闸门。
     await tester.tap(find.byType(SwitchListTile).at(2));

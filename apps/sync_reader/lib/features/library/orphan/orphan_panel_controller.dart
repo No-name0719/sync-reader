@@ -101,7 +101,7 @@ class OrphanPanelController extends Notifier<OrphanPanelState> {
       _resolveTitles();
     } catch (e) {
       if (!ref.mounted) return;
-      state = state.copyWith(scanning: false, errorMessage: '扫描失败：$e');
+      state = state.copyWith(scanning: false, errorMessage: '扫描失败');
     } finally {
       _reloading = false;
     }
@@ -126,7 +126,7 @@ class OrphanPanelController extends Notifier<OrphanPanelState> {
       await refresh();
       return result;
     } catch (e) {
-      state = state.copyWith(busy: false, errorMessage: '挂回失败：$e');
+      state = state.copyWith(busy: false, errorMessage: '挂回失败');
       return null;
     }
   }
@@ -142,7 +142,7 @@ class OrphanPanelController extends Notifier<OrphanPanelState> {
       await refresh();
       return true;
     } catch (e) {
-      state = state.copyWith(busy: false, errorMessage: '删除失败：$e');
+      state = state.copyWith(busy: false, errorMessage: '删除失败');
       return false;
     }
   }
