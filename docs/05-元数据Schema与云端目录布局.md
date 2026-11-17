@@ -12,6 +12,9 @@
 ├── meta/
 │   ├── {bookId}.json                # 每书一份元数据（含 tombstone 形态）
 │   └── ...
+├── groups/
+│   ├── {groupId}.json               # 每个分组一份元数据（FR-107，含 tombstone 形态）
+│   └── ...
 ├── books/
 │   ├── {bookId}.epub                # 正文原样字节，文件名 = bookId + 原扩展名
 │   └── ...
@@ -19,12 +22,19 @@
     └── {bookId}.{ext}.part          # 上传暂存，成功后 MOVE 到 books/
 ```
 
+> **`groups/` 为何与 `meta/` 平级而不是放进 `meta/`**：`meta/` 的 Depth:1
+> PROPFIND 被 `listMetas` 用来枚举**书籍**，混入分组文件会污染书籍清单与
+> 哈希去重逻辑（docs/04 §5.3）。分组是独立文件类型（独立 rev/CAS/墓碑），
+> 独立顶层目录最干净。老版本云端目录没有 `groups/` 时，首次同步由
+> `ensureLayout()` **幂等创建**（不得因目录缺失报错，docs/04 §5.2）。
+
 | 项 | 约定 |
 | --- | --- |
 | 同步根选择 | 坚果云模式：默认 `/Apps/SyncReader`（坚果云为第三方应用预留的目录，配置向导自动创建，也允许用户改到任意子目录）；自建模式：服务端每用户独立根，客户端无感 |
 | 为什么正文用 bookId 命名 | 原文件名可能含非法字符/重名/改名引发同步抖动；原文件名存于 `meta.book.fileName` 供恢复导出 |
 | 原子性 | WebDAV 无原子 rename 保证的网盘（少数）：上传后用 `GET Content-Length` 校验代替 MOVE 语义；坚果云与自建服务器均支持 MOVE |
 | 权限要求 | 读写 + 列目录 + MOVE；配置向导的"连接测试"显式验证这四项（FR-505） |
+| 分组目录 | `groups/` 与 `books/` 平级；`ensureLayout()` 幂等创建（老云端目录首次同步自动补建） |
 
 ### library.json
 
@@ -77,6 +87,93 @@
 
 **tombstone 形态**：同一文件名，`"deleted": true`、`"deletedAt": "<时间>"`、`progress` 可保留、`book` 保留（供游离文件重关联时比对 hash）。
 
+## 2.1 分组元数据 `groups/{groupId}.json`（FR-107，v1.4 起参与同步）
+
+分组是**独立文件类型**：每个分组自带 `rev`，因此「改 A 组名」与「改 B 组名」
+互不冲突；改名 / 排序 / 删除都走与书籍一致的 `(rev, updatedAt, deviceId)`
+LWW + CAS 乐观锁（docs/04 §6.2）。
+
+```json
+{
+  "schemaVersion": 1,
+  "groupId": "01JBGX5T7Y9Z1A3B5C7D9E1F3G",
+  "rev": 7,
+  "deviceId": "01JBGX3Z5W8M9Q2V7K4T6R8Y0C",
+  "deviceName": "Pixel 7",
+  "createdAt": "2026-11-17T08:00:00.000Z",
+  "updatedAt": "2026-11-17T09:12:33.000Z",
+  "deleted": false,
+  "deletedAt": null,
+  "name": "小说",
+  "sortOrder": 3
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `schemaVersion` | int | ✅ | 分组自己的 schema 版本（独立于书籍 meta），固定 `1`；演进规则同 §6 |
+| `groupId` | string(ULID) | ✅ | 分组全局唯一，= 文件名主干 |
+| `rev` | int ≥1 | ✅ | 写端单调递增；冲突定序首位（[04 §6.2](./04-同步引擎与冲突解决.md)） |
+| `deviceId` | string(ULID) | ✅ | 最后写入设备，冲突决胜第三位 |
+| `deviceName` | string | ✅ | 展示用 |
+| `createdAt` | ISO-8601 UTC | ✅ | 首次创建 |
+| `updatedAt` | ISO-8601 UTC | ✅ | 最后修改，冲突决胜第二位 |
+| `deleted` | bool | ✅ | tombstone 标记 |
+| `deletedAt` | ISO-8601? | 删除时 | GC 依据（90 天，与书籍同期限） |
+| `name` | string | ✅ | 分组名（非空；trim 后比较） |
+| `sortOrder` | int | ✅ | 排序权重（升序；本地与云端同序） |
+
+**tombstone 形态**：同一文件名，`"deleted": true` + `"deletedAt"`；`name` /
+`sortOrder` 保留（墓碑自带分组名，便于对端识别"删的是哪个组"）。
+
+### 2.1.1 同名分组的名称级去重（两台设备各建同名分组）
+
+两台设备各自新建「小说」时，云端会出现**两条同名记录**（groupId 不同）。
+若按 groupId 区分，书库会出现两个同名分组、书籍归属互相看不懂，因此规定
+**名称级合并**（docs/04 §5.1 分组矩阵）：
+
+1. 名称为空、已本地删除（待推墓碑）、已是远端墓碑的分组**不参与**合并；
+2. 按分组名聚类（本地活分组 ∪ 云端活分组）；
+3. 同一 groupId 若出现在多个名称聚类中（本地改名未同步 vs 远端改名），
+   视为改名冲突，**跳过合并**（由 id 级 LWW 定序解决）；
+4. 聚类内的**规范 id** = 全部 id 中**字典序最小者**（ULID 时间有序 →
+   最早创建者优先）。该规则对两端对称——同样的 id 集合在 A/B 端得到同一个
+   规范 id，避免"各把本地那条并入云端那条"造成的乒乓（两端各留各的）；
+5. 其余 id 被吸收：本地行删除 + **组内书籍 `group_id` 迁移到规范 id**；
+   云端冗余条目在规范分组确实存在于云端时删除（避免每次同步重复去重）。
+
+> 合并后两端收敛到同一个 groupId，书籍 meta 里的 `groupId` 也随之收敛
+> （见 §2.2）。合并是**幂等**的：重复同步不会再次迁移。
+
+## 2.2 书籍 meta 的分组字段 `groupId`（可选）
+
+书籍 meta 顶层新增**可选**字段 `groupId`（String?，null = 未分组）：
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "bookId": "01JBGX4A2N6P8R0T2V4X6Z8B1D",
+  "rev": 43,
+  // ...
+  "groupId": "01JBGX5T7Y9Z1A3B5C7D9E1F3G"   // 可选：所属分组 id
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `groupId` | string? | 否 | 所属分组 id（FR-107）；null = 未分组。**只增不删**：旧客户端读到该字段会忽略（`fromJson` 只取已知键），写回时丢失分组归属 = 降级为"未分组"，不影响其它同步语义 |
+
+配套规则：
+
+- **分组对象与书籍 meta 各自独立同步**：书籍 meta 推上去后对端知道"这本书
+  属于 group X"，但还需要 `groups/{X}.json` 才知道 X 叫什么 → 引擎**先拉
+  分组、再拉书籍**（docs/04 §4 阶段 3），保证落库时不存在悬空外键；
+- **不得写悬空外键**：远端 meta 的 `groupId` 在本地不存在（分组尚未到达 /
+  已被删除）时，书籍的 `books.group_id` 落为 NULL（未分组），等分组到达后
+  由书籍 meta 再次同步纠正；
+- 旧客户端（无分组支持的版本）上传的 meta 不含 `groupId` → 读方按"未分组"
+  处理（已知降级，登记 [07](./07-风险与待确认问题.md)）。
+
 ## 3. 字段定义
 
 ### 3.1 顶层字段
@@ -98,6 +195,7 @@
 | `reading` | object | ✅ | 阅读统计 |
 | `annotations` | array | ✅ | v1 恒为空数组（批注同步 v2 预留，字段已占位避免未来大迁移） |
 | `extra` | object | ✅ | 向前兼容扩展区，读方必须容忍未知键 |
+| `groupId` | string? | 否 | 所属分组 id（FR-107，v1.4 新增，**可选**）；null = 未分组。详见 §2.2 |
 
 ### 3.2 `book` 对象
 
@@ -184,7 +282,7 @@ CREATE TABLE books (
   last_read_at   INTEGER,
   total_seconds  INTEGER NOT NULL DEFAULT 0,
   group_id       TEXT REFERENCES book_groups(group_id) ON DELETE SET NULL
-                                              -- 分组（FR-107）；本地列，不入云端 meta JSON，v1 不参与同步
+                                              -- 分组（FR-107）；随书籍 meta 的 groupId 字段同步（§2.2）
 );
 CREATE INDEX idx_books_last_read ON books(last_read_at DESC);
 CREATE INDEX idx_books_title ON books(title);
@@ -248,12 +346,25 @@ CREATE TABLE reading_days (
   PRIMARY KEY (book_id, day)
 );
 
--- 书籍分组（FR-107 本地分类；仅本地表，v1 不参与同步、不入云端 meta；schemaVersion 2 新增）
+-- 书籍分组（FR-107；schemaVersion 2 新增；v1.4 起参与云端同步，docs/05 §2.1）
 CREATE TABLE book_groups (
   group_id   TEXT PRIMARY KEY,                 -- ULID
   name       TEXT NOT NULL,                    -- 重名校验在 DAO/UI 层做
   sort_order INTEGER NOT NULL DEFAULT 0,       -- 排序权重（按创建顺序递增）
-  created_at INTEGER NOT NULL                  -- epoch ms
+  created_at INTEGER NOT NULL,                 -- epoch ms
+  deleted    INTEGER NOT NULL DEFAULT 0,       -- 软删标记（v1.4 新增）：1 = 已删除、待推墓碑
+  deleted_at INTEGER                          -- 软删时间（epoch ms，墓碑 deletedAt 来源）
+);
+
+-- 分组同步状态（每分组每后端一行；v1.4 新增，docs/05 §5）
+CREATE TABLE group_sync_state (
+  group_id       TEXT NOT NULL,
+  backend_key    TEXT NOT NULL,
+  base_rev       INTEGER NOT NULL,             -- 已确认的远端 rev（乐观锁基线）
+  remote_etag    TEXT,                         -- WebDAV 条件请求用
+  last_synced_group_json TEXT,                -- 上次同步副本 = 冲突合并的公共祖先（04 §6.3）
+  last_synced_at INTEGER NOT NULL,
+  PRIMARY KEY (group_id, backend_key)
 );
 
 -- 仅本地书籍标记（docs/10 §4.7c「仅本地 / 未上传」；仅本地表，不参与同步；schemaVersion 3 新增）
@@ -271,7 +382,13 @@ CREATE TABLE app_settings (
 
 > **books 表不允许加列**（本文 §5 的 DDL 是同步语义的一部分）。需要新字段时
 > 一律新表——`book_groups`（分组）、`local_only_books`（仅本地标记）、
-> `app_settings`（通用设置）都是这样演进的先例。
+> `app_settings`（通用设置）、`group_sync_state`（分组同步状态）都是这样
+> 演进的先例。
+>
+> **`book_groups` 的软删语义**（v1.4）：本地删除分组 = 置 `deleted=1` +
+> 组内书籍 `group_id` 置 NULL（回到未分组），**行保留**——离线删除时分组
+> 墓碑仍可补推上云（docs/04 §7.1 分组同款语义）；墓碑上云成功后该行被
+> 同步层硬删。UI 侧只展示活分组（`deleted=0`）。
 >
 > **`local_only_books` 的语义**：命中本表的书**永不参与 diff**（既不推 meta
 > 也不传正文）。两种来源在 UI 上是同一个状态「仅本地」：导入时取消勾选
@@ -289,6 +406,10 @@ CREATE TABLE app_settings (
 | `rev/baseRev` | `sync_state.base_rev`（`meta.rev` 以 `last_synced_meta_json` 为准） |
 | `deleted/deletedAt` | `deleted_books` 表 |
 | `deviceId/deviceName` | 不持久化到书表（仅存于 `last_synced_meta_json` 原文） |
+| `groupId` | `books.group_id`（外键指向 `book_groups.group_id`；远端分组未到达时落 NULL，§2.2） |
+| 分组 `name/sortOrder` | `book_groups.name` / `book_groups.sort_order` |
+| 分组 `rev/baseRev` | `group_sync_state.base_rev`（`groups/*.json` 的 rev 以 `last_synced_group_json` 为准） |
+| 分组 `deleted/deletedAt` | `book_groups.deleted` / `book_groups.deleted_at`（软删；行保留待推墓碑） |
 
 ## 6. schemaVersion 演进与迁移
 
@@ -296,8 +417,10 @@ CREATE TABLE app_settings (
 | --- | --- | --- |
 | 1 | 初版 | — |
 | 2（2026-10-28，M4） | 本地库新增 `reading_days` / `book_groups` 表与 `books.group_id` 列 | drift `schemaVersion` 1→2，**只增不删**；三者均为本地列/表，不入云端 meta JSON，v1 不参与同步 |
-| 3（当前，2026-10-28，v1.1 重设计批 1） | 本地库新增 `local_only_books` / `app_settings` 表 | drift `schemaVersion` 2→3，**只增不删**（两张新表均为纯本地表，不入云端 meta JSON，不参与同步）；`local_only_books` 承载「仅本地 / 未上传」状态（docs/10 §4.7c），`app_settings` 承载应用级本地设置（如 accent 持久化） |
-| 次版本演进（云端 meta 的 1 → 2） | **只允许**：新增可选字段、新增 `extra` 键、locator 新增 `type` | 旧客户端读到新版本：按已知字段使用 + `percent` 兜底，**不得报错**；写回时保留原 `schemaVersion` 不变，避免降级破坏 |
+| 3（2026-10-28，v1.1 重设计批 1） | 本地库新增 `local_only_books` / `app_settings` 表 | drift `schemaVersion` 2→3，**只增不删**（两张新表均为纯本地表，不入云端 meta JSON，不参与同步）；`local_only_books` 承载「仅本地 / 未上传」状态（docs/10 §4.7c），`app_settings` 承载应用级本地设置（如 accent 持久化） |
+| 4（当前，2026-11-17，v1.4 分组云端同步） | 本地库新增 `group_sync_state` 表；`book_groups` 增 `deleted` / `deleted_at` 两列 | drift `schemaVersion` 3→4，**只增不删**（新增一张表 + 两列；`books` 表未动）；分组本体从"纯本地"升级为"参与云端同步"（FR-107，docs/05 §2.1）：分组对象以 `groups/{groupId}.json` 上云，书籍 meta 增**可选**字段 `groupId`（§2.2）。**云端 meta 的 `schemaVersion` 保持 1 不变**——新增的是可选字段，不改变既有字段的语义与类型，属"只增不删"的兼容演进（旧读方忽略未知键即可） |
+| 次版本演进（云端 meta 的 1 → 2） | **只允许**：新增可选字段、新增 `extra` 键、locator 新增 `type` | 旧客户端读到新版本：按已知字段使用 + `percent` 兜底，**不得报错**；写回时保留原 `schemaVersion` 不变，避免降级破坏。**实例**：v1.4 的 `groupId`（§2.2）即属此类——只加可选字段，`schemaVersion` 仍为 1 |
+| 分组 meta（`groups/*.json`）的演进 | 与书籍 meta 同规则（只增不删、读方容忍未知字段） | 分组是独立文件类型：老客户端根本不读 `groups/` 目录 → 分组同步对旧客户端零风险；旧客户端**写回**的书籍 meta 不含 `groupId` → 该书的分组归属降级为"未分组"（已知取舍，docs/07 登记） |
 | 破坏性演进（大版本） | 字段改名/类型变更/语义变更 | 客户端内置迁移器：读到旧版本 → 迁移到当前版本再写回并升 `schemaVersion`；迁移矩阵与用例纳入 `sync_core` 单元测试 |
 | 校验 | — | `sync_core` 中 `BookMeta.fromJson` 执行严格校验（必填/类型/枚举），失败 → 该书标记 `Corruption` 并跳过，不阻塞全库同步 |
 
