@@ -21,9 +21,13 @@
 /// - 图片页：**图片独占一页**——一屏之内出现图片块顶时，该页终点 = 图片块顶
 ///   （图片另起一页）；若本页从图片块顶起，则本页终点 = 图片块底（页界不入
 ///   图片内部）；
+/// - **章边界**（[EpubPageStructure.chapterStarts]）：**新章节另起一页**——
+///   页终点最多到下一章节起点，章节起点本身即页起点（章题不被挤在上一页
+///   尾部，章首也不与上一章正文同页）；
 /// - **页起点链**（[EpubPageStructure.chain]）：走过的页起点按序记录（升序），
 ///   前后翻页据此**精确往返**（下一页 → 上一页 回到原落点），而不是每次重新
-///   猜一个近似位置。
+///   猜一个近似位置。链在**跳转**（位置语义断裂）时整体作废，见
+///   [invalidateChain]。
 ///
 /// 候选表的**代次**（epoch）：候选与已测内容绑定——排版几何一变（字号/行高/
 /// 页边距/字体/翻页模式）就整体作废，避免「新旧两套坐标」混在一张表里把
@@ -88,6 +92,13 @@ class EpubPageStructure {
   /// 页起点链（升序）：走过的页起点。
   final List<double> _chain = [];
 
+  /// 章节起点（升序，文档坐标）：**新章节另起一页**的边界。
+  ///
+  /// 章起点 = 新章首块的块顶（渲染器实测提供）。页终点不得越过它，且它本身
+  /// 就是合法页起点。未知（未测到）的章不在表内——页界只受**已测到**的
+  /// 章边界约束（一屏之内的章边界必然被测到：page 模式多预建一屏）。
+  final List<double> _chapterStarts = [];
+
   /// 候选数量（诊断/测试用）。
   int get stopCount => _stops.length;
 
@@ -106,12 +117,16 @@ class EpubPageStructure {
   /// 页起点链（升序；诊断/测试用）。
   List<double> get chain => List<double>.unmodifiable(_chain);
 
+  /// 章节起点（升序；诊断/测试用）。
+  List<double> get chapterStarts => List<double>.unmodifiable(_chapterStarts);
+
   /// 清空（排版几何变化 → 行盒全变 → 候选与链一并作废）。
   void clear() {
     _stops.clear();
     _safe.clear();
     _contentEnd = null;
     _chain.clear();
+    _chapterStarts.clear();
   }
 
   /// 整表替换候选（一次测量的结果；升序）。
@@ -122,16 +137,20 @@ class EpubPageStructure {
   /// [safeBounds]：本次测得的安全边界（行落点/块底等），供**保守裁剪**使用。
   ///
   /// [contentEnd]：本次测得的内容下边界（文档末尾收尾用）。
+  ///
+  /// [chapterStarts]：本次测得的章节起点（新章另起一页的边界；升序）。
   void setStops(
     List<EpubStop> measured, {
     int? epoch,
     List<double> safeBounds = const [],
     double? contentEnd,
+    List<double> chapterStarts = const [],
   }) {
     if (epoch != null && epoch != _epoch) {
       // 代次变了：旧候选与旧链整体作废（几何已变，旧坐标不再成立）。
       _stops.clear();
       _chain.clear();
+      _chapterStarts.clear();
       _epoch = epoch;
     }
     _stops
@@ -142,9 +161,29 @@ class EpubPageStructure {
       ..addAll(safeBounds)
       ..sort();
     _contentEnd = contentEnd;
+    _chapterStarts
+      ..clear()
+      ..addAll(chapterStarts)
+      ..sort();
   }
 
+  /// **作废页起点链**（跳转 = 位置语义断裂）。
+  ///
+  /// 目录/进度跳转后，新位置与旧位置的页起点**不再相邻**（中间隔着整段
+  /// 未走过的内容）。若留着旧链：
+  /// - 弹道吸附（[nearestPageStart]）会把页面**吸回旧位置**（跳转后弹回、
+  ///   来回翻页）；
+  /// - 翻页会沿旧链走到旧区域（下一页跳回上一章）。
+  ///
+  /// 故跳转时清链，并把跳转落点另行登记为新页起点（[registerPageStart]）。
+  void invalidateChain() {
+    _chain.clear();
+  }
 
+  /// 登记一个页起点（跳转落点）：并入页起点链，作为往返的锚。
+  void registerPageStart(double pos) {
+    _chainAdd(pos);
+  }
 
   /// 区间 (from, to] 内的**最大安全边界**（保守裁剪用；无则 null）。
   ///
@@ -254,11 +293,23 @@ class EpubPageStructure {
   // —— 页结构规则 ——
 
   /// 下一个页起点（页结构规则，不经链）。
+  ///
+  /// **章边界不得越过**（新章节另起一页）：一屏之内出现下一章节起点时，
+  /// 本页终点 = 该章节起点（章题与上一章正文不共页）；章节起点本身即是
+  /// 合法页起点。
   double? _successor(double from) {
     // 本页从图片块顶起 → 下一页起点 = 图片块底（图片独占一页，页界不入图内）。
     final image = _imageAt(from);
     if (image != null) return image.imageBottom;
-    final limit = from + viewport + epsilon;
+    final limit0 = from + viewport + epsilon;
+    var limit = limit0;
+    double? chapter;
+    final nextChapter = _chapterStartAfter(from);
+    if (nextChapter != null && nextChapter <= limit0) {
+      // 章边界在一屏之内 → 本页到此为止（新章另起一页）。
+      chapter = nextChapter;
+      limit = nextChapter;
+    }
     final start = _firstIndexAfter(from);
     double? best; // 行边界候选（最靠下）
     for (var i = start; i < _stops.length; i++) {
@@ -270,9 +321,30 @@ class EpubPageStructure {
       }
       best = stop.pos;
     }
+    // 章边界即页终点（页内其余行一并显示，页尾留白到章首）。
+    if (chapter != null) return chapter;
     return best;
   }
 
+  /// 下一个页起点（页结构规则，**不**夹章边界）。
+  ///
+  /// 只用于「上一页起点」的精确判定：夹了章边界后，一屏之内的多个候选都会
+  /// 映射到同一个章起点，上一页起点就不再精确（往返会退化成「回到最靠前的
+  /// 候选」）。
+  double? _successorRaw(double from) {
+    final image = _imageAt(from);
+    if (image != null) return image.imageBottom;
+    final limit = from + viewport + epsilon;
+    final start = _firstIndexAfter(from);
+    double? best;
+    for (var i = start; i < _stops.length; i++) {
+      final stop = _stops[i];
+      if (stop.pos > limit) break;
+      if (stop.isImage) return stop.pos;
+      best = stop.pos;
+    }
+    return best;
+  }
 
   /// 上一个页起点（页结构规则，不经链）。
   ///
@@ -280,35 +352,70 @@ class EpubPageStructure {
   /// - `from` 是图片块底 → 该图片块顶（图片独占一页）；
   /// - 否则 = 「后继恰为 [from]」的候选中**最靠前**的一个——那一页排得最
   ///   满（插图页尤其重要：取最近的文字行会退化成半页）；
+  /// - **不得跨过章边界**（上一页与本章同章；`from` 恰是章起点时，上一页
+  ///   可以是上一章的末页）；
   /// - 找不到（`from` 不在页起点上，如手动滚动后的落点）→ 兜底取「一屏之内
   ///   最靠前的合法候选」，且该候选与 [from] 之间**不得有插图**（插图独占页
-  ///   → 插图前后的正文不能同页）。
+  ///   → 插图前后的正文不能同页）、**不得跨章**。
   double? _predecessor(double from) {
     // 图片块底 → 上一页起点 = 该图片块顶（图片独占一页）。
     final imageTop = _imageBottomAt(from);
     if (imageTop != null) return imageTop;
-    // 「后继恰为 from」的候选中最靠前的一个。
+    // 上一页可落的最低位置（不跨章边界）。
+    final floor = _predecessorFloor(from);
+    // 「后继恰为 from」的候选中最靠前的一个（用未夹章边界的原始后继判定，
+    // 保证上一页起点精确）。
     for (var i = 0; i < _stops.length; i++) {
       final pos = _stops[i].pos;
       if (pos >= from - epsilon) break;
-      if (_samePos(_successor(pos), from)) return pos;
+      if (floor != null && pos < floor - epsilon) continue; // 跨章了
+      if (_samePos(_successorRaw(pos), from)) return pos;
     }
-    // 兜底：一屏之内最靠前的合法候选（插图前的正文不得与插图后的正文同页）。
-    var floor = from - viewport - epsilon;
+    // 兜底：一屏之内最靠前的合法候选（插图前的正文不得与插图后的正文同页；
+    // 也不得跨过章边界）。
+    var floor2 = from - viewport - epsilon;
+    if (floor != null && floor > floor2) floor2 = floor;
     for (final stop in _stops) {
       if (!stop.isImage) continue;
       if (stop.pos >= from - epsilon) break; // 插图在 from 之后 → 不影响
       final bottom = stop.imageBottom!;
-      if (bottom > floor) floor = bottom;
+      if (bottom > floor2) floor2 = bottom;
     }
-    final index = _firstIndexAtOrAfter(floor);
+    final index = _firstIndexAtOrAfter(floor2);
     if (index >= _stops.length) return null;
     final pos = _stops[index].pos;
     if (pos >= from - epsilon) return null; // 没有更早的候选
     return pos;
   }
 
+  /// 上一页起点可落的**最低位置**（不得跨过章边界）。
+  ///
+  /// - [from] 不是章起点 → 上一页必须在**同一章**内 → 下界 = 本章起点；
+  /// - [from] 恰是章起点 → 上一页可以是上一章的末页 → 下界 = 上一章起点
+  ///   （未测到则不设限）。
+  double? _predecessorFloor(double from) {
+    double? current;
+    double? previous;
+    for (final c in _chapterStarts) {
+      if (c <= from + epsilon) {
+        previous = current;
+        current = c;
+      } else {
+        break;
+      }
+    }
+    if (current == null) return null;
+    if (_samePos(current, from)) return previous;
+    return current;
+  }
 
+  /// 严格大于 [from] 的最近章节起点（章边界）。
+  double? _chapterStartAfter(double from) {
+    for (final c in _chapterStarts) {
+      if (c > from + epsilon) return c;
+    }
+    return null;
+  }
 
   /// 位于 [pos] 的图片候选（[pos] 为图片块顶）。
   EpubStop? _imageAt(double pos) {

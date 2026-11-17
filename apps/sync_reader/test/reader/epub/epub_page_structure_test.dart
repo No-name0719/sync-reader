@@ -13,16 +13,16 @@ import 'package:sync_reader/features/reader/formats/epub/epub_page_structure.dar
 
 /// 行边界候选（间距 [step]）。
 List<EpubStop> lines(double from, int count, double step) => [
-      for (var i = 0; i < count; i++) EpubStop.text(from + i * step),
-    ];
+  for (var i = 0; i < count; i++) EpubStop.text(from + i * step),
+];
 
 /// 正文 0,30,60,90 → 插图 [120,260] → 正文 260,290,320,350。
 List<EpubStop> textWithImage() => [
-      ...lines(0, 4, 30),
-      EpubStop.image(120, 260),
-      EpubStop.text(260),
-      ...lines(260, 4, 30),
-    ];
+  ...lines(0, 4, 30),
+  EpubStop.image(120, 260),
+  EpubStop.text(260),
+  ...lines(260, 4, 30),
+];
 
 void main() {
   group('页结构：文本页', () {
@@ -143,6 +143,76 @@ void main() {
 
       final next = pages.nextPageStart(0)!;
       expect(pages.nearestPageStart(next), closeTo(next, 0.5));
+    });
+  });
+
+  group('页结构：跳转（位置语义断裂）', () {
+    test('跳转作废页起点链：旧页起点不再被就近吸附采纳', () {
+      final pages = EpubPageStructure(viewport: 200);
+      pages.setStops(lines(0, 20, 30)); // 行边界 0,30,60,…
+      // 走过的页起点（旧位置）：0 → 90 → 270。
+      pages.nextPageStart(0);
+      pages.nextPageStart(90);
+      expect(pages.chain, isNotEmpty);
+
+      // 跳转前：旧页起点 270 离 300 只有 30（一屏之内）→ 弹道会吸附到它。
+      expect(pages.nearestPageStart(300), 270);
+
+      // 跳转 = 位置语义断裂 → 旧链作废。
+      pages.invalidateChain();
+      expect(pages.chain, isEmpty);
+      expect(
+        pages.nearestPageStart(300),
+        isNot(270),
+        reason: '旧页起点不得再被吸附（否则跳转后被吸回旧位置）',
+      );
+    });
+
+    test('跳转落点登记为新页起点：往返以落点为锚，一次按键只翻一页', () {
+      final pages = EpubPageStructure(viewport: 200);
+      pages.setStops(lines(0, 20, 30));
+      pages.invalidateChain();
+      pages.registerPageStart(300);
+
+      // 落点即页起点：就近吸附不挪动（翻页末尾的 goBallistic 不产生二次位移）。
+      expect(pages.nearestPageStart(300), closeTo(300, 0.5));
+      // 前后翻页以落点为锚，且能精确往返。
+      final next = pages.nextPageStart(300)!;
+      expect(next, greaterThan(300));
+      expect(pages.prevPageStart(next), closeTo(300, 0.5));
+    });
+  });
+
+  group('页结构：章边界（新章节另起一页）', () {
+    test('页终点不得越过章起点：章起点即页起点', () {
+      final pages = EpubPageStructure(viewport: 100);
+      pages.setStops(lines(0, 20, 30), chapterStarts: [150]);
+
+      // 0 + 100 = 100 < 150 → 一屏内无章边界 → 正常按行边界分页。
+      expect(pages.nextPageStart(0), 90);
+      // 90 + 100 = 190 ≥ 150 → 页终点 = 章起点（章另起一页）。
+      expect(pages.nextPageStart(90), 150);
+      // 章起点之后的页照常按行边界分页。
+      expect(pages.nextPageStart(150), 240);
+    });
+
+    test('上一页不跨章边界（落在同一章内）', () {
+      final pages = EpubPageStructure(viewport: 100);
+      pages.setStops(lines(0, 20, 30), chapterStarts: [150, 400]);
+
+      // 从章起点退回：落在上一章内（不越过 150）。
+      final prev = pages.prevPageStart(150);
+      expect(prev, isNotNull);
+      expect(prev, lessThan(150));
+      // 上一章内的页终点仍是该章的起点（不跳到更早的章）。
+      expect(pages.nextPageStart(prev!), 150);
+    });
+
+    test('章起点未测到时不受约束（保守：只受已测章边界约束）', () {
+      final pages = EpubPageStructure(viewport: 100);
+      pages.setStops(lines(0, 20, 30)); // 无章边界
+      expect(pages.nextPageStart(0), 90);
+      expect(pages.nextPageStart(90), 180);
     });
   });
 

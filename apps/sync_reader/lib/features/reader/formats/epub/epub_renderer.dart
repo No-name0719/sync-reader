@@ -113,16 +113,19 @@ class _EpubBlockLines {
 /// - [safeBounds]：安全边界（升序）——可安全裁剪的位置（行落点 / 插图
 ///   块顶底 / 无行盒块的块底）；
 /// - [contentEnd]：已测内容的下边界（文档末尾收尾用）；
+/// - [chapterStarts]：章节起点（升序）——新章节另起一页的边界。
 class _EpubPageMetrics {
   const _EpubPageMetrics({
     required this.stops,
     required this.safeBounds,
     required this.contentEnd,
+    required this.chapterStarts,
   });
 
   final List<EpubStop> stops;
   final List<double> safeBounds;
   final double? contentEnd;
+  final List<double> chapterStarts;
 }
 
 /// epub 渲染会话。
@@ -345,6 +348,12 @@ class EpubRenderer extends BookRenderer
   /// 页起点链（诊断/测试用）：走过的页起点（升序）。
   List<double> get pageStarts => List<double>.unmodifiable(_pages.chain);
 
+  /// 章节起点（诊断/测试用）：已测得的章边界（升序，文档坐标）。
+  ///
+  /// 章边界 = spine 首块顶：**新章节另起一页**——页终点不得越过它。
+  List<double> get chapterStarts =>
+      List<double>.unmodifiable(_pages.chapterStarts);
+
   /// 正文基础样式（字号/行距/字体/前景色随设置即时生效；衬线为默认，Q2）。
   TextStyle bodyTextStyle() {
     final font = resolveReaderFont(_settings.fontFamily);
@@ -458,7 +467,9 @@ class EpubRenderer extends BookRenderer
     if (data != null && _isExactRestore(data)) {
       final flat = _spineStartFlat[data.spineIndex] + data.blockIndex;
       _setPosition(flat, data.charOffset);
+      _breakPageChain(); // 位置语义断裂：旧页起点链作废
       await _locatePosition();
+      _registerLanding();
       return ReaderRestoreResult(
         mode: ReaderRestoreMode.exact,
         applied: saved, // applied=原锚点（契约约定）
@@ -470,7 +481,9 @@ class EpubRenderer extends BookRenderer
     final spine = _blockSpine[flat.clamp(0, _blocks.length - 1)];
     final start = _spineStartFlat[spine];
     _setPosition(start < 0 ? 0 : start, 0);
+    _breakPageChain(); // 位置语义断裂：旧页起点链作废
     await _locatePosition();
+    _registerLanding();
     return ReaderRestoreResult(
       mode: ReaderRestoreMode.degradedToPercent,
       applied: ProgressAnchor(
@@ -518,11 +531,26 @@ class EpubRenderer extends BookRenderer
     // 跳转 = 位置语义断裂：旧页起点与新位置不再相邻 → 旧链作废
     // （否则弹道吸附把页面吸回旧位置、翻页沿旧链跳回旧章，见
     //  [EpubPageStructure.invalidateChain]）。
+    _breakPageChain();
     await _locatePosition();
+    _registerLanding();
     _scheduleProgressReport();
   }
 
+  /// 跳转/恢复 = 位置语义断裂：页起点链整体作废。
+  ///
+  /// 旧位置的页起点与新位置**不再相邻**（中间隔着未走过的整段内容），
+  /// 留着旧链会让弹道吸附把页面吸回旧位置（跳转后弹回、来回翻页），
+  /// 翻页也会沿旧链跳回旧章。
+  void _breakPageChain() {
+    _pages.invalidateChain();
+  }
 
+  /// 把当前落点登记为新页起点（跳转后翻页往返以它为锚）。
+  void _registerLanding() {
+    if (_disposed || !_scrollController.hasClients) return;
+    _pages.registerPageStart(_scrollController.offset);
+  }
 
   // —— 翻页（音量键翻页 FR-209，契约 nextPage/previousPage）——
 
@@ -553,6 +581,7 @@ class EpubRenderer extends BookRenderer
         epoch: _layoutEpoch,
         safeBounds: metrics.safeBounds,
         contentEnd: metrics.contentEnd,
+        chapterStarts: metrics.chapterStarts,
       );
       final stop = delta > 0
           ? _pages.nextPageStart(ctrl.offset)
@@ -629,6 +658,7 @@ class EpubRenderer extends BookRenderer
         epoch: _layoutEpoch,
         safeBounds: metrics.safeBounds,
         contentEnd: metrics.contentEnd,
+        chapterStarts: metrics.chapterStarts,
       );
     });
   }
@@ -705,6 +735,7 @@ class EpubRenderer extends BookRenderer
         stops: [],
         safeBounds: [],
         contentEnd: null,
+        chapterStarts: [],
       );
     }
     final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
@@ -714,6 +745,7 @@ class EpubRenderer extends BookRenderer
         : 0.0;
     final stops = <EpubStop>[];
     final safe = <double>[];
+    final chapterStarts = <double>[];
     double? contentEnd;
     for (var i = _builtMin; i <= _builtMax && i < _blocks.length; i++) {
       final box = _renderBoxOf(_keys[i].currentContext);
@@ -722,6 +754,12 @@ class EpubRenderer extends BookRenderer
       final blockBottom = blockTop + box.size.height;
       if (contentEnd == null || blockBottom > contentEnd) {
         contentEnd = blockBottom;
+      }
+      if (_isSpineStart(i)) {
+        // 章节起点（spine 首块顶）：**新章节另起一页**——页终点不得越过它，
+        // 它本身即合法页起点（章题不被挤在上一页尾部）。
+        chapterStarts.add(blockTop);
+        safe.add(blockTop);
       }
       if (_isImageBlock(i)) {
         // 图片块 = **原子区间** [块顶, 块底]：页界不得落在其内部 → 插图
@@ -754,13 +792,27 @@ class EpubRenderer extends BookRenderer
     }
     stops.sort((a, b) => a.pos.compareTo(b.pos));
     safe.sort();
+    chapterStarts.sort();
     return _EpubPageMetrics(
       stops: stops,
       safeBounds: safe,
       contentEnd: contentEnd,
+      chapterStarts: chapterStarts,
     );
   }
 
+  /// 块是否为某 spine 的**首块**（= 章节起点）。
+  ///
+  /// epub 的目录条目粒度 = spine（内容文件），故章边界 = spine 边界。
+  ///
+  /// 首章（spine 0）**不算**边界：它的首块就在文档顶端（前面只有列表的
+  /// 顶部内边距），若把它当边界，第一页会变成「只有内边距的空页」。
+  bool _isSpineStart(int index) {
+    if (index < 0 || index >= _blocks.length) return false;
+    final spine = _blockSpine[index];
+    if (spine <= 0 || spine >= _spineStartFlat.length) return false;
+    return _spineStartFlat[spine] == index;
+  }
 
   /// 记录视口高（绘制阶段调用）：帧末测量按它换算「一屏」的长度。
   void noteViewportHeight(double viewportHeight) {
@@ -816,7 +868,9 @@ class EpubRenderer extends BookRenderer
     final target = (percent.clamp(0.0, 1.0) * _totalChars).round();
     final flat = EpubPositionMath.flatIndexAtCharOffset(_prefixChars, target);
     _setPosition(flat, 0);
+    _breakPageChain(); // 位置语义断裂：旧页起点链作废
     await _locatePosition();
+    _registerLanding();
     _scheduleProgressReport();
   }
 
@@ -925,9 +979,14 @@ class EpubRenderer extends BookRenderer
         final max = _scrollController.position.maxScrollExtent;
         if (max > 0 && _totalChars > 0) {
           final i = _flatIndex.clamp(0, _blocks.length - 1);
-          final estimate = ((_prefixChars[i] + _charOffset) / _totalChars * max)
-              .clamp(0.0, max);
-          _scrollController.jumpTo(estimate);
+          final estimate = _estimateOffset(i);
+          if (estimate == null) {
+            // 内容不足一屏（无滚动空间）：目标块必在视口内，直接收敛。
+            // （此处不可 await endOfFrame——无 jumpTo 则无新帧，会永久挂起。）
+            _updateFromViewport(force: true);
+            return;
+          }
+          _scrollController.jumpTo(estimate.clamp(0.0, max));
           await WidgetsBinding.instance.endOfFrame;
           continue;
         }
@@ -955,7 +1014,73 @@ class EpubRenderer extends BookRenderer
     return (dy, box.size.height);
   }
 
+  /// 目标块未构建时的**偏移估计**（文档坐标；无法估计返回 null）。
+  ///
+  /// 优先用**已构建区**做块序号外推，而不是全书字符比例：
+  /// 字符比例 → 偏移的换算在插图页、标题块、表格处严重失真（字符多的一章
+  /// 像素可能只占半屏）→ 粗跳落到错误位置 → 目标块始终构建不出来 → 定位
+  /// 12 轮也不收敛（目录跳转偶发落到别的章）。
+  ///
+  /// 外推：以已构建区的高度 ÷ 块数 = 平均块高，按块序号差外推目标位置；
+  /// 每跳一次，已构建区随之移动，下一轮的估计更准（相当于割线法收敛）。
+  /// 外推不动（没有已构建区）时退回字符比例。
+  double? _estimateOffset(int flat) {
+    final max = _scrollController.position.maxScrollExtent;
+    if (max <= 0) return null;
+    final extent = _builtExtent();
+    if (extent != null) {
+      final (top, bottom, minIndex, maxIndex) = extent;
+      final count = maxIndex - minIndex + 1;
+      if (count > 0) {
+        final avg = (bottom - top) / count;
+        if (flat > maxIndex) {
+          return (bottom + (flat - maxIndex) * avg).clamp(0.0, max);
+        }
+        if (flat < minIndex) {
+          return (top - (minIndex - flat) * avg).clamp(0.0, max);
+        }
+      }
+    }
+    if (_totalChars <= 0) return null;
+    final i = flat.clamp(0, _blocks.length - 1);
+    return ((_prefixChars[i] + _charOffset) / _totalChars * max).clamp(
+      0.0,
+      max,
+    );
+  }
 
+  /// 已构建块的文档坐标区间（顶..底）与实际构建的块序号区间。
+  ///
+  /// 只统计**当前仍挂在树上**的块（惰性窗口外的块已被回收，
+  /// [_builtMin]/_[_builtMax] 是历史最大值，不能直接当区间用）。
+  (double top, double bottom, int minIndex, int maxIndex)? _builtExtent() {
+    final viewportBox = _renderBoxOf(_viewportKey.currentContext);
+    if (viewportBox is! RenderBox || !viewportBox.hasSize) return null;
+    if (!_scrollController.hasClients ||
+        _scrollController.positions.length != 1) {
+      return null;
+    }
+    final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
+    final base = _scrollController.offset;
+    double? top;
+    double? bottom;
+    int? minIndex;
+    int? maxIndex;
+    for (var i = _builtMin; i <= _builtMax && i < _blocks.length; i++) {
+      final box = _renderBoxOf(_keys[i].currentContext);
+      if (box == null || !box.attached || !box.hasSize) continue;
+      final t = base + box.localToGlobal(Offset.zero).dy - viewportTop;
+      final b = t + box.size.height;
+      if (top == null || t < top) top = t;
+      if (bottom == null || b > bottom) bottom = b;
+      minIndex ??= i;
+      maxIndex = i;
+    }
+    if (top == null || bottom == null || minIndex == null || maxIndex == null) {
+      return null;
+    }
+    return (top, bottom, minIndex, maxIndex);
+  }
 
   /// 滚动监听：更新逻辑位置（节流上报），并排帧末复测自校正
   /// （程序化滚动早于布局生效时，布局收敛后自动停止）。
@@ -1568,6 +1693,7 @@ class EpubPageScrollPhysics extends ScrollPhysics {
     // `goBallistic(0)`：若此时再叠加弹道吸附（就近页起点），弹道会把刚
     // 跳到的位置又拉回去——定位永远收敛不了，页面在旧位置与目标之间来回
     // 翻（旧页起点链陈旧时尤其明显：弹道专挑旧页起点吸附）。
+    if (renderer._locating) return null;
     // 已到文档端头且不打算回程：交给父级（回弹到边界）。
     if ((velocity <= 0.0 && position.pixels <= position.minScrollExtent) ||
         (velocity >= 0.0 && position.pixels >= position.maxScrollExtent)) {

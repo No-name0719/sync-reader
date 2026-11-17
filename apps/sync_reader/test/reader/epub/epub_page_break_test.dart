@@ -91,17 +91,22 @@ void main() {
       final offset = renderer.scrollController.offset;
       landings.add(offset);
       final atDocumentEnd =
-          (offset - renderer.scrollController.position.maxScrollExtent)
-                  .abs() <=
-              1.0;
+          (offset - renderer.scrollController.position.maxScrollExtent).abs() <=
+          1.0;
 
-      // ① 落点是已知行边界（行盒顶 / 图片块块顶）；末页例外——落在文档末尾
+      // ① 落点是已知行边界（行盒顶 / 图片块块顶）**或章边界**（章起点：新
+      //    章节另起一页，章起点即页起点）；末页例外——落在文档末尾
       //    （下方无内容，不存在切字）。
       final stops = epubDocumentStops(renderer);
+      final chapterStarts = renderer.chapterStarts;
       expect(
-        atDocumentEnd || stops.any((s) => (s - offset).abs() <= 1.0),
+        atDocumentEnd ||
+            stops.any((s) => (s - offset).abs() <= 1.0) ||
+            chapterStarts.any((c) => (c - offset).abs() <= 1.0),
         isTrue,
-        reason: '第 $page 页落点 $offset 必须落在行边界上（候选：$stops）',
+        reason:
+            '第 $page 页落点 $offset 必须落在行边界或章边界上'
+            '（候选：$stops；章边界：$chapterStarts）',
       );
 
       // ② 落点处没有行盒横跨 → 没有任何字形被裁切。
@@ -113,16 +118,24 @@ void main() {
 
       // ③ 本页内容高度：≤ 一屏（不溢出、不切字），且接近一屏（页尾最多
       //    留一行空白）。
+      //    **例外**：本页止于**章边界**（新章节另起一页 → 上一章末页到章首
+      //    为止，页尾留白到章首）或文档末尾。
       final contentHeight = renderer.pageContentHeight(viewport);
       expect(
         contentHeight,
         lessThanOrEqualTo(viewport + 0.5),
-        reason: '第 $page 页内容高度不得超过一屏',
+        reason: '本页内容高度不得超过一屏',
+      );
+      final pageEnd = offset + contentHeight;
+      final endsAtChapter = renderer.chapterStarts.any(
+        (c) => (c - pageEnd).abs() <= 1.0,
       );
       expect(
-        contentHeight,
-        greaterThan(viewport - 60),
-        reason: '第 $page 页内容高度应接近一屏（页尾最多留一行空白）',
+        contentHeight > viewport - 60 || endsAtChapter || atDocumentEnd,
+        isTrue,
+        reason:
+            '本页内容高度应接近一屏（页尾最多留一行空白）；'
+            '实际 $contentHeight（页尾 $pageEnd，章边界 ${renderer.chapterStarts}）',
       );
     }
 
@@ -203,9 +216,7 @@ void main() {
     await drainProgressThrottle(tester);
   });
 
-  testWidgets('page 模式：插图独占一页（不与上下文字挤在一起、不被切成两页）', (
-    tester,
-  ) async {
+  testWidgets('page 模式：插图独占一页（不与上下文字挤在一起、不被切成两页）', (tester) async {
     final bf = (await tester.runAsync(writeEpubBook))!;
     final renderer = (await tester.runAsync(
       () => openRenderer(
@@ -262,11 +273,7 @@ void main() {
       final between = stops
           .where((s) => s > top + 1.0 && s < bottom - 1.0)
           .toList();
-      expect(
-        between,
-        isEmpty,
-        reason: '插图区间 $top..$bottom 内不得有页起点（插图须独占一页）',
-      );
+      expect(between, isEmpty, reason: '插图区间 $top..$bottom 内不得有页起点（插图须独占一页）');
       // 翻页过程中确实经过了插图页：块顶与块底都是落点。
       expect(
         landings.any((l) => (l - top).abs() <= 1.0),
