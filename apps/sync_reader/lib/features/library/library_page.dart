@@ -26,18 +26,9 @@ import 'group_manage_dialog.dart';
 import 'import/batch_import_controller.dart';
 import 'import/book_import_service.dart';
 import 'library_filters.dart';
+import 'library_grid_metrics.dart';
 import 'library_providers.dart';
 import 'widgets/book_cards.dart';
-
-/// 网格卡宽上限（Q6：cardMinWidth=154 起步，7 列 @1440 宽）。
-///
-/// 推导：`ceil(内容宽 / 176)` 列 —— 1180（窄栏内容 1080）→ 7 列（154.3px，
-/// 恰好守住 154 下限）；1440（内容 1176）→ 7 列（168px）；860 → 5 列；
-/// 390 → 3 列（119px，与原型手机 3 列 112px 相当）。
-const double _gridMaxCardExtent = 176;
-
-/// 网格卡片文字区高度（书名两行 36 + 作者 18 + 间距 6 + 时长 17 + 安全余量）。
-const double _gridCardMetaHeight = 84;
 
 /// 移动断点（与外壳一致：≤860 底部标签栏；搜索框落内容区、列表隐藏进度条）。
 const double _mobileBreakpoint = 860;
@@ -1175,32 +1166,34 @@ class _BookGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 宽高比随实际卡宽自适应：卡高 = 封面（2:3）+ 文字区，按
-    // `ceil(内容宽 / 176)` 的实际列宽反推，任何断点都不溢出（A6）。
+    // 列数 / 卡宽 / 卡高 / 一屏几行统一由度量模块给出（v1.3.4 密度整改）：
+    // 改造前页面按 `ceil(内容宽 / 176)` 算宽高比、委托却按
+    // `ceil(内容宽 / (176 + 16))` 排布，手机实得 2 列 × 1.5 行 ≈ 3 本。
     return LayoutBuilder(
       builder: (context, constraints) {
-        final contentWidth = (constraints.maxWidth - AppSpacing.s4 * 2)
-            .clamp(1.0, double.infinity)
-            .toDouble();
-        final columns = (contentWidth / _gridMaxCardExtent).ceil().clamp(1, 99);
-        final cardWidth = contentWidth / columns;
-        final ratio = cardWidth / (cardWidth * 1.5 + _gridCardMetaHeight);
+        final metrics = computeLibraryGridMetrics(
+          viewportWidth: constraints.maxWidth,
+          viewportHeight: constraints.hasBoundedHeight
+              ? constraints.maxHeight
+              : double.infinity,
+          spec: libraryGridSpecForWidth(constraints.maxWidth),
+        );
         return GridView.builder(
-          padding: const EdgeInsets.all(AppSpacing.s4),
-          gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-            maxCrossAxisExtent: _gridMaxCardExtent,
-            childAspectRatio: ratio,
-            crossAxisSpacing: AppSpacing.s4,
-            mainAxisSpacing: AppSpacing.s5,
+          padding: EdgeInsets.all(metrics.padding),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: metrics.columns,
+            childAspectRatio: metrics.childAspectRatio,
+            crossAxisSpacing: metrics.crossAxisSpacing,
+            mainAxisSpacing: metrics.mainAxisSpacing,
           ),
           itemCount: books.length,
-          itemBuilder: (context, index) => _buildCard(books[index]),
+          itemBuilder: (context, index) => _buildCard(books[index], metrics),
         );
       },
     );
   }
 
-  Widget _buildCard(Book book) {
+  Widget _buildCard(Book book, LibraryGridMetrics metrics) {
     final percent = progressMap?[book.bookId]?.percent;
     final card = BookGridCard(
       book: book,
@@ -1209,6 +1202,8 @@ class _BookGrid extends StatelessWidget {
       localOnly: localOnlyIds.contains(book.bookId),
       onOpen: () => onOpen(book),
       onContextMenu: (position) => onContextMenu(book, position),
+      compact: metrics.overlayTitle,
+      coverAspectRatio: metrics.coverAspectRatio,
     );
     // 桌面保留拖拽归组（FR-107）；触屏长按出菜单（A20 冲突解法）。
     return _MouseLongPressDraggable(

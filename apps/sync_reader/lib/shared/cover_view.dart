@@ -107,6 +107,7 @@ class CoverView extends StatelessWidget {
     this.author = '',
     required this.contentHash,
     this.borderRadius = const BorderRadius.all(Radius.circular(6)),
+    this.showTextBlock = true,
   });
 
   /// 本地封面文件路径（可空 = 无封面）。
@@ -124,6 +125,12 @@ class CoverView extends StatelessWidget {
   /// 圆角。
   final BorderRadius borderRadius;
 
+  /// 纸底封面是否排「横线 + 书名 + 作者」文字块。
+  ///
+  /// 紧凑网格卡（窄屏）自己把书名叠在封面底部，这里关掉避免书名出现两次
+  /// （v1.3.4 移动端密度整改）。
+  final bool showTextBlock;
+
   @override
   Widget build(BuildContext context) {
     final path = coverPath;
@@ -133,6 +140,7 @@ class CoverView extends StatelessWidget {
         title: title,
         author: author,
         contentHash: contentHash,
+        showTextBlock: showTextBlock,
       );
     } else {
       content = Image.file(
@@ -140,8 +148,12 @@ class CoverView extends StatelessWidget {
         fit: BoxFit.cover,
         // 测试环境的 fakeAsync 中文件 IO 不完成：placeholder 必须是静态帧。
         frameBuilder: (context, child, frame, wasSync) => child,
-        errorBuilder: (_, _, _) =>
-            _PaperCover(title: title, author: author, contentHash: contentHash),
+        errorBuilder: (_, _, _) => _PaperCover(
+          title: title,
+          author: author,
+          contentHash: contentHash,
+          showTextBlock: showTextBlock,
+        ),
       );
     }
     return ClipRRect(borderRadius: borderRadius, child: content);
@@ -157,11 +169,15 @@ class _PaperCover extends StatelessWidget {
     required this.title,
     required this.author,
     required this.contentHash,
+    this.showTextBlock = true,
   });
 
   final String title;
   final String author;
   final String contentHash;
+
+  /// 是否排「横线 + 书名 + 作者」文字块（紧凑卡由卡片自己叠书名）。
+  final bool showTextBlock;
 
   @override
   Widget build(BuildContext context) {
@@ -213,55 +229,56 @@ class _PaperCover extends StatelessWidget {
                     ),
                   ),
                   // 底部排版：品牌色小横线 + 书名（最多 3 行）+ 作者。
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      width * 0.09,
-                      width * 0.06,
-                      width * 0.09,
-                      width * 0.11,
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          width: ruleWidth,
-                          height: 2,
-                          decoration: BoxDecoration(
-                            // 品牌色（AppTheme 把 colorScheme.primary 映射到
-                            // t.brand；共享组件不硬性依赖令牌扩展）。
-                            color: theme.colorScheme.primary,
-                            borderRadius: BorderRadius.circular(2),
-                          ),
-                        ),
-                        SizedBox(height: width * 0.06),
-                        Text(
-                          title,
-                          maxLines: 3,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: titleSize,
-                            height: 1.4,
-                            fontWeight: FontWeight.w600,
-                            color: palette.ink,
-                          ),
-                        ),
-                        if (author.trim().isNotEmpty) ...[
-                          const SizedBox(height: 3),
-                          Text(
-                            author,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: authorSize,
-                              height: 1.2,
-                              color: palette.ink.withValues(alpha: 0.68),
+                  if (showTextBlock)
+                    Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        width * 0.09,
+                        width * 0.06,
+                        width * 0.09,
+                        width * 0.11,
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            width: ruleWidth,
+                            height: 2,
+                            decoration: BoxDecoration(
+                              // 品牌色（AppTheme 把 colorScheme.primary 映射到
+                              // t.brand；共享组件不硬性依赖令牌扩展）。
+                              color: theme.colorScheme.primary,
+                              borderRadius: BorderRadius.circular(2),
                             ),
                           ),
+                          SizedBox(height: width * 0.06),
+                          Text(
+                            title,
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: titleSize,
+                              height: 1.4,
+                              fontWeight: FontWeight.w600,
+                              color: palette.ink,
+                            ),
+                          ),
+                          if (author.trim().isNotEmpty) ...[
+                            const SizedBox(height: 3),
+                            Text(
+                              author,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: authorSize,
+                                height: 1.2,
+                                color: palette.ink.withValues(alpha: 0.68),
+                              ),
+                            ),
+                          ],
                         ],
-                      ],
+                      ),
                     ),
-                  ),
                 ],
               ),
             ],

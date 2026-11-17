@@ -15,9 +15,13 @@ import '../../../data/db/app_database.dart';
 import '../../../shared/cover_view.dart';
 import '../../../shared/format_utils.dart';
 import '../../sync/sync_status.dart';
+import '../library_grid_metrics.dart';
 
 /// 封面宽高比（书籍标准 2:3，原型 `.book-cover` aspect-ratio）。
-const double kCoverAspectRatio = 2 / 3;
+///
+/// 与网格宽屏档共用同一常量（唯一度量来源，见 `library_grid_metrics.dart`），
+/// 避免「详情页封面」与「书架网格」的比例各写一份而走样。
+const double kCoverAspectRatio = libraryGridComfortableCoverAspect;
 
 /// 封面右上角状态胶囊种类（优先级从高到低，A5/A20）。
 enum CoverBadgeKind {
@@ -190,6 +194,9 @@ class TouchLongPressMenu extends StatelessWidget {
 
 /// 网格卡片（A5/A20）：封面（圆角 10 + 轻投影 + hover 上浮 3px）+ 右上角
 /// 状态胶囊 + 下沿进度条 + 书名/作者/时长三行（Q7）。
+///
+/// [compact] = 窄屏（手机）紧凑卡：书名叠在封面底部（渐变遮罩保证可读），
+/// 不再另起文字区 —— 手机一屏因此能放下 3 行完整卡片（v1.3.4 密度整改）。
 class BookGridCard extends StatelessWidget {
   const BookGridCard({
     super.key,
@@ -199,6 +206,8 @@ class BookGridCard extends StatelessWidget {
     this.localOnly = false,
     this.onOpen,
     this.onContextMenu,
+    this.compact = false,
+    this.coverAspectRatio = kCoverAspectRatio,
   });
 
   final Book book;
@@ -218,6 +227,12 @@ class BookGridCard extends StatelessWidget {
   /// 右键 / 触屏长按的上下文菜单回调（全局坐标）。
   final void Function(Offset globalPosition)? onContextMenu;
 
+  /// 紧凑卡（窄屏）：书名叠在封面底部，卡高 = 封面高。
+  final bool compact;
+
+  /// 封面宽高比（宽/高）。宽屏固定 2:3；窄屏由网格度量按可见行数自适应。
+  final double coverAspectRatio;
+
   @override
   Widget build(BuildContext context) {
     final t = context.appTokens;
@@ -228,9 +243,10 @@ class BookGridCard extends StatelessWidget {
       percent: percent,
     );
     final paper = (book.coverPath ?? '').isEmpty;
+    final hasProgress = percent != null && percent! > 0;
 
     final cover = AspectRatio(
-      aspectRatio: kCoverAspectRatio,
+      aspectRatio: coverAspectRatio,
       child: DecoratedBox(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(AppRadius.md),
@@ -247,6 +263,8 @@ class BookGridCard extends StatelessWidget {
                 author: book.author,
                 contentHash: book.contentHash,
                 borderRadius: BorderRadius.circular(AppRadius.md),
+                // 紧凑卡的书名由卡片自己叠在封面上，纸底封面不再重复排一遍。
+                showTextBlock: !compact,
               ),
             ),
             if (badgeKind != null)
@@ -255,13 +273,15 @@ class BookGridCard extends StatelessWidget {
                 right: 8,
                 child: CoverBadge(kind: badgeKind, percent: percent),
               ),
-            if (percent != null && percent! > 0)
+            if (hasProgress)
               Positioned(
                 left: 0,
                 right: 0,
                 bottom: 0,
                 child: CoverProgressBar(percent: percent!, onPaper: paper),
               ),
+            if (compact)
+              _CompactTitleOverlay(book: book, hasProgress: hasProgress),
           ],
         ),
       ),
@@ -277,46 +297,100 @@ class BookGridCard extends StatelessWidget {
           child: InkWell(
             borderRadius: BorderRadius.circular(AppRadius.md),
             onTap: onOpen,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                cover,
-                const SizedBox(height: AppSpacing.s1),
-                // 书名：h3 加粗，最多两行（预留两行高度防网格溢出，Q7）。
-                SizedBox(
-                  height: 36,
-                  child: Text(
-                    book.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: t.h3.copyWith(fontSize: 13.5, height: 1.3),
-                  ),
-                ),
-                if (book.author.trim().isNotEmpty)
-                  Text(
-                    book.author,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: t.caption.copyWith(color: t.text2),
-                  ),
-                const SizedBox(height: 2),
-                Row(
-                  children: [
-                    Icon(Icons.schedule, size: 12, color: t.text3),
-                    const SizedBox(width: 4),
-                    Flexible(
-                      child: Text(
-                        book.totalSeconds > 0
-                            ? humanizeDuration(book.totalSeconds)
-                            : '未读',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: t.tertiary.copyWith(fontSize: 11),
+            child: compact
+                ? cover
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      cover,
+                      const SizedBox(height: AppSpacing.s1),
+                      // 书名：h3 加粗，最多两行（预留两行高度防网格溢出，Q7）。
+                      SizedBox(
+                        height: 36,
+                        child: Text(
+                          book.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: t.h3.copyWith(fontSize: 13.5, height: 1.3),
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-              ],
+                      if (book.author.trim().isNotEmpty)
+                        Text(
+                          book.author,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: t.caption.copyWith(color: t.text2),
+                        ),
+                      const SizedBox(height: 2),
+                      Row(
+                        children: [
+                          Icon(Icons.schedule, size: 12, color: t.text3),
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              book.totalSeconds > 0
+                                  ? humanizeDuration(book.totalSeconds)
+                                  : '未读',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: t.tertiary.copyWith(fontSize: 11),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 紧凑卡的书名叠加层：封面底部渐变遮罩 + 白色单行书名。
+///
+/// 遮罩从透明渐变到墨色，保证浅色纸底封面与深色照片封面上书名都可读；
+/// 底部为封面下沿的进度条留出位置（[hasProgress]）。
+class _CompactTitleOverlay extends StatelessWidget {
+  const _CompactTitleOverlay({required this.book, required this.hasProgress});
+
+  final Book book;
+
+  /// 封面下沿是否有进度条（要给它让位）。
+  final bool hasProgress;
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0x00000000), Color(0xCC000000)],
+            stops: [0, 1],
+          ),
+        ),
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+            AppSpacing.s2,
+            AppSpacing.s2,
+            AppSpacing.s2,
+            hasProgress ? AppSpacing.s2 : AppSpacing.s1,
+          ),
+          child: Text(
+            book.title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11.5,
+              height: 1.2,
+              fontWeight: FontWeight.w600,
+              shadows: [Shadow(color: Color(0x80000000), blurRadius: 2)],
             ),
           ),
         ),
