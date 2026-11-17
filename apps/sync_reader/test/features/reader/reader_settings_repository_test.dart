@@ -59,6 +59,48 @@ void main() {
     expect(repo.current.fontSize, 30);
   });
 
+  group('v1.3.6：load 返回当前值而非首次载入的旧快照', () {
+    // 用户实测：「配置功能修改后再次打开对应页面会显示默认配置」——
+    // 根因是 load() 把首次载入的 future 记下并一直返回那个快照：会话中
+    // 改过设置后，页面重新读到的仍是改之前的值（= 出厂默认）。
+    test('save 之后 load 返回最新值', () async {
+      await repo.load();
+      await repo.save(const ReaderSettings(fontSize: 22, theme: ReaderTheme.beige));
+      final loaded = await repo.load();
+      expect(loaded.fontSize, 22, reason: 'load 必须返回保存后的值');
+      expect(loaded.theme, ReaderTheme.beige);
+      expect(loaded, isNot(ReaderSettings.defaults));
+    });
+
+    test('多次 save 后 load 仍返回最后一次的值', () async {
+      await repo.load();
+      await repo.save(const ReaderSettings(fontSize: 18));
+      await repo.save(
+        const ReaderSettings(fontSize: 26, pageMode: ReaderPageMode.scroll),
+      );
+      final loaded = await repo.load();
+      expect(loaded.fontSize, 26);
+      expect(loaded.pageMode, ReaderPageMode.scroll);
+    });
+
+    test('翻页模式等设置切到滚动后，load 仍是滚动（换书不重置）', () async {
+      await repo.load();
+      await repo.save(
+        ReaderSettings.defaults.copyWith(pageMode: ReaderPageMode.scroll),
+      );
+      expect((await repo.load()).pageMode, ReaderPageMode.scroll);
+    });
+
+    test('载入进行中发生 save：不以旧库值覆盖新值', () async {
+      // 竞态：读库途中用户改了设置 → 以保存值为准（否则旧值回灌）。
+      final saveFuture = repo.save(const ReaderSettings(fontSize: 28));
+      final loaded = await repo.load();
+      await saveFuture;
+      expect(loaded.fontSize, 28, reason: '读库途中发生的保存优先于库中旧值');
+      expect(repo.current.fontSize, 28);
+    });
+  });
+
   test('JSON 往返与未知字段容忍', () {
     const settings = ReaderSettings(
       fontSize: 24,
