@@ -10,6 +10,37 @@ final DateTime t0 = DateTime.utc(2026, 10, 26, 8, 0, 0);
 /// 规整的测试 bookId：`01BOOK0000000000000N`。
 String bookIdOf(int n) => '01BOOK${n.toString().padLeft(17, '0')}';
 
+/// 规整的测试 groupId：`01GROUP000000000000N`。
+String groupIdOf(int n) => '01GROUP${n.toString().padLeft(16, '0')}';
+
+/// 构造 GroupMeta（docs/05 §2.1 字段齐备的最小合法形态）。
+GroupMeta buildGroup({
+  String? groupId,
+  int rev = 1,
+  String deviceId = '01DEVA000000000000',
+  String deviceName = 'DeviceA',
+  DateTime? updatedAt,
+  DateTime? createdAt,
+  bool deleted = false,
+  DateTime? deletedAt,
+  String name = '小说',
+  int sortOrder = 0,
+}) {
+  return GroupMeta(
+    schemaVersion: kGroupSchemaVersion,
+    groupId: groupId ?? groupIdOf(1),
+    rev: rev,
+    deviceId: deviceId,
+    deviceName: deviceName,
+    createdAt: createdAt ?? t0,
+    updatedAt: updatedAt ?? t0,
+    deleted: deleted,
+    deletedAt: deletedAt,
+    name: name,
+    sortOrder: sortOrder,
+  );
+}
+
 /// `sha256:<hex>` 形式的内容哈希（与 meta.contentHash 语义一致）。
 String contentHashOf(List<int> bytes) =>
     'sha256:${sha256.convert(bytes).toString()}';

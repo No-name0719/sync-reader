@@ -2,9 +2,11 @@
 /// books.group_id，只增不删，docs/05 §6）。
 ///
 /// 注：schemaVersion 已随 v1.1 重设计批 1 升到 3（新增 local_only_books /
-/// app_settings）。本测试从 **v1 库**直接升级到 3：drift 依次执行
-/// `onUpgrade(1, 3)`，先补 v2 的表/列，再补 v3 的两张表——两条迁移路径都被
-/// 覆盖（v2→v3 的独立用例见 `migration_v3_test.dart`）。
+/// app_settings），并随分组云端同步升到 4（新增 group_sync_state 表 +
+/// book_groups.deleted/deleted_at 列）。本测试从 **v1 库**直接升级到 4：
+/// drift 依次执行 `onUpgrade(1, 4)`，先补 v2 的表/列，再补 v3/v4 的新表——
+/// 多条迁移路径都被覆盖（v2→v3 见 `migration_v3_test.dart`，v3→v4 见
+/// `migration_v4_test.dart`）。
 ///
 /// 机制说明（如何真实走到 onUpgrade 1→3）：
 /// 1. drift 的 `NativeDatabase` 在打开原生 SQLite 连接时先执行 [DatabaseSetup]
@@ -15,8 +17,8 @@
 ///    books 无 group_id，也没有 reading_days / book_groups）、插入一行 v1
 ///    书籍数据，并置 `PRAGMA user_version = 1`。
 /// 3. 随后 `AppDatabase.forTesting(...)` 的首个查询触发打开：drift 读到
-///    user_version=1 < 3 → 走 `onUpgrade(m, 1, 3)`（不会触发 createAll），
-///    迁移完成后由 drift 把 user_version 置为 3，再执行 beforeOpen。
+///    user_version=1 < 4 → 走 `onUpgrade(m, 1, 4)`（不会触发 createAll），
+///    迁移完成后由 drift 把 user_version 置为 4，再执行 beforeOpen。
 ///    因此"打开无异常 + 新表/新列存在 + 旧数据完好"即证明迁移真实发生。
 library;
 
@@ -120,11 +122,11 @@ void main() {
 
   tearDown(() async => db.close());
 
-  test('以 user_version=1 打开：走 onUpgrade(1→3)，新表/新列就位，旧数据完好', () async {
+  test('以 user_version=1 打开：走 onUpgrade(1→4)，新表/新列就位，旧数据完好', () async {
     // 首个查询触发打开路径；若迁移抛错这里直接失败。
     final versionRow = await db.customSelect('PRAGMA user_version').getSingle();
     // drift 迁移成功后已把版本写为 3（证明确实发生了迁移而非 onCreate）。
-    expect(versionRow.data['user_version'], 3);
+    expect(versionRow.data['user_version'], 4);
 
     // v2 新增表存在。
     final tables =
@@ -138,6 +140,8 @@ void main() {
     expect(tables, containsAll(<String>['reading_days', 'book_groups']));
     // v3 新增表存在（只增不删）。
     expect(tables, containsAll(<String>['local_only_books', 'app_settings']));
+    // v4 新增表存在（分组云端同步，只增不删）。
+    expect(tables, contains('group_sync_state'));
 
     // books.group_id 列存在且可空（未分组书为 NULL）。
     final columns = (await db.customSelect('PRAGMA table_info(books)').get())
@@ -171,5 +175,5 @@ void main() {
     expect((await db.booksDao.getById(_v1BookId))!.groupId, isNull);
   });
 
-  test('schemaVersion == 3（docs/05 §6）', () => expect(db.schemaVersion, 3));
+  test('schemaVersion == 4（docs/05 §6）', () => expect(db.schemaVersion, 4));
 }

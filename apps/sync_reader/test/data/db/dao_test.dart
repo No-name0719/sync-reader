@@ -353,7 +353,7 @@ void main() {
   });
 
   test(
-    'schemaVersion == 3（docs/05 §6，只增不删）',
-    () => expect(db.schemaVersion, 3),
+    'schemaVersion == 4（docs/05 §6，只增不删）',
+    () => expect(db.schemaVersion, 4),
   );
 }

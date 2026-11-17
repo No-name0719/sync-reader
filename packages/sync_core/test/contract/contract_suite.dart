@@ -269,5 +269,106 @@ void contractSuite(AdapterFactory make, {String tag = 'adapter'}) {
         expect(got.expand((c) => c).toList(), bytesB, reason: '远端正文已变为新版本');
       },
     );
+
+    // ── 分组（FR-107 云端同步，docs/05 §2.1）────────────────────────────
+    // 同一套用例对 memory / WebDAV 标准 / WebDAV 降级三形态执行：
+    // 分组是独立文件类型 `groups/{groupId}.json`，语义必须与书籍 meta 一致。
+
+    group('分组（docs/05 §2.1）', () {
+      test('ensureLayout 幂等创建 groups/ 目录：空清单不报错', () async {
+        await adapter.ensureLayout();
+        await adapter.ensureLayout();
+        expect((await adapter.listGroups()).stubs, isEmpty);
+      });
+
+      test('分组清单：写入后出现该分组（含名称/rev/etag）', () async {
+        await adapter.ensureLayout();
+        await adapter.putGroup(
+          buildGroup(groupId: groupIdOf(1), rev: 1, name: '小说'),
+          expectedRev: 0,
+        );
+        final listing = await adapter.listGroups();
+        expect(listing.stubs.length, 1);
+        final stub = listing.stubs[groupIdOf(1)]!;
+        expect(stub.rev, 1, reason: '分组 stub 必须携带 rev');
+        expect(stub.name, '小说', reason: '分组 stub 必须携带名称（同名去重要用）');
+        expect(stub.etag, isNotNull, reason: '分组 stub 必须携带 etag');
+        expect(stub.deleted, isFalse);
+      });
+
+      test('分组条件请求：ifNoneMatch 命中返回 null（304 语义）', () async {
+        await adapter.ensureLayout();
+        await adapter.putGroup(
+          buildGroup(groupId: groupIdOf(1), rev: 2),
+          expectedRev: 0,
+        );
+        final etag = (await adapter.listGroups()).stubs[groupIdOf(1)]!.etag!;
+        expect(await adapter.getGroup(groupIdOf(1), ifNoneMatch: etag), isNull);
+        // 内容变更（改名）后同一 etag 不再命中。
+        await adapter.putGroup(
+          buildGroup(groupId: groupIdOf(1), rev: 3, name: '长篇'),
+          expectedRev: 2,
+        );
+        final got = await adapter.getGroup(groupIdOf(1), ifNoneMatch: etag);
+        expect(got?.rev, 3);
+        expect(got?.name, '长篇');
+      });
+
+      test('分组乐观锁：expectedRev 落后抛 GroupRevConflict 且携带远端副本', () async {
+        await adapter.ensureLayout();
+        await adapter.putGroup(
+          buildGroup(groupId: groupIdOf(1), rev: 1),
+          expectedRev: 0,
+        );
+        await adapter.putGroup(
+          buildGroup(groupId: groupIdOf(1), rev: 2),
+          expectedRev: 1,
+        );
+        expect(
+          () => adapter.putGroup(
+            buildGroup(groupId: groupIdOf(1), rev: 3),
+            expectedRev: 1,
+          ),
+          throwsA(
+            isA<GroupRevConflict>()
+                .having((e) => e.remoteRev, 'remoteRev', 2)
+                .having((e) => e.remoteGroup?.rev, 'remoteGroup.rev', 2),
+          ),
+        );
+      });
+
+      test('分组墓碑：清单仍含该分组且 getGroup 读回 deleted=true', () async {
+        await adapter.ensureLayout();
+        final group = buildGroup(groupId: groupIdOf(1), rev: 1);
+        await adapter.putGroup(group, expectedRev: 0);
+        final tomb = group.toTombstone(
+          deletedAt: t0.add(const Duration(hours: 1)),
+          deviceId: '01DEVA000000000000',
+          deviceName: 'DeviceA',
+        );
+        await adapter.putGroup(tomb, expectedRev: 1);
+        final listing = await adapter.listGroups();
+        expect(listing.stubs.keys, contains(groupIdOf(1)));
+        final read = await adapter.getGroup(groupIdOf(1));
+        expect(read?.isTombstone, isTrue);
+        expect(read?.deletedAt, isNotNull);
+      });
+
+      test('deleteGroupMeta：删除后清单不再含该分组；重复删除幂等', () async {
+        await adapter.ensureLayout();
+        await adapter.putGroup(
+          buildGroup(groupId: groupIdOf(1), rev: 1),
+          expectedRev: 0,
+        );
+        expect((await adapter.listGroups()).stubs.keys, contains(groupIdOf(1)));
+        await adapter.deleteGroupMeta(groupIdOf(1));
+        expect(
+          (await adapter.listGroups()).stubs.keys,
+          isNot(contains(groupIdOf(1))),
+        );
+        // 二次删除（404）：幂等成功，不抛异常。
+        await adapter.deleteGroupMeta(groupIdOf(1));
+      });
+    });
   });
 }

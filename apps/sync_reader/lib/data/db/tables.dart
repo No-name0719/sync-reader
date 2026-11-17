@@ -203,7 +203,10 @@ class ReadingDays extends Table {
   Set<Column> get primaryKey => {bookId, day};
 }
 
-/// 书籍分组（FR-107，本地分类，v1 不参与同步、不入云端 meta）。
+/// 书籍分组（FR-107，v1.4 起参与云端同步，docs/05 §2.1）。
+///
+/// 分组本体仍是本地行（云端形态是 `groups/{groupId}.json`），同步核心
+/// 通过 `group_sync_state` 维护每个分组的 rev/公共祖先。
 @DataClassName('BookGroup')
 class BookGroups extends Table {
   /// ULID 主键（复用 lib/core/ulid.dart）。
@@ -218,8 +221,44 @@ class BookGroups extends Table {
   /// 创建时间（epoch ms）。
   IntColumn get createdAt => integer()();
 
+  /// 软删标记（FR-107 云端同步，schemaVersion 4 新增，只增不删）。
+  ///
+  /// 本地删除分组 = 置 deleted=1 + 组内书回到未分组（group_id 置 NULL），
+  /// **行保留**以便离线时把分组墓碑补推上云（docs/04 §7.1 同款语义）。
+  BoolColumn get deleted => boolean().withDefault(const Constant(false))();
+
+  /// 软删时间（epoch ms；墓碑的 deletedAt 来源）。
+  IntColumn get deletedAt => integer().nullable()();
+
   @override
   Set<Column> get primaryKey => {groupId};
+}
+
+/// 分组同步状态：每分组 × 每后端一行（docs/05 §5 group_sync_state）。
+///
+/// 与书籍的 `sync_state` 同构但独立成表：分组是独立文件类型
+/// （`groups/{groupId}.json`），写端 rev 计数器按 groupId 维度维护。
+@DataClassName('GroupSyncStateRow')
+class GroupSyncState extends Table {
+  TextColumn get groupId => text()();
+
+  /// 'webdav' | 'server:{libraryId}'（与 sync_state 一致）。
+  TextColumn get backendKey => text()();
+
+  /// 已确认的远端 rev（乐观锁基线）。
+  IntColumn get baseRev => integer()();
+
+  /// WebDAV 条件请求用的 ETag。
+  TextColumn get remoteEtag => text().nullable()();
+
+  /// 上次同步的分组副本原文 = 冲突合并的公共祖先（docs/04 §6.3）。
+  TextColumn get lastSyncedGroupJson => text().nullable()();
+
+  /// 上次同步时间（epoch ms）。
+  IntColumn get lastSyncedAt => integer()();
+
+  @override
+  Set<Column> get primaryKey => {groupId, backendKey};
 }
 
 /// 仅本地书籍标记（docs/10 §4.7c「仅本地 / 未上传」状态）。

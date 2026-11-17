@@ -124,9 +124,13 @@ final bookGroupsDaoProvider = Provider<BookGroupsDao>(
 /// 全部分组流（FR-107）：与书列表同为 drift watch，建/改/删组后 chip 栏与
 /// 管理对话框自动刷新。查询与 `BookGroupsDao.allGroups` 同序（sortOrder、
 /// createdAt 升序）；DAO 只提供一次性 Future，故 watch 查询在此装配。
+///
+/// **不含已软删分组**（v1.4 分组云端同步：删除是软删，行保留以便离线补推
+/// 分组墓碑；UI 侧按"活分组"展示，docs/05 §2.1）。
 final groupsProvider = StreamProvider<List<BookGroup>>((ref) {
   final db = ref.watch(databaseProvider);
   final query = db.select(db.bookGroups)
+    ..where((g) => g.deleted.equals(false))
     ..orderBy([
       (g) => OrderingTerm.asc(g.sortOrder),
       (g) => OrderingTerm.asc(g.createdAt),

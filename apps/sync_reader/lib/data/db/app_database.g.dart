@@ -52,8 +52,41 @@ class $BookGroupsTable extends BookGroups
     type: DriftSqlType.int,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _deletedMeta = const VerificationMeta(
+    'deleted',
+  );
   @override
-  List<GeneratedColumn> get $columns => [groupId, name, sortOrder, createdAt];
+  late final GeneratedColumn<bool> deleted = GeneratedColumn<bool>(
+    'deleted',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("deleted" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
+  static const VerificationMeta _deletedAtMeta = const VerificationMeta(
+    'deletedAt',
+  );
+  @override
+  late final GeneratedColumn<int> deletedAt = GeneratedColumn<int>(
+    'deleted_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    groupId,
+    name,
+    sortOrder,
+    createdAt,
+    deleted,
+    deletedAt,
+  ];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -96,6 +129,18 @@ class $BookGroupsTable extends BookGroups
     } else if (isInserting) {
       context.missing(_createdAtMeta);
     }
+    if (data.containsKey('deleted')) {
+      context.handle(
+        _deletedMeta,
+        deleted.isAcceptableOrUnknown(data['deleted']!, _deletedMeta),
+      );
+    }
+    if (data.containsKey('deleted_at')) {
+      context.handle(
+        _deletedAtMeta,
+        deletedAt.isAcceptableOrUnknown(data['deleted_at']!, _deletedAtMeta),
+      );
+    }
     return context;
   }
 
@@ -121,6 +166,14 @@ class $BookGroupsTable extends BookGroups
         DriftSqlType.int,
         data['${effectivePrefix}created_at'],
       )!,
+      deleted: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}deleted'],
+      )!,
+      deletedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}deleted_at'],
+      ),
     );
   }
 
@@ -142,11 +195,22 @@ class BookGroup extends DataClass implements Insertable<BookGroup> {
 
   /// 创建时间（epoch ms）。
   final int createdAt;
+
+  /// 软删标记（FR-107 云端同步，schemaVersion 4 新增，只增不删）。
+  ///
+  /// 本地删除分组 = 置 deleted=1 + 组内书回到未分组（group_id 置 NULL），
+  /// **行保留**以便离线时把分组墓碑补推上云（docs/04 §7.1 同款语义）。
+  final bool deleted;
+
+  /// 软删时间（epoch ms；墓碑的 deletedAt 来源）。
+  final int? deletedAt;
   const BookGroup({
     required this.groupId,
     required this.name,
     required this.sortOrder,
     required this.createdAt,
+    required this.deleted,
+    this.deletedAt,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -155,6 +219,10 @@ class BookGroup extends DataClass implements Insertable<BookGroup> {
     map['name'] = Variable<String>(name);
     map['sort_order'] = Variable<int>(sortOrder);
     map['created_at'] = Variable<int>(createdAt);
+    map['deleted'] = Variable<bool>(deleted);
+    if (!nullToAbsent || deletedAt != null) {
+      map['deleted_at'] = Variable<int>(deletedAt);
+    }
     return map;
   }
 
@@ -164,6 +232,10 @@ class BookGroup extends DataClass implements Insertable<BookGroup> {
       name: Value(name),
       sortOrder: Value(sortOrder),
       createdAt: Value(createdAt),
+      deleted: Value(deleted),
+      deletedAt: deletedAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(deletedAt),
     );
   }
 
@@ -177,6 +249,8 @@ class BookGroup extends DataClass implements Insertable<BookGroup> {
       name: serializer.fromJson<String>(json['name']),
       sortOrder: serializer.fromJson<int>(json['sortOrder']),
       createdAt: serializer.fromJson<int>(json['createdAt']),
+      deleted: serializer.fromJson<bool>(json['deleted']),
+      deletedAt: serializer.fromJson<int?>(json['deletedAt']),
     );
   }
   @override
@@ -187,6 +261,8 @@ class BookGroup extends DataClass implements Insertable<BookGroup> {
       'name': serializer.toJson<String>(name),
       'sortOrder': serializer.toJson<int>(sortOrder),
       'createdAt': serializer.toJson<int>(createdAt),
+      'deleted': serializer.toJson<bool>(deleted),
+      'deletedAt': serializer.toJson<int?>(deletedAt),
     };
   }
 
@@ -195,11 +271,15 @@ class BookGroup extends DataClass implements Insertable<BookGroup> {
     String? name,
     int? sortOrder,
     int? createdAt,
+    bool? deleted,
+    Value<int?> deletedAt = const Value.absent(),
   }) => BookGroup(
     groupId: groupId ?? this.groupId,
     name: name ?? this.name,
     sortOrder: sortOrder ?? this.sortOrder,
     createdAt: createdAt ?? this.createdAt,
+    deleted: deleted ?? this.deleted,
+    deletedAt: deletedAt.present ? deletedAt.value : this.deletedAt,
   );
   BookGroup copyWithCompanion(BookGroupsCompanion data) {
     return BookGroup(
@@ -207,6 +287,8 @@ class BookGroup extends DataClass implements Insertable<BookGroup> {
       name: data.name.present ? data.name.value : this.name,
       sortOrder: data.sortOrder.present ? data.sortOrder.value : this.sortOrder,
       createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      deleted: data.deleted.present ? data.deleted.value : this.deleted,
+      deletedAt: data.deletedAt.present ? data.deletedAt.value : this.deletedAt,
     );
   }
 
@@ -216,13 +298,16 @@ class BookGroup extends DataClass implements Insertable<BookGroup> {
           ..write('groupId: $groupId, ')
           ..write('name: $name, ')
           ..write('sortOrder: $sortOrder, ')
-          ..write('createdAt: $createdAt')
+          ..write('createdAt: $createdAt, ')
+          ..write('deleted: $deleted, ')
+          ..write('deletedAt: $deletedAt')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(groupId, name, sortOrder, createdAt);
+  int get hashCode =>
+      Object.hash(groupId, name, sortOrder, createdAt, deleted, deletedAt);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -230,7 +315,9 @@ class BookGroup extends DataClass implements Insertable<BookGroup> {
           other.groupId == this.groupId &&
           other.name == this.name &&
           other.sortOrder == this.sortOrder &&
-          other.createdAt == this.createdAt);
+          other.createdAt == this.createdAt &&
+          other.deleted == this.deleted &&
+          other.deletedAt == this.deletedAt);
 }
 
 class BookGroupsCompanion extends UpdateCompanion<BookGroup> {
@@ -238,12 +325,16 @@ class BookGroupsCompanion extends UpdateCompanion<BookGroup> {
   final Value<String> name;
   final Value<int> sortOrder;
   final Value<int> createdAt;
+  final Value<bool> deleted;
+  final Value<int?> deletedAt;
   final Value<int> rowid;
   const BookGroupsCompanion({
     this.groupId = const Value.absent(),
     this.name = const Value.absent(),
     this.sortOrder = const Value.absent(),
     this.createdAt = const Value.absent(),
+    this.deleted = const Value.absent(),
+    this.deletedAt = const Value.absent(),
     this.rowid = const Value.absent(),
   });
   BookGroupsCompanion.insert({
@@ -251,6 +342,8 @@ class BookGroupsCompanion extends UpdateCompanion<BookGroup> {
     required String name,
     this.sortOrder = const Value.absent(),
     required int createdAt,
+    this.deleted = const Value.absent(),
+    this.deletedAt = const Value.absent(),
     this.rowid = const Value.absent(),
   }) : groupId = Value(groupId),
        name = Value(name),
@@ -260,6 +353,8 @@ class BookGroupsCompanion extends UpdateCompanion<BookGroup> {
     Expression<String>? name,
     Expression<int>? sortOrder,
     Expression<int>? createdAt,
+    Expression<bool>? deleted,
+    Expression<int>? deletedAt,
     Expression<int>? rowid,
   }) {
     return RawValuesInsertable({
@@ -267,6 +362,8 @@ class BookGroupsCompanion extends UpdateCompanion<BookGroup> {
       if (name != null) 'name': name,
       if (sortOrder != null) 'sort_order': sortOrder,
       if (createdAt != null) 'created_at': createdAt,
+      if (deleted != null) 'deleted': deleted,
+      if (deletedAt != null) 'deleted_at': deletedAt,
       if (rowid != null) 'rowid': rowid,
     });
   }
@@ -276,6 +373,8 @@ class BookGroupsCompanion extends UpdateCompanion<BookGroup> {
     Value<String>? name,
     Value<int>? sortOrder,
     Value<int>? createdAt,
+    Value<bool>? deleted,
+    Value<int?>? deletedAt,
     Value<int>? rowid,
   }) {
     return BookGroupsCompanion(
@@ -283,6 +382,8 @@ class BookGroupsCompanion extends UpdateCompanion<BookGroup> {
       name: name ?? this.name,
       sortOrder: sortOrder ?? this.sortOrder,
       createdAt: createdAt ?? this.createdAt,
+      deleted: deleted ?? this.deleted,
+      deletedAt: deletedAt ?? this.deletedAt,
       rowid: rowid ?? this.rowid,
     );
   }
@@ -302,6 +403,12 @@ class BookGroupsCompanion extends UpdateCompanion<BookGroup> {
     if (createdAt.present) {
       map['created_at'] = Variable<int>(createdAt.value);
     }
+    if (deleted.present) {
+      map['deleted'] = Variable<bool>(deleted.value);
+    }
+    if (deletedAt.present) {
+      map['deleted_at'] = Variable<int>(deletedAt.value);
+    }
     if (rowid.present) {
       map['rowid'] = Variable<int>(rowid.value);
     }
@@ -315,6 +422,8 @@ class BookGroupsCompanion extends UpdateCompanion<BookGroup> {
           ..write('name: $name, ')
           ..write('sortOrder: $sortOrder, ')
           ..write('createdAt: $createdAt, ')
+          ..write('deleted: $deleted, ')
+          ..write('deletedAt: $deletedAt, ')
           ..write('rowid: $rowid')
           ..write(')'))
         .toString();
@@ -4097,6 +4206,461 @@ class AppSettingsCompanion extends UpdateCompanion<AppSetting> {
   }
 }
 
+class $GroupSyncStateTable extends GroupSyncState
+    with TableInfo<$GroupSyncStateTable, GroupSyncStateRow> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $GroupSyncStateTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _groupIdMeta = const VerificationMeta(
+    'groupId',
+  );
+  @override
+  late final GeneratedColumn<String> groupId = GeneratedColumn<String>(
+    'group_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _backendKeyMeta = const VerificationMeta(
+    'backendKey',
+  );
+  @override
+  late final GeneratedColumn<String> backendKey = GeneratedColumn<String>(
+    'backend_key',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _baseRevMeta = const VerificationMeta(
+    'baseRev',
+  );
+  @override
+  late final GeneratedColumn<int> baseRev = GeneratedColumn<int>(
+    'base_rev',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _remoteEtagMeta = const VerificationMeta(
+    'remoteEtag',
+  );
+  @override
+  late final GeneratedColumn<String> remoteEtag = GeneratedColumn<String>(
+    'remote_etag',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _lastSyncedGroupJsonMeta =
+      const VerificationMeta('lastSyncedGroupJson');
+  @override
+  late final GeneratedColumn<String> lastSyncedGroupJson =
+      GeneratedColumn<String>(
+        'last_synced_group_json',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _lastSyncedAtMeta = const VerificationMeta(
+    'lastSyncedAt',
+  );
+  @override
+  late final GeneratedColumn<int> lastSyncedAt = GeneratedColumn<int>(
+    'last_synced_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    groupId,
+    backendKey,
+    baseRev,
+    remoteEtag,
+    lastSyncedGroupJson,
+    lastSyncedAt,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'group_sync_state';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<GroupSyncStateRow> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('group_id')) {
+      context.handle(
+        _groupIdMeta,
+        groupId.isAcceptableOrUnknown(data['group_id']!, _groupIdMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_groupIdMeta);
+    }
+    if (data.containsKey('backend_key')) {
+      context.handle(
+        _backendKeyMeta,
+        backendKey.isAcceptableOrUnknown(data['backend_key']!, _backendKeyMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_backendKeyMeta);
+    }
+    if (data.containsKey('base_rev')) {
+      context.handle(
+        _baseRevMeta,
+        baseRev.isAcceptableOrUnknown(data['base_rev']!, _baseRevMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_baseRevMeta);
+    }
+    if (data.containsKey('remote_etag')) {
+      context.handle(
+        _remoteEtagMeta,
+        remoteEtag.isAcceptableOrUnknown(data['remote_etag']!, _remoteEtagMeta),
+      );
+    }
+    if (data.containsKey('last_synced_group_json')) {
+      context.handle(
+        _lastSyncedGroupJsonMeta,
+        lastSyncedGroupJson.isAcceptableOrUnknown(
+          data['last_synced_group_json']!,
+          _lastSyncedGroupJsonMeta,
+        ),
+      );
+    }
+    if (data.containsKey('last_synced_at')) {
+      context.handle(
+        _lastSyncedAtMeta,
+        lastSyncedAt.isAcceptableOrUnknown(
+          data['last_synced_at']!,
+          _lastSyncedAtMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_lastSyncedAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {groupId, backendKey};
+  @override
+  GroupSyncStateRow map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return GroupSyncStateRow(
+      groupId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}group_id'],
+      )!,
+      backendKey: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}backend_key'],
+      )!,
+      baseRev: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}base_rev'],
+      )!,
+      remoteEtag: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}remote_etag'],
+      ),
+      lastSyncedGroupJson: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}last_synced_group_json'],
+      ),
+      lastSyncedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}last_synced_at'],
+      )!,
+    );
+  }
+
+  @override
+  $GroupSyncStateTable createAlias(String alias) {
+    return $GroupSyncStateTable(attachedDatabase, alias);
+  }
+}
+
+class GroupSyncStateRow extends DataClass
+    implements Insertable<GroupSyncStateRow> {
+  final String groupId;
+
+  /// 'webdav' | 'server:{libraryId}'（与 sync_state 一致）。
+  final String backendKey;
+
+  /// 已确认的远端 rev（乐观锁基线）。
+  final int baseRev;
+
+  /// WebDAV 条件请求用的 ETag。
+  final String? remoteEtag;
+
+  /// 上次同步的分组副本原文 = 冲突合并的公共祖先（docs/04 §6.3）。
+  final String? lastSyncedGroupJson;
+
+  /// 上次同步时间（epoch ms）。
+  final int lastSyncedAt;
+  const GroupSyncStateRow({
+    required this.groupId,
+    required this.backendKey,
+    required this.baseRev,
+    this.remoteEtag,
+    this.lastSyncedGroupJson,
+    required this.lastSyncedAt,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['group_id'] = Variable<String>(groupId);
+    map['backend_key'] = Variable<String>(backendKey);
+    map['base_rev'] = Variable<int>(baseRev);
+    if (!nullToAbsent || remoteEtag != null) {
+      map['remote_etag'] = Variable<String>(remoteEtag);
+    }
+    if (!nullToAbsent || lastSyncedGroupJson != null) {
+      map['last_synced_group_json'] = Variable<String>(lastSyncedGroupJson);
+    }
+    map['last_synced_at'] = Variable<int>(lastSyncedAt);
+    return map;
+  }
+
+  GroupSyncStateCompanion toCompanion(bool nullToAbsent) {
+    return GroupSyncStateCompanion(
+      groupId: Value(groupId),
+      backendKey: Value(backendKey),
+      baseRev: Value(baseRev),
+      remoteEtag: remoteEtag == null && nullToAbsent
+          ? const Value.absent()
+          : Value(remoteEtag),
+      lastSyncedGroupJson: lastSyncedGroupJson == null && nullToAbsent
+          ? const Value.absent()
+          : Value(lastSyncedGroupJson),
+      lastSyncedAt: Value(lastSyncedAt),
+    );
+  }
+
+  factory GroupSyncStateRow.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return GroupSyncStateRow(
+      groupId: serializer.fromJson<String>(json['groupId']),
+      backendKey: serializer.fromJson<String>(json['backendKey']),
+      baseRev: serializer.fromJson<int>(json['baseRev']),
+      remoteEtag: serializer.fromJson<String?>(json['remoteEtag']),
+      lastSyncedGroupJson: serializer.fromJson<String?>(
+        json['lastSyncedGroupJson'],
+      ),
+      lastSyncedAt: serializer.fromJson<int>(json['lastSyncedAt']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'groupId': serializer.toJson<String>(groupId),
+      'backendKey': serializer.toJson<String>(backendKey),
+      'baseRev': serializer.toJson<int>(baseRev),
+      'remoteEtag': serializer.toJson<String?>(remoteEtag),
+      'lastSyncedGroupJson': serializer.toJson<String?>(lastSyncedGroupJson),
+      'lastSyncedAt': serializer.toJson<int>(lastSyncedAt),
+    };
+  }
+
+  GroupSyncStateRow copyWith({
+    String? groupId,
+    String? backendKey,
+    int? baseRev,
+    Value<String?> remoteEtag = const Value.absent(),
+    Value<String?> lastSyncedGroupJson = const Value.absent(),
+    int? lastSyncedAt,
+  }) => GroupSyncStateRow(
+    groupId: groupId ?? this.groupId,
+    backendKey: backendKey ?? this.backendKey,
+    baseRev: baseRev ?? this.baseRev,
+    remoteEtag: remoteEtag.present ? remoteEtag.value : this.remoteEtag,
+    lastSyncedGroupJson: lastSyncedGroupJson.present
+        ? lastSyncedGroupJson.value
+        : this.lastSyncedGroupJson,
+    lastSyncedAt: lastSyncedAt ?? this.lastSyncedAt,
+  );
+  GroupSyncStateRow copyWithCompanion(GroupSyncStateCompanion data) {
+    return GroupSyncStateRow(
+      groupId: data.groupId.present ? data.groupId.value : this.groupId,
+      backendKey: data.backendKey.present
+          ? data.backendKey.value
+          : this.backendKey,
+      baseRev: data.baseRev.present ? data.baseRev.value : this.baseRev,
+      remoteEtag: data.remoteEtag.present
+          ? data.remoteEtag.value
+          : this.remoteEtag,
+      lastSyncedGroupJson: data.lastSyncedGroupJson.present
+          ? data.lastSyncedGroupJson.value
+          : this.lastSyncedGroupJson,
+      lastSyncedAt: data.lastSyncedAt.present
+          ? data.lastSyncedAt.value
+          : this.lastSyncedAt,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('GroupSyncStateRow(')
+          ..write('groupId: $groupId, ')
+          ..write('backendKey: $backendKey, ')
+          ..write('baseRev: $baseRev, ')
+          ..write('remoteEtag: $remoteEtag, ')
+          ..write('lastSyncedGroupJson: $lastSyncedGroupJson, ')
+          ..write('lastSyncedAt: $lastSyncedAt')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    groupId,
+    backendKey,
+    baseRev,
+    remoteEtag,
+    lastSyncedGroupJson,
+    lastSyncedAt,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is GroupSyncStateRow &&
+          other.groupId == this.groupId &&
+          other.backendKey == this.backendKey &&
+          other.baseRev == this.baseRev &&
+          other.remoteEtag == this.remoteEtag &&
+          other.lastSyncedGroupJson == this.lastSyncedGroupJson &&
+          other.lastSyncedAt == this.lastSyncedAt);
+}
+
+class GroupSyncStateCompanion extends UpdateCompanion<GroupSyncStateRow> {
+  final Value<String> groupId;
+  final Value<String> backendKey;
+  final Value<int> baseRev;
+  final Value<String?> remoteEtag;
+  final Value<String?> lastSyncedGroupJson;
+  final Value<int> lastSyncedAt;
+  final Value<int> rowid;
+  const GroupSyncStateCompanion({
+    this.groupId = const Value.absent(),
+    this.backendKey = const Value.absent(),
+    this.baseRev = const Value.absent(),
+    this.remoteEtag = const Value.absent(),
+    this.lastSyncedGroupJson = const Value.absent(),
+    this.lastSyncedAt = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  GroupSyncStateCompanion.insert({
+    required String groupId,
+    required String backendKey,
+    required int baseRev,
+    this.remoteEtag = const Value.absent(),
+    this.lastSyncedGroupJson = const Value.absent(),
+    required int lastSyncedAt,
+    this.rowid = const Value.absent(),
+  }) : groupId = Value(groupId),
+       backendKey = Value(backendKey),
+       baseRev = Value(baseRev),
+       lastSyncedAt = Value(lastSyncedAt);
+  static Insertable<GroupSyncStateRow> custom({
+    Expression<String>? groupId,
+    Expression<String>? backendKey,
+    Expression<int>? baseRev,
+    Expression<String>? remoteEtag,
+    Expression<String>? lastSyncedGroupJson,
+    Expression<int>? lastSyncedAt,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (groupId != null) 'group_id': groupId,
+      if (backendKey != null) 'backend_key': backendKey,
+      if (baseRev != null) 'base_rev': baseRev,
+      if (remoteEtag != null) 'remote_etag': remoteEtag,
+      if (lastSyncedGroupJson != null)
+        'last_synced_group_json': lastSyncedGroupJson,
+      if (lastSyncedAt != null) 'last_synced_at': lastSyncedAt,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  GroupSyncStateCompanion copyWith({
+    Value<String>? groupId,
+    Value<String>? backendKey,
+    Value<int>? baseRev,
+    Value<String?>? remoteEtag,
+    Value<String?>? lastSyncedGroupJson,
+    Value<int>? lastSyncedAt,
+    Value<int>? rowid,
+  }) {
+    return GroupSyncStateCompanion(
+      groupId: groupId ?? this.groupId,
+      backendKey: backendKey ?? this.backendKey,
+      baseRev: baseRev ?? this.baseRev,
+      remoteEtag: remoteEtag ?? this.remoteEtag,
+      lastSyncedGroupJson: lastSyncedGroupJson ?? this.lastSyncedGroupJson,
+      lastSyncedAt: lastSyncedAt ?? this.lastSyncedAt,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (groupId.present) {
+      map['group_id'] = Variable<String>(groupId.value);
+    }
+    if (backendKey.present) {
+      map['backend_key'] = Variable<String>(backendKey.value);
+    }
+    if (baseRev.present) {
+      map['base_rev'] = Variable<int>(baseRev.value);
+    }
+    if (remoteEtag.present) {
+      map['remote_etag'] = Variable<String>(remoteEtag.value);
+    }
+    if (lastSyncedGroupJson.present) {
+      map['last_synced_group_json'] = Variable<String>(
+        lastSyncedGroupJson.value,
+      );
+    }
+    if (lastSyncedAt.present) {
+      map['last_synced_at'] = Variable<int>(lastSyncedAt.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('GroupSyncStateCompanion(')
+          ..write('groupId: $groupId, ')
+          ..write('backendKey: $backendKey, ')
+          ..write('baseRev: $baseRev, ')
+          ..write('remoteEtag: $remoteEtag, ')
+          ..write('lastSyncedGroupJson: $lastSyncedGroupJson, ')
+          ..write('lastSyncedAt: $lastSyncedAt, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 abstract class _$AppDatabase extends GeneratedDatabase {
   _$AppDatabase(QueryExecutor e) : super(e);
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
@@ -4111,6 +4675,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $ReadingDaysTable readingDays = $ReadingDaysTable(this);
   late final $LocalOnlyBooksTable localOnlyBooks = $LocalOnlyBooksTable(this);
   late final $AppSettingsTable appSettings = $AppSettingsTable(this);
+  late final $GroupSyncStateTable groupSyncState = $GroupSyncStateTable(this);
   late final Index idxBooksLastRead = Index(
     'idx_books_last_read',
     'CREATE INDEX idx_books_last_read ON books (last_read_at)',
@@ -4151,6 +4716,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     readingDays,
     localOnlyBooks,
     appSettings,
+    groupSyncState,
     idxBooksLastRead,
     idxBooksTitle,
   ];
@@ -4185,6 +4751,8 @@ typedef $$BookGroupsTableCreateCompanionBuilder = BookGroupsCompanion Function({
   required String name,
   Value<int> sortOrder,
   required int createdAt,
+  Value<bool> deleted,
+  Value<int?> deletedAt,
   Value<int> rowid,
 });
 typedef $$BookGroupsTableUpdateCompanionBuilder = BookGroupsCompanion Function({
@@ -4192,6 +4760,8 @@ typedef $$BookGroupsTableUpdateCompanionBuilder = BookGroupsCompanion Function({
   Value<String> name,
   Value<int> sortOrder,
   Value<int> createdAt,
+  Value<bool> deleted,
+  Value<int?> deletedAt,
   Value<int> rowid,
 });
 
@@ -4244,6 +4814,16 @@ class $$BookGroupsTableFilterComposer
 
   ColumnFilters<int> get createdAt => $composableBuilder(
     column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get deleted => $composableBuilder(
+    column: $table.deleted,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get deletedAt => $composableBuilder(
+    column: $table.deletedAt,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -4301,6 +4881,16 @@ class $$BookGroupsTableOrderingComposer
     column: $table.createdAt,
     builder: (column) => ColumnOrderings(column),
   );
+
+  ColumnOrderings<bool> get deleted => $composableBuilder(
+    column: $table.deleted,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get deletedAt => $composableBuilder(
+    column: $table.deletedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
 }
 
 class $$BookGroupsTableAnnotationComposer
@@ -4323,6 +4913,12 @@ class $$BookGroupsTableAnnotationComposer
 
   GeneratedColumn<int> get createdAt =>
       $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<bool> get deleted =>
+      $composableBuilder(column: $table.deleted, builder: (column) => column);
+
+  GeneratedColumn<int> get deletedAt =>
+      $composableBuilder(column: $table.deletedAt, builder: (column) => column);
 
   Expression<T> booksRefs<T extends Object>(
     Expression<T> Function($$BooksTableAnnotationComposer a) f,
@@ -4382,12 +4978,16 @@ class $$BookGroupsTableTableManager
                 Value<String> name = const Value.absent(),
                 Value<int> sortOrder = const Value.absent(),
                 Value<int> createdAt = const Value.absent(),
+                Value<bool> deleted = const Value.absent(),
+                Value<int?> deletedAt = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => BookGroupsCompanion(
                 groupId: groupId,
                 name: name,
                 sortOrder: sortOrder,
                 createdAt: createdAt,
+                deleted: deleted,
+                deletedAt: deletedAt,
                 rowid: rowid,
               ),
           createCompanionCallback:
@@ -4396,12 +4996,16 @@ class $$BookGroupsTableTableManager
                 required String name,
                 Value<int> sortOrder = const Value.absent(),
                 required int createdAt,
+                Value<bool> deleted = const Value.absent(),
+                Value<int?> deletedAt = const Value.absent(),
                 Value<int> rowid = const Value.absent(),
               }) => BookGroupsCompanion.insert(
                 groupId: groupId,
                 name: name,
                 sortOrder: sortOrder,
                 createdAt: createdAt,
+                deleted: deleted,
+                deletedAt: deletedAt,
                 rowid: rowid,
               ),
           withReferenceMapper: (p0) => p0
@@ -7079,6 +7683,248 @@ typedef $$AppSettingsTableProcessedTableManager =
       AppSetting,
       PrefetchHooks Function()
     >;
+typedef $$GroupSyncStateTableCreateCompanionBuilder =
+    GroupSyncStateCompanion Function({
+      required String groupId,
+      required String backendKey,
+      required int baseRev,
+      Value<String?> remoteEtag,
+      Value<String?> lastSyncedGroupJson,
+      required int lastSyncedAt,
+      Value<int> rowid,
+    });
+typedef $$GroupSyncStateTableUpdateCompanionBuilder =
+    GroupSyncStateCompanion Function({
+      Value<String> groupId,
+      Value<String> backendKey,
+      Value<int> baseRev,
+      Value<String?> remoteEtag,
+      Value<String?> lastSyncedGroupJson,
+      Value<int> lastSyncedAt,
+      Value<int> rowid,
+    });
+
+class $$GroupSyncStateTableFilterComposer
+    extends Composer<_$AppDatabase, $GroupSyncStateTable> {
+  $$GroupSyncStateTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get groupId => $composableBuilder(
+    column: $table.groupId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get backendKey => $composableBuilder(
+    column: $table.backendKey,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get baseRev => $composableBuilder(
+    column: $table.baseRev,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get remoteEtag => $composableBuilder(
+    column: $table.remoteEtag,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get lastSyncedGroupJson => $composableBuilder(
+    column: $table.lastSyncedGroupJson,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get lastSyncedAt => $composableBuilder(
+    column: $table.lastSyncedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$GroupSyncStateTableOrderingComposer
+    extends Composer<_$AppDatabase, $GroupSyncStateTable> {
+  $$GroupSyncStateTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get groupId => $composableBuilder(
+    column: $table.groupId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get backendKey => $composableBuilder(
+    column: $table.backendKey,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get baseRev => $composableBuilder(
+    column: $table.baseRev,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get remoteEtag => $composableBuilder(
+    column: $table.remoteEtag,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get lastSyncedGroupJson => $composableBuilder(
+    column: $table.lastSyncedGroupJson,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get lastSyncedAt => $composableBuilder(
+    column: $table.lastSyncedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$GroupSyncStateTableAnnotationComposer
+    extends Composer<_$AppDatabase, $GroupSyncStateTable> {
+  $$GroupSyncStateTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get groupId =>
+      $composableBuilder(column: $table.groupId, builder: (column) => column);
+
+  GeneratedColumn<String> get backendKey => $composableBuilder(
+    column: $table.backendKey,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get baseRev =>
+      $composableBuilder(column: $table.baseRev, builder: (column) => column);
+
+  GeneratedColumn<String> get remoteEtag => $composableBuilder(
+    column: $table.remoteEtag,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get lastSyncedGroupJson => $composableBuilder(
+    column: $table.lastSyncedGroupJson,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get lastSyncedAt => $composableBuilder(
+    column: $table.lastSyncedAt,
+    builder: (column) => column,
+  );
+}
+
+class $$GroupSyncStateTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $GroupSyncStateTable,
+          GroupSyncStateRow,
+          $$GroupSyncStateTableFilterComposer,
+          $$GroupSyncStateTableOrderingComposer,
+          $$GroupSyncStateTableAnnotationComposer,
+          $$GroupSyncStateTableCreateCompanionBuilder,
+          $$GroupSyncStateTableUpdateCompanionBuilder,
+          (
+            GroupSyncStateRow,
+            BaseReferences<
+              _$AppDatabase,
+              $GroupSyncStateTable,
+              GroupSyncStateRow
+            >,
+          ),
+          GroupSyncStateRow,
+          PrefetchHooks Function()
+        > {
+  $$GroupSyncStateTableTableManager(
+    _$AppDatabase db,
+    $GroupSyncStateTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$GroupSyncStateTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$GroupSyncStateTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$GroupSyncStateTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> groupId = const Value.absent(),
+                Value<String> backendKey = const Value.absent(),
+                Value<int> baseRev = const Value.absent(),
+                Value<String?> remoteEtag = const Value.absent(),
+                Value<String?> lastSyncedGroupJson = const Value.absent(),
+                Value<int> lastSyncedAt = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => GroupSyncStateCompanion(
+                groupId: groupId,
+                backendKey: backendKey,
+                baseRev: baseRev,
+                remoteEtag: remoteEtag,
+                lastSyncedGroupJson: lastSyncedGroupJson,
+                lastSyncedAt: lastSyncedAt,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String groupId,
+                required String backendKey,
+                required int baseRev,
+                Value<String?> remoteEtag = const Value.absent(),
+                Value<String?> lastSyncedGroupJson = const Value.absent(),
+                required int lastSyncedAt,
+                Value<int> rowid = const Value.absent(),
+              }) => GroupSyncStateCompanion.insert(
+                groupId: groupId,
+                backendKey: backendKey,
+                baseRev: baseRev,
+                remoteEtag: remoteEtag,
+                lastSyncedGroupJson: lastSyncedGroupJson,
+                lastSyncedAt: lastSyncedAt,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable<$GroupSyncStateTable, GroupSyncStateRow>(table),
+                  BaseReferences<
+                    _$AppDatabase,
+                    $GroupSyncStateTable,
+                    GroupSyncStateRow
+                  >(db, table, e),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$GroupSyncStateTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $GroupSyncStateTable,
+      GroupSyncStateRow,
+      $$GroupSyncStateTableFilterComposer,
+      $$GroupSyncStateTableOrderingComposer,
+      $$GroupSyncStateTableAnnotationComposer,
+      $$GroupSyncStateTableCreateCompanionBuilder,
+      $$GroupSyncStateTableUpdateCompanionBuilder,
+      (
+        GroupSyncStateRow,
+        BaseReferences<_$AppDatabase, $GroupSyncStateTable, GroupSyncStateRow>,
+      ),
+      GroupSyncStateRow,
+      PrefetchHooks Function()
+    >;
 
 class $AppDatabaseManager {
   final _$AppDatabase _db;
@@ -7105,4 +7951,6 @@ class $AppDatabaseManager {
       $$LocalOnlyBooksTableTableManager(_db, _db.localOnlyBooks);
   $$AppSettingsTableTableManager get appSettings =>
       $$AppSettingsTableTableManager(_db, _db.appSettings);
+  $$GroupSyncStateTableTableManager get groupSyncState =>
+      $$GroupSyncStateTableTableManager(_db, _db.groupSyncState);
 }

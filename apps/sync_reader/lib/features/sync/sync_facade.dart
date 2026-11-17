@@ -353,6 +353,39 @@ final class SyncFacade {
     return report?.success ?? false;
   }
 
+  /// 分组 meta 直达推送（FR-107 云端同步：新建/改名/排序后即时上云）。
+  ///
+  /// 用户显式操作，不受 autoSyncEnabled 门控（与 [deleteBook] 同款语义）：
+  /// 失败（离线）不阻断本地操作——本地分组已改好，下次全量同步按"dirty"
+  /// 补推（本地优先，docs/04 §1.3）。
+  Future<SyncReport?> pushGroupMeta(String groupId) async {
+    final engine = await _ensureEngine();
+    if (engine == null) return null;
+    SyncReport? report;
+    try {
+      report = await engine.pushGroupMeta(groupId);
+    } catch (e, s) {
+      _log.error('分组推送外层异常', e, s);
+    }
+    return report;
+  }
+
+  /// 分组删除同步（FR-107）：本地已软删（组内书回未分组）→ 推分组墓碑。
+  ///
+  /// 墓碑上云后其它设备同步即移除该分组；失败时本地保持"已删除"状态，
+  /// 下次全量同步的分组 Diff 会再次走 deletePush 补推。
+  Future<SyncReport?> deleteGroup(String groupId) async {
+    final engine = await _ensureEngine();
+    if (engine == null) return null;
+    SyncReport? report;
+    try {
+      report = await engine.deleteGroup(groupId);
+    } catch (e, s) {
+      _log.error('分组删除推送外层异常', e, s);
+    }
+    return report;
+  }
+
   /// 「从云端移除」：只删掉云端副本，各端本地副本保留且照常可读。
   ///
   /// 与 [deleteBook] 的区别（docs/10 §4.7c / §4.8）：
@@ -548,7 +581,16 @@ final class SyncFacade {
           break;
         }
       }
-      failure = firstError ?? '部分书籍同步失败';
+      // 分组维度（FR-107）：书籍全绿但分组失败时也要提示。
+      if (firstError == null) {
+        for (final result in report.groupResults) {
+          if (!result.ok && result.error != null) {
+            firstError = syncErrorText(result.error!);
+            break;
+          }
+        }
+      }
+      failure = firstError ?? '部分书籍/分组同步失败';
     } else {
       id = SyncStateId.ok;
       failure = null;

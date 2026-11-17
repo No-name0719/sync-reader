@@ -123,6 +123,20 @@ final class FailingBackendAdapter implements BackendAdapter {
   Future<List<CloudBookFile>> listBookFiles() async => throw error;
 
   @override
+  Future<GroupListing> listGroups() async => throw error;
+
+  @override
+  Future<GroupMeta?> getGroup(String groupId, {String? ifNoneMatch}) async =>
+      throw error;
+
+  @override
+  Future<void> putGroup(GroupMeta meta, {required int expectedRev}) async =>
+      throw error;
+
+  @override
+  Future<void> deleteGroupMeta(String groupId) async => throw error;
+
+  @override
   Future<void> deleteBookFile(String name) async => throw error;
 
   @override

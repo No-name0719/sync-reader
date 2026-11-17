@@ -1303,7 +1303,8 @@ class _EmptyView extends StatelessWidget {
 }
 
 /// 落点归组（FR-107）：写库后 SnackBar 反馈；[name] 为 null = 移出分组。
-/// 分组纯本地（v1 不入同步），只调本地 DAO。
+/// 分组参与云端同步（docs/05 §2.1）：归组后立即推该书的 meta（携带
+/// groupId），失败不影响本地，下次全量同步按 dirty 补推（本地优先）。
 Future<void> _setBookGroup(
   BuildContext context,
   WidgetRef ref,
@@ -1322,6 +1323,8 @@ Future<void> _setBookGroup(
         duration: const Duration(seconds: 2),
       ),
     );
+    // 归组变更上云（FR-107）：书籍 meta 携带 groupId。
+    unawaited(ref.read(syncFacadeProvider).pushBookMeta(bookId));
   } catch (e) {
     messenger.showSnackBar(SnackBar(content: Text('分组操作失败：$e')));
   }

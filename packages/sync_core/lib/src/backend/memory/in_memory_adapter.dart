@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import '../../model/book_meta.dart';
+import '../../model/group_meta.dart';
 import '../backend_adapter.dart';
 
 /// [BackendAdapter] 的内存参考实现：契约语义的"第二实现"。
@@ -26,6 +27,9 @@ class InMemoryAdapter implements BackendAdapter {
 
   /// 正文文件（文件名 `bookId.ext` → 字节）。
   final Map<String, Uint8List> books = {};
+
+  /// 分组文件（`groups/{groupId}.json` → JSON 原文，docs/05 §2.1）。
+  final Map<String, String> groups = {};
 
   /// 上传暂存区 `tmp/`（暴露 MOVE 过程，断言用）。
   final Map<String, Uint8List> tmp = {};
@@ -143,6 +147,56 @@ class InMemoryAdapter implements BackendAdapter {
   Future<void> deleteMeta(String bookId) async {
     deleteMetaCalls++;
     metas.remove(bookId);
+  }
+
+  // ── 分组（docs/05 §2.1）───────────────────────────────────────────────
+
+  @override
+  Future<GroupListing> listGroups() async {
+    final stubs = <String, RemoteGroupStub>{};
+    for (final entry in groups.entries) {
+      final group = GroupMeta.fromJsonString(entry.value);
+      stubs[group.groupId] = RemoteGroupStub(
+        groupId: group.groupId,
+        rev: group.rev,
+        name: group.name,
+        sortOrder: group.sortOrder,
+        etag: _etagOf(entry.value),
+        size: utf8.encode(entry.value).length,
+        deleted: group.isTombstone,
+      );
+    }
+    return GroupListing(stubs: stubs);
+  }
+
+  @override
+  Future<GroupMeta?> getGroup(String groupId, {String? ifNoneMatch}) async {
+    final raw = groups[groupId];
+    if (raw == null) return null;
+    if (ifNoneMatch != null && ifNoneMatch == _etagOf(raw)) return null;
+    return GroupMeta.fromJsonString(raw);
+  }
+
+  @override
+  Future<void> putGroup(GroupMeta meta, {required int expectedRev}) async {
+    putMetaCalls++;
+    final raw = groups[meta.groupId];
+    final currentRev = raw == null ? 0 : GroupMeta.fromJsonString(raw).rev;
+    // 写前重读：落后即冲突（与书籍 meta 同款 CAS 语义）。
+    if (currentRev != expectedRev) {
+      throw GroupRevConflict(
+        meta.groupId,
+        currentRev,
+        raw == null ? null : GroupMeta.fromJsonString(raw),
+      );
+    }
+    groups[meta.groupId] = meta.toJsonString();
+  }
+
+  @override
+  Future<void> deleteGroupMeta(String groupId) async {
+    // 404（不存在）视为幂等成功，与 deleteMeta 语义一致。
+    groups.remove(groupId);
   }
 
   @override

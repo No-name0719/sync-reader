@@ -2,6 +2,7 @@ import 'dart:io';
 
 import '../diff/diff_engine.dart';
 import '../model/book_meta.dart';
+import '../model/group_meta.dart';
 
 /// 本地书库纯接口（docs/05 §5 `books` / `progress` 表 + 正文文件系统，
 /// 本地优先视角）。app 侧以 drift + 应用私有目录实现；引擎只依赖本接口。
@@ -69,4 +70,82 @@ abstract interface class LocalLibrary {
     int? sizeBytes,
     String? format,
   });
+
+  // ── 分组（FR-107 云端同步，docs/05 §2.1）─────────────────────────────
+
+  /// 全部分组快照（含**本地已删除**、待推墓碑的分组）。
+  ///
+  /// 已删除的分组必须参与 diff：本地删除要靠墓碑上云才能让其它设备移除
+  /// 该分组（docs/04 §7.1 删除语义对分组同样成立）。
+  Future<List<LocalGroupSnapshot>> listGroups();
+
+  /// 单个分组快照；不存在返回 null。
+  Future<LocalGroupSnapshot?> group(String groupId);
+
+  /// 应用远端分组 meta（docs/05 §2.1）：
+  /// - 正常 meta：按 groupId 新建/更新分组行（名称、排序权重）；
+  /// - tombstone：移除本地分组行——**组内书籍回到未分组**（不丢书）。
+  Future<void> applyRemoteGroup(GroupMeta meta);
+
+  /// 由本地分组行构建**待推送 meta**（推送时才定 rev/设备信息）。
+  Future<GroupMeta> buildLocalGroupMeta(
+    String groupId, {
+    required int rev,
+    required String deviceId,
+    required String deviceName,
+    required DateTime now,
+  });
+
+  /// 同名分组合并（名称级去重，docs/05 §2.1）：
+  ///
+  /// 两台设备各自建了同名分组（「小说」）时，云端会出现两条同名记录。
+  /// 合并把 [fromGroupId] 的书籍外键迁到 [toGroupId]，删除本地
+  /// [fromGroupId] 分组行；[toGroupId] 行不存在时以 [toName]/[toSortOrder]
+  /// 建立（远端拉取阶段会用权威值覆盖）。
+  Future<void> mergeLocalGroup({
+    required String fromGroupId,
+    required String toGroupId,
+    required String toName,
+    required int toSortOrder,
+  });
+}
+
+/// 本地分组快照：分组 Diff 的输入投影（docs/05 §2.1）。
+///
+/// 与书籍快照同构：`dirty` 表示"本地有未推送的修改"（改名/排序），
+/// `deleted` 表示本地已删除、待推墓碑。
+class LocalGroupSnapshot {
+  const LocalGroupSnapshot({
+    required this.groupId,
+    required this.name,
+    required this.sortOrder,
+    required this.createdAt,
+    required this.exists,
+    required this.deleted,
+    required this.dirty,
+    required this.hasBaseRev,
+    required this.baseRev,
+  });
+
+  final String groupId;
+  final String name;
+  final int sortOrder;
+  final DateTime createdAt;
+
+  /// 是否存在本地分组行（占位/已删除都算存在）。
+  final bool exists;
+
+  /// 本地已删除（待推墓碑上云）。
+  final bool deleted;
+
+  /// 是否有未推送的本地修改（改名/排序）。
+  final bool dirty;
+
+  /// 是否有过成功同步（group_sync_state 有 baseRev）。
+  final bool hasBaseRev;
+  final int baseRev;
+
+  @override
+  String toString() =>
+      'LocalGroupSnapshot($groupId "$name", deleted=$deleted, dirty=$dirty)';
 }

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import '../model/book_meta.dart';
+import '../model/group_meta.dart';
 
 /// 同步后端种类（docs/03 §4.3）。同一时刻只启用一个（FR-405）。
 enum BackendKind { webdav, server }
@@ -40,6 +41,52 @@ class MetaListing {
   /// REST 模式的增量游标（服务端全局 seq）；WebDAV 模式为 null。
   final String? cursor;
   final bool hasMore;
+}
+
+/// 远端分组摘要（分组清单阶段的条目，docs/05 §2.1）。
+///
+/// 与 [RemoteMetaStub] 的差别：**携带分组名**——同名分组的名称级去重
+/// （两台设备各自建了同名分组）必须靠名称判定，"按 groupId 区分"会
+/// 让书库出现两个同名分组（docs/05 §2.1 合并规则）。
+class RemoteGroupStub {
+  const RemoteGroupStub({
+    required this.groupId,
+    required this.rev,
+    required this.name,
+    this.sortOrder = 0,
+    this.etag,
+    this.size,
+    this.modifiedAt,
+    this.deleted = false,
+  });
+
+  final String groupId;
+  final int rev;
+
+  /// 分组名（同名合并判定的依据）。
+  final String name;
+
+  /// 排序权重。
+  final int sortOrder;
+
+  /// WebDAV 条件请求用。
+  final String? etag;
+
+  /// 分组文件字节数。
+  final int? size;
+
+  final DateTime? modifiedAt;
+
+  /// 清单阶段即可确知的 tombstone 标记（WebDAV 恒 false，见 [RemoteMetaStub.deleted]）。
+  final bool deleted;
+}
+
+/// 分组清单结果（docs/05 §2.1）。
+class GroupListing {
+  const GroupListing({required this.stubs});
+
+  /// groupId → 摘要。
+  final Map<String, RemoteGroupStub> stubs;
 }
 
 /// 云端正文文件条目（docs/04 §7.1 规则 4 云端孤儿清理的清单项）。
@@ -106,7 +153,9 @@ abstract interface class BackendAdapter {
   /// 适配器内部可据此启用回退路径（如 size+mtime 合成 etag）。
   Future<BackendCapabilities> probeCapabilities();
 
-  /// 首次连接：幂等创建 `library.json / meta/ / books/ / tmp/`（docs/05 §1）。
+  /// 首次连接：幂等创建 `library.json / meta/ / books/ / tmp/ groups/`
+  /// （docs/05 §1）。老版本云端目录没有 `groups/` 时首次同步**幂等创建**，
+  /// 不得因目录缺失报错。
   Future<void> ensureLayout();
 
   /// 读取 `library.json` 原文；不存在返回 null（docs/05 §1）。
@@ -138,6 +187,29 @@ abstract interface class BackendAdapter {
 
   /// 上传 tombstone（`deleted=true` 的 meta PUT），语义同 [putMeta]。
   Future<void> putTombstone(BookMeta tombstoned, {required int expectedRev});
+
+  // ── 分组（FR-107 云端同步，docs/05 §2.1）─────────────────────────────
+  //
+  // 分组是**独立文件类型**：`groups/{groupId}.json`，与 `meta/` 平级。
+  // 不放进 `meta/` 的原因：`meta/` 的 Depth:1 PROPFIND 被 [listMetas] 用来
+  // 枚举书籍，混入分组文件会污染书籍清单与去重逻辑。
+
+  /// 分组清单：WebDAV = PROPFIND Depth:1 on `groups/`（必要时逐本补拉取
+  /// rev/name）；REST = 服务端直报。目录缺失（老版本云端目录）返回空表。
+  Future<GroupListing> listGroups();
+
+  /// 单个分组 meta；`ifNoneMatch` 命中（未变更）返回 null（304 语义）。
+  Future<GroupMeta?> getGroup(String groupId, {String? ifNoneMatch});
+
+  /// 写分组 meta。CAS 语义与 [putMeta] 一致：远端当前 rev 与 [expectedRev]
+  /// 不符 → 抛 [GroupRevConflict]（携带远端副本供合并）。
+  Future<void> putGroup(GroupMeta meta, {required int expectedRev});
+
+  /// 删除云端分组 meta 文件（`groups/{groupId}.json`）。
+  ///
+  /// 两个用途：① 同名分组去重时清理冗余条目；② 分组墓碑 GC（90 天）。
+  /// 404 视为幂等成功（与 [deleteMeta] 语义一致）。
+  Future<void> deleteGroupMeta(String groupId);
 
   /// 下载正文，支持 Range 续传（`startByte`）；返回原始字节流。
   Stream<List<int>> downloadBook(String bookId, {int? startByte});
@@ -183,6 +255,23 @@ class AuthFailed implements Exception {
 
   @override
   String toString() => 'AuthFailed: $message';
+}
+
+/// 分组乐观锁冲突：远端 rev 与 expectedRev 不符。
+///
+/// 与 [RevConflict] 同构但类型不同（分组 meta 与书籍 meta 是不同文件类型，
+/// 不可混用）。调用方取远端分组 → 合并 → 以新 expectedRev 重试恰一次。
+class GroupRevConflict implements Exception {
+  const GroupRevConflict(this.groupId, this.remoteRev, this.remoteGroup);
+
+  final String groupId;
+  final int remoteRev;
+
+  /// 远端当前副本，供客户端合并。
+  final GroupMeta? remoteGroup;
+
+  @override
+  String toString() => 'GroupRevConflict($groupId, remoteRev=$remoteRev)';
 }
 
 /// 连接后能力探测结果（docs/03 §4.3 / docs/04 §8.1）。

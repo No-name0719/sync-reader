@@ -180,6 +180,50 @@ final class DriftSyncStore implements SyncStore {
         );
   }
 
+  // ── SyncStore：分组同步状态（docs/05 §5 group_sync_state）────────────
+
+  @override
+  Future<int> nextGroupRev(String groupId, {int atLeast = 0}) async {
+    final row = await _groupStateRow(groupId, backendKey);
+    final base = row?.baseRev ?? 0;
+    return math.max(base + 1, atLeast);
+  }
+
+  @override
+  Future<GroupSyncStateSnapshot?> groupSyncState(
+    String groupId,
+    String backendKey,
+  ) async {
+    final row = await _groupStateRow(groupId, backendKey);
+    return row == null ? null : _groupStateSnapshot(row);
+  }
+
+  @override
+  Future<void> saveGroupSyncState(GroupSyncStateSnapshot state) {
+    return _db
+        .into(_db.groupSyncState)
+        .insertOnConflictUpdate(
+          GroupSyncStateCompanion(
+            groupId: Value(state.groupId),
+            backendKey: Value(state.backendKey),
+            baseRev: Value(state.baseRev),
+            remoteEtag: Value(state.remoteEtag),
+            lastSyncedGroupJson: Value(state.lastSyncedGroupJson),
+            lastSyncedAt: Value(state.lastSyncedAt.millisecondsSinceEpoch),
+          ),
+        );
+  }
+
+  @override
+  Future<List<GroupSyncStateSnapshot>> allGroupSyncStates(
+    String backendKey,
+  ) async {
+    final rows = await (_db.select(
+      _db.groupSyncState,
+    )..where((s) => s.backendKey.equals(backendKey))).get();
+    return [for (final row in rows) _groupStateSnapshot(row)];
+  }
+
   // ── 配额计数（docs/04 §8.3，超出 SyncStore 契约的 app 侧扩展）──────────
 
   /// 累加上/下行流量：读改写游标快照；[quotaMonth] ≠ 当前月时先清零再累加
@@ -221,6 +265,16 @@ final class DriftSyncStore implements SyncStore {
         .getSingleOrNull();
   }
 
+  Future<GroupSyncStateRow?> _groupStateRow(
+    String groupId,
+    String backendKey,
+  ) async {
+    return (_db.select(_db.groupSyncState)..where(
+          (s) => s.groupId.equals(groupId) & s.backendKey.equals(backendKey),
+        ))
+        .getSingleOrNull();
+  }
+
   BookSyncStateSnapshot _stateSnapshot(BookSyncState row) =>
       BookSyncStateSnapshot(
         bookId: row.bookId,
@@ -228,6 +282,16 @@ final class DriftSyncStore implements SyncStore {
         baseRev: row.baseRev,
         remoteEtag: row.remoteEtag,
         lastSyncedMetaJson: row.lastSyncedMetaJson,
+        lastSyncedAt: DateTime.fromMillisecondsSinceEpoch(row.lastSyncedAt),
+      );
+
+  GroupSyncStateSnapshot _groupStateSnapshot(GroupSyncStateRow row) =>
+      GroupSyncStateSnapshot(
+        groupId: row.groupId,
+        backendKey: row.backendKey,
+        baseRev: row.baseRev,
+        remoteEtag: row.remoteEtag,
+        lastSyncedGroupJson: row.lastSyncedGroupJson,
         lastSyncedAt: DateTime.fromMillisecondsSinceEpoch(row.lastSyncedAt),
       );
 }

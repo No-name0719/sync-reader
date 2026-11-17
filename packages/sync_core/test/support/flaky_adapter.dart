@@ -145,6 +145,23 @@ class FlakyAdapter implements BackendAdapter {
     return inner.uploadBook(bookId, file, contentHash, overwrite: overwrite);
   }
 
+  // ── 分组（FR-107）─────────────────────────────────────────────────────
+
+  @override
+  Future<GroupListing> listGroups() => inner.listGroups();
+
+  @override
+  Future<GroupMeta?> getGroup(String groupId, {String? ifNoneMatch}) =>
+      inner.getGroup(groupId, ifNoneMatch: ifNoneMatch);
+
+  @override
+  Future<void> putGroup(GroupMeta meta, {required int expectedRev}) =>
+      inner.putGroup(meta, expectedRev: expectedRev);
+
+  @override
+  Future<void> deleteGroupMeta(String groupId) =>
+      inner.deleteGroupMeta(groupId);
+
   @override
   Future<void> dispose() => inner.dispose();
 }
@@ -219,6 +236,23 @@ class AlwaysConflictAdapter implements BackendAdapter {
     String contentHash, {
     bool overwrite = false,
   }) => inner.uploadBook(bookId, file, contentHash, overwrite: overwrite);
+
+  // ── 分组（FR-107）─────────────────────────────────────────────────────
+
+  @override
+  Future<GroupListing> listGroups() => inner.listGroups();
+
+  @override
+  Future<GroupMeta?> getGroup(String groupId, {String? ifNoneMatch}) =>
+      inner.getGroup(groupId, ifNoneMatch: ifNoneMatch);
+
+  @override
+  Future<void> putGroup(GroupMeta meta, {required int expectedRev}) =>
+      inner.putGroup(meta, expectedRev: expectedRev);
+
+  @override
+  Future<void> deleteGroupMeta(String groupId) =>
+      inner.deleteGroupMeta(groupId);
 
   @override
   Future<void> dispose() => inner.dispose();

@@ -3,8 +3,11 @@ import 'dart:async';
 import '../backend/backend_adapter.dart';
 import '../conflict/conflict_resolver.dart';
 import '../diff/diff_engine.dart';
+import '../diff/group_diff_engine.dart';
+import '../diff/group_merger.dart';
 import '../internal/semaphore.dart';
 import '../model/book_meta.dart';
+import '../model/group_meta.dart';
 import '../model/sync_error.dart';
 import '../store/local_library.dart';
 import '../store/sync_store.dart';
@@ -29,6 +32,28 @@ class BookSyncResult {
       'BookSyncResult($bookId, $decision, ok=$ok${error == null ? '' : ', error=$error'})';
 }
 
+/// 逐分组同步结果（FR-107 云端同步，docs/05 §2.1）。
+///
+/// 与 [BookSyncResult] 分开统计：分组与书籍是**不同的文件类型**，
+/// 报告必须能区分"书同步成功但分组失败"的情形。
+class GroupSyncResult {
+  GroupSyncResult({
+    required this.groupId,
+    this.decision,
+    required this.ok,
+    this.error,
+  });
+
+  final String groupId;
+  final SyncDecision? decision;
+  final bool ok;
+  final SyncError? error;
+
+  @override
+  String toString() =>
+      'GroupSyncResult($groupId, $decision, ok=$ok${error == null ? '' : ', error=$error'})';
+}
+
 /// 一次同步的报告：逐书结果、字节数、起止时间（可序列化不要求）。
 class SyncReport {
   SyncReport({required this.startedAt});
@@ -39,10 +64,19 @@ class SyncReport {
   /// 阶段级失败（清单拉取/本地读取等全局性错误）；逐书错误在 [results] 内。
   SyncError? phaseError;
 
+  /// 分组阶段的阶段级失败（分组清单/合并等）；书籍同步不受其影响。
+  SyncError? groupPhaseError;
+
   final List<BookSyncResult> results = [];
+
+  /// 分组维度逐项结果（FR-107）。
+  final List<GroupSyncResult> groupResults = [];
 
   /// bookId → 本轮 Diff 决策（与 results 对应，诊断/断言用）。
   final Map<String, SyncDecision> decisions = {};
+
+  /// groupId → 本轮 Diff 决策（FR-107）。
+  final Map<String, SyncDecision> groupDecisions = {};
 
   /// 阶段 3 PullMetas 的实际峰值并发（诊断/测试断言）。
   int pullPeakConcurrency = 0;
@@ -54,14 +88,21 @@ class SyncReport {
   int bytesUp = 0;
   int bytesDown = 0;
 
-  bool get success => phaseError == null && results.every((r) => r.ok);
+  /// 全轮成功 = 书籍与分组两侧都没有失败项。
+  bool get success =>
+      phaseError == null &&
+      groupPhaseError == null &&
+      results.every((r) => r.ok) &&
+      groupResults.every((r) => r.ok);
 
   void add(BookSyncResult result) => results.add(result);
 
+  void addGroup(GroupSyncResult result) => groupResults.add(result);
+
   @override
   String toString() =>
-      'SyncReport(results=${results.length}, success=$success, '
-      'up=$bytesUp, down=$bytesDown)';
+      'SyncReport(results=${results.length}, groups=${groupResults.length}, '
+      'success=$success, up=$bytesUp, down=$bytesDown)';
 }
 
 /// tombstone GC 报告（docs/04 §7.3）。
@@ -112,6 +153,8 @@ class SyncEngine {
     required TransferQueue transfer,
     ConflictResolver? resolver,
     DiffEngine? differ,
+    GroupDiffEngine? groupDiffer,
+    GroupMerger? groupMerger,
     required DateTime Function() now,
     required Future<({String deviceId, String deviceName})> Function() identity,
     this.backendKey = 'webdav',
@@ -122,6 +165,8 @@ class SyncEngine {
        _transfer = transfer,
        _resolver = resolver ?? const ConflictResolver(),
        _differ = differ ?? const DiffEngine(),
+       _groupDiffer = groupDiffer ?? const GroupDiffEngine(),
+       _groupMerger = groupMerger ?? const GroupMerger(),
        _now = now,
        _identity = identity;
 
@@ -131,6 +176,8 @@ class SyncEngine {
   final TransferQueue _transfer;
   final ConflictResolver _resolver;
   final DiffEngine _differ;
+  final GroupDiffEngine _groupDiffer;
+  final GroupMerger _groupMerger;
   final DateTime Function() _now;
   final Future<({String deviceId, String deviceName})> Function() _identity;
 
@@ -165,6 +212,40 @@ class SyncEngine {
       deviceId: id.deviceId,
       deviceName: id.deviceName,
     );
+    report.finishedAt = _now();
+    return report;
+  });
+
+  /// 单个分组 meta 直达推送（FR-107：新建/改名/排序后的即时推送）。
+  ///
+  /// 冲突时同样走合并 + 重试恰一次；失败（离线）只记入报告，本地分组
+  /// 保持已改状态，由下次 [fullSync] 补推（本地优先，docs/04 §1.3）。
+  Future<SyncReport> pushGroupMeta(String groupId) => _withLock(() async {
+    final report = SyncReport(startedAt: _now());
+    final id = await _identity();
+    final entry = GroupSyncPlanEntry(
+      groupId: groupId,
+      decision: SyncDecision.pushLocal,
+      local: await _library.group(groupId),
+    );
+    await _pushGroupMeta(entry, const {}, report, id);
+    report.finishedAt = _now();
+    return report;
+  });
+
+  /// 分组删除同步（FR-107）：本地已删（软删）→ 推分组墓碑。
+  ///
+  /// 失败（离线/冲突）不抛：本地分组保持"已删除"状态，下次 [fullSync]
+  /// 的分组 Diff 会再次走 deletePush 补推（docs/04 §7.1 分组同款语义）。
+  Future<SyncReport> deleteGroup(String groupId) => _withLock(() async {
+    final report = SyncReport(startedAt: _now());
+    final id = await _identity();
+    final entry = GroupSyncPlanEntry(
+      groupId: groupId,
+      decision: SyncDecision.deletePush,
+      local: await _library.group(groupId),
+    );
+    await _pushGroupTombstone(entry, report, id);
     report.finishedAt = _now();
     return report;
   });
@@ -569,6 +650,8 @@ class SyncEngine {
       }
       // 云端 GC 之后同步清理本地账本（docs/04 §7.3"本地 deleted_books 同步清理"）。
       localPurged = await _store.purgeTombstones(olderThan: cutoff);
+      // 分组墓碑 GC（FR-107，docs/05 §2.1）：与书籍同款 90 天期限。
+      await _gcGroupTombstones(cutoff, errors);
     } catch (e) {
       errors.add(SyncErrorMapper.fromException(e, context: 'tombstone GC'));
     }
@@ -578,6 +661,39 @@ class SyncEngine {
       cloudDeleted: cloudDeleted,
       errors: errors,
     );
+  }
+
+  /// 分组墓碑 GC（FR-107，docs/05 §2.1）：云端只删 `deletedAt > 90 天` 的
+  /// 分组墓碑文件（分组无正文，删除不影响任何书籍数据）。
+  Future<void> _gcGroupTombstones(
+    DateTime cutoff,
+    List<SyncError> errors,
+  ) async {
+    try {
+      final listing = await _adapter.listGroups();
+      for (final stub in listing.stubs.values) {
+        if (!stub.deleted) continue;
+        try {
+          final group = await _adapter.getGroup(stub.groupId);
+          final deletedAt = group?.deletedAt;
+          if (group != null &&
+              group.isTombstone &&
+              deletedAt != null &&
+              deletedAt.isBefore(cutoff)) {
+            await _adapter.deleteGroupMeta(stub.groupId);
+          }
+        } catch (e) {
+          errors.add(
+            SyncErrorMapper.fromException(
+              e,
+              context: '云端分组 GC ${stub.groupId}',
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      errors.add(SyncErrorMapper.fromException(e, context: '分组墓碑 GC'));
+    }
   }
 
   // ── 五阶段状态机 ──────────────────────────────────────────────────────
@@ -601,6 +717,17 @@ class SyncEngine {
       // ── 阶段 1 PullListing ──
       final cursor = await _store.cursorSnapshot(backendKey);
       final listing = await _adapter.listMetas(cursor: cursor.changesCursor);
+      // 分组清单（FR-107，docs/05 §2.1）：与书籍清单并列拉取；失败只影响
+      // 分组维度（记 groupPhaseError），书籍同步照常进行。
+      var groupListing = const GroupListing(stubs: {});
+      try {
+        groupListing = await _adapter.listGroups();
+      } catch (e) {
+        report.groupPhaseError = SyncErrorMapper.fromException(
+          e,
+          context: '分组清单',
+        );
+      }
 
       // ── 阶段 2 前置：账本未推送 tombstone 补推（离线删除收敛，§7.1）──
       // 必须先于 Diff：推送成功会更新 sync_state（baseRev/公共祖先），
@@ -608,7 +735,12 @@ class SyncEngine {
       // "云端新书"（row 5）而拉回复活。
       await _pushPendingTombstones(listing, report, id);
 
-      // ── 阶段 2 Diff ──
+      // ── 阶段 2a 同名分组合并（名称级去重，docs/05 §2.1）──
+      // 必须先于书籍 Diff：合并会把本地书籍的 group_id 迁到规范分组，
+      // 书籍快照随后才取，才能把新的 group_id 一起推上云。
+      final absorptions = await _mergeLocalGroups(groupListing, report);
+
+      // ── 阶段 2 Diff（书籍）──
       final snapshots = await _library.listBooks();
       final states = {
         for (final s in await _store.allSyncStates(backendKey)) s.bookId: s,
@@ -652,7 +784,16 @@ class SyncEngine {
         }
       }
 
-      // ── 阶段 3 PullMetas（并发 2；If-None-Match 304 跳过）──
+      // ── 阶段 3 PullMetas（分组先行，书籍并发 2；If-None-Match 304 跳过）──
+      // 分组必须先落地：书籍 meta 携带 groupId，先应用分组才能保证
+      // 落库时不存在悬空外键（docs/05 §2.2）。
+      final remoteGroups = <String, GroupMeta>{};
+      final groupPlan = await _planGroups(groupListing);
+      report.groupDecisions.addAll(groupPlan.decisions);
+      for (final e in groupPlan.pullNeeded) {
+        await _pullOneGroup(e, remoteGroups, report);
+      }
+
       final remoteMetas = <String, BookMeta>{};
       final corruptIds = <String>{};
       // FR-410 接收端：拉到的 meta contentHash ≠ 本地行 → 正文被他端替换，
@@ -673,7 +814,23 @@ class SyncEngine {
       ]);
       report.pullPeakConcurrency = _pullSlots.peak;
 
-      // ── 阶段 4 PushMetas（含 §5.3 哈希去重、§6 冲突合并）──
+      // ── 阶段 4 PushMetas（分组先行，书籍含去重/冲突合并）──
+      // 分组先推：书籍 meta 引用 groupId，云端先有分组再推书籍归属，
+      // 其它设备拉取时不会出现"书籍指向尚不存在的分组"。
+      final pushedGroupIds = await _pushGroups(
+        groupPlan,
+        remoteGroups,
+        report,
+        id,
+      );
+      // 同名去重的云端清理：规范分组确实在云端时，删除冗余的同名条目。
+      await _cleanupDuplicateGroups(
+        absorptions,
+        groupListing,
+        pushedGroupIds,
+        report,
+      );
+
       final skipContentUpload = await _pushMetas(
         plan,
         listing,
@@ -821,6 +978,447 @@ class SyncEngine {
       ),
     );
     report.add(BookSyncResult(bookId: bookId, decision: decision, ok: true));
+  }
+
+  // ── 分组阶段（FR-107，docs/05 §2.1）──────────────────────────────────
+
+  /// 阶段 2a：同名分组合并（名称级去重）。
+  ///
+  /// 把本地"同名但 id 不同"的分组并入规范分组（书籍外键随之迁移），
+  /// 返回吸收步骤供阶段 4 清理云端冗余条目。
+  Future<List<GroupAbsorption>> _mergeLocalGroups(
+    GroupListing listing,
+    SyncReport report,
+  ) async {
+    try {
+      final local = await _library.listGroups();
+      final plan = _groupMerger.plan(local: local, remote: listing.stubs);
+      if (plan.isEmpty) return const [];
+      final done = <GroupAbsorption>[];
+      for (final a in plan.absorptions) {
+        try {
+          if (a.fromIsLocal) {
+            await _library.mergeLocalGroup(
+              fromGroupId: a.fromGroupId,
+              toGroupId: a.toGroupId,
+              toName: a.toName,
+              toSortOrder: a.toSortOrder,
+            );
+          }
+          done.add(a);
+        } catch (e) {
+          report.addGroup(
+            GroupSyncResult(
+              groupId: a.fromGroupId,
+              ok: false,
+              error: SyncErrorMapper.fromException(
+                e,
+                context: '同名分组合并 ${a.fromGroupId}',
+              ),
+            ),
+          );
+        }
+      }
+      return done;
+    } catch (e) {
+      report.groupPhaseError ??= SyncErrorMapper.fromException(
+        e,
+        context: '同名分组合并',
+      );
+      return const [];
+    }
+  }
+
+  /// 阶段 2b：分组 Diff 计划。
+  Future<GroupSyncPlan> _planGroups(GroupListing listing) async {
+    final local = await _library.listGroups();
+    final states = {
+      for (final s in await _store.allGroupSyncStates(backendKey)) s.groupId: s,
+    };
+    final plan = _groupDiffer.diff(
+      local: local,
+      remote: listing,
+      syncStates: states,
+    );
+    return plan;
+  }
+
+  /// 阶段 3：拉取单个远端分组 meta 并应用。
+  Future<void> _pullOneGroup(
+    GroupSyncPlanEntry entry,
+    Map<String, GroupMeta> remoteGroups,
+    SyncReport report,
+  ) async {
+    final groupId = entry.groupId;
+    final stub = entry.remote!;
+    try {
+      final state = await _store.groupSyncState(groupId, backendKey);
+      var group = await _adapter.getGroup(
+        groupId,
+        ifNoneMatch: state?.remoteEtag,
+      );
+      if (group == null) {
+        // 304：远端未变更 → 回退本地缓存副本（公共祖先即最新副本）。
+        final cached = _parseGroup(state?.lastSyncedGroupJson);
+        if (cached != null) {
+          group = cached;
+          report.conditionalHits++;
+        } else {
+          group = await _adapter.getGroup(groupId);
+        }
+      }
+      if (group == null) {
+        throw BackendRequestException('远端分组不存在', statusCode: 404);
+      }
+      remoteGroups[groupId] = group;
+      if (entry.decision == SyncDecision.conflictMerge) {
+        return; // 等合并结果出来再应用，避免覆盖本地 dirty 行
+      }
+      await _applyRemoteGroup(group, stub, report, decision: entry.decision);
+    } on FormatException catch (e) {
+      report.addGroup(
+        GroupSyncResult(
+          groupId: groupId,
+          decision: entry.decision,
+          ok: false,
+          error: Corruption('远端分组解析失败，已跳过', e),
+        ),
+      );
+    } catch (e) {
+      report.addGroup(
+        GroupSyncResult(
+          groupId: groupId,
+          decision: entry.decision,
+          ok: false,
+          error: SyncErrorMapper.fromException(e, context: '拉取分组 $groupId'),
+        ),
+      );
+    }
+  }
+
+  /// 应用远端分组 meta：新建/改名/排序；墓碑 → 本地分组消失（组内书回未分组）。
+  Future<void> _applyRemoteGroup(
+    GroupMeta group,
+    RemoteGroupStub stub,
+    SyncReport report, {
+    SyncDecision? decision,
+  }) async {
+    await _library.applyRemoteGroup(group);
+    await _store.saveGroupSyncState(
+      GroupSyncStateSnapshot(
+        groupId: group.groupId,
+        backendKey: backendKey,
+        baseRev: group.rev,
+        remoteEtag: stub.etag,
+        lastSyncedGroupJson: group.toJsonString(),
+        lastSyncedAt: _now(),
+      ),
+    );
+    report.addGroup(
+      GroupSyncResult(groupId: group.groupId, decision: decision, ok: true),
+    );
+  }
+
+  /// 阶段 4：推送分组（新建 / 更新 / 冲突合并 / 墓碑）。
+  /// 返回本轮成功推送的分组 id 集合（供同名去重的云端清理判定）。
+  Future<Set<String>> _pushGroups(
+    GroupSyncPlan plan,
+    Map<String, GroupMeta> remoteGroups,
+    SyncReport report,
+    ({String deviceId, String deviceName}) identity,
+  ) async {
+    final pushed = <String>{};
+    for (final e in plan.pushNeeded) {
+      switch (e.decision) {
+        case SyncDecision.deletePush:
+          if (await _pushGroupTombstone(e, report, identity)) {
+            pushed.add(e.groupId);
+          }
+        case SyncDecision.localNewPush:
+          if (await _pushNewGroup(e, report, identity)) {
+            pushed.add(e.groupId);
+          }
+        case SyncDecision.pushLocal:
+        case SyncDecision.conflictMerge:
+          if (await _pushGroupMeta(e, remoteGroups, report, identity)) {
+            pushed.add(e.groupId);
+          }
+        default:
+          break;
+      }
+    }
+    return pushed;
+  }
+
+  /// 单个分组推送核心（写前 expectedRev=baseRev；冲突 → 合并 → 重试恰一次）。
+  Future<bool> _pushGroupMeta(
+    GroupSyncPlanEntry entry,
+    Map<String, GroupMeta> remoteGroups,
+    SyncReport report,
+    ({String deviceId, String deviceName}) identity,
+  ) async {
+    final groupId = entry.groupId;
+    try {
+      final state = await _store.groupSyncState(groupId, backendKey);
+      final baseRev = state?.baseRev ?? 0;
+
+      var local = await _buildLocalGroup(
+        groupId,
+        baseRev,
+        identity.deviceId,
+        identity.deviceName,
+      );
+      var expected = baseRev;
+      // conflictMerge：预拉了远端 → 先合并再推（写即带新 rev）。
+      final prePulled = remoteGroups[groupId];
+      if (entry.decision == SyncDecision.conflictMerge && prePulled != null) {
+        local = await _mergeAndBumpGroup(
+          local,
+          prePulled,
+          identity.deviceId,
+          identity.deviceName,
+        );
+        expected = prePulled.rev;
+      }
+      try {
+        await _adapter.putGroup(local, expectedRev: expected);
+      } on GroupRevConflict catch (conflict) {
+        final remote = conflict.remoteGroup ?? await _adapter.getGroup(groupId);
+        final GroupMeta merged;
+        final int retryExpected;
+        if (remote == null) {
+          merged = local; // 远端分组消失：按新建重试一次
+          retryExpected = 0;
+        } else {
+          merged = await _mergeAndBumpGroup(
+            local,
+            remote,
+            identity.deviceId,
+            identity.deviceName,
+          );
+          retryExpected = remote.rev;
+        }
+        try {
+          await _adapter.putGroup(merged, expectedRev: retryExpected);
+          local = merged;
+        } on GroupRevConflict catch (again) {
+          throw ConflictUnresolvable('合并后重试仍冲突：$groupId', again);
+        }
+      }
+      await _store.saveGroupSyncState(
+        GroupSyncStateSnapshot(
+          groupId: groupId,
+          backendKey: backendKey,
+          baseRev: local.rev,
+          lastSyncedGroupJson: local.toJsonString(),
+          lastSyncedAt: _now(),
+        ),
+      );
+      // 合并/推送结果应用回本地视图（名称、排序与云端一致）。
+      await _library.applyRemoteGroup(local);
+      report.addGroup(
+        GroupSyncResult(groupId: groupId, decision: entry.decision, ok: true),
+      );
+      return true;
+    } catch (e) {
+      report.addGroup(
+        GroupSyncResult(
+          groupId: groupId,
+          decision: entry.decision,
+          ok: false,
+          error: SyncErrorMapper.fromException(e, context: '推送分组 $groupId'),
+        ),
+      );
+      return false;
+    }
+  }
+
+  /// 本端新分组上架：推分组 meta（expectedRev=0）。
+  Future<bool> _pushNewGroup(
+    GroupSyncPlanEntry entry,
+    SyncReport report,
+    ({String deviceId, String deviceName}) identity,
+  ) async {
+    final groupId = entry.groupId;
+    try {
+      final meta = await _buildLocalGroup(
+        groupId,
+        0,
+        identity.deviceId,
+        identity.deviceName,
+      );
+      await _adapter.putGroup(meta, expectedRev: 0);
+      await _store.saveGroupSyncState(
+        GroupSyncStateSnapshot(
+          groupId: groupId,
+          backendKey: backendKey,
+          baseRev: meta.rev,
+          lastSyncedGroupJson: meta.toJsonString(),
+          lastSyncedAt: _now(),
+        ),
+      );
+      await _library.applyRemoteGroup(meta);
+      report.addGroup(
+        GroupSyncResult(
+          groupId: groupId,
+          decision: SyncDecision.localNewPush,
+          ok: true,
+        ),
+      );
+      return true;
+    } catch (e) {
+      report.addGroup(
+        GroupSyncResult(
+          groupId: groupId,
+          decision: SyncDecision.localNewPush,
+          ok: false,
+          error: SyncErrorMapper.fromException(e, context: '上架新分组 $groupId'),
+        ),
+      );
+      return false;
+    }
+  }
+
+  /// 本地删除分组 → 推墓碑（其它设备同步后分组消失、组内书回未分组）。
+  Future<bool> _pushGroupTombstone(
+    GroupSyncPlanEntry entry,
+    SyncReport report,
+    ({String deviceId, String deviceName}) identity,
+  ) async {
+    final groupId = entry.groupId;
+    try {
+      final state = await _store.groupSyncState(groupId, backendKey);
+      final baseRev = state?.baseRev ?? 0;
+      final rev = await _store.nextGroupRev(groupId, atLeast: baseRev + 1);
+      final base = await _library.buildLocalGroupMeta(
+        groupId,
+        rev: rev,
+        deviceId: identity.deviceId,
+        deviceName: identity.deviceName,
+        now: _now(),
+      );
+      final deletedAt = _now();
+      final tomb = GroupMeta(
+        schemaVersion: base.schemaVersion,
+        groupId: base.groupId,
+        rev: rev,
+        deviceId: identity.deviceId,
+        deviceName: identity.deviceName,
+        createdAt: base.createdAt,
+        updatedAt: deletedAt,
+        deleted: true,
+        deletedAt: deletedAt,
+        name: base.name,
+        sortOrder: base.sortOrder,
+      );
+      await _adapter.putGroup(tomb, expectedRev: baseRev);
+      await _store.saveGroupSyncState(
+        GroupSyncStateSnapshot(
+          groupId: groupId,
+          backendKey: backendKey,
+          baseRev: tomb.rev,
+          lastSyncedGroupJson: tomb.toJsonString(),
+          lastSyncedAt: _now(),
+        ),
+      );
+      // 墓碑已上云 → 本地分组行可以移除（组内书籍已在删除时回到未分组）。
+      await _library.applyRemoteGroup(tomb);
+      report.addGroup(
+        GroupSyncResult(
+          groupId: groupId,
+          decision: SyncDecision.deletePush,
+          ok: true,
+        ),
+      );
+      return true;
+    } catch (e) {
+      report.addGroup(
+        GroupSyncResult(
+          groupId: groupId,
+          decision: SyncDecision.deletePush,
+          ok: false,
+          error: SyncErrorMapper.fromException(e, context: '推送分组墓碑 $groupId'),
+        ),
+      );
+      return false;
+    }
+  }
+
+  /// 同名去重的云端清理：规范分组确实在云端时删除冗余的同名条目。
+  ///
+  /// 规范分组本轮刚推上云也算"在云端"（[pushedGroupIds]）——否则本地刚建
+  /// 的规范分组要等下一轮才清理冗余条目。
+  Future<void> _cleanupDuplicateGroups(
+    List<GroupAbsorption> absorptions,
+    GroupListing listing,
+    Set<String> pushedGroupIds,
+    SyncReport report,
+  ) async {
+    for (final a in absorptions) {
+      if (!a.fromIsRemote) continue;
+      final canonicalInCloud =
+          a.toIsRemote || pushedGroupIds.contains(a.toGroupId);
+      if (!canonicalInCloud) continue; // 规范分组还没上云 → 本轮不清理
+      try {
+        await _adapter.deleteGroupMeta(a.fromGroupId);
+      } catch (e) {
+        report.addGroup(
+          GroupSyncResult(
+            groupId: a.fromGroupId,
+            ok: false,
+            error: SyncErrorMapper.fromException(
+              e,
+              context: '清理冗余分组 ${a.fromGroupId}',
+            ),
+          ),
+        );
+      }
+    }
+  }
+
+  /// 构建本地待推送分组 meta（rev 由持久计数器给出，只增不减）。
+  Future<GroupMeta> _buildLocalGroup(
+    String groupId,
+    int baseRev,
+    String deviceId,
+    String deviceName,
+  ) async {
+    final rev = await _store.nextGroupRev(groupId, atLeast: baseRev + 1);
+    return _library.buildLocalGroupMeta(
+      groupId,
+      rev: rev,
+      deviceId: deviceId,
+      deviceName: deviceName,
+      now: _now(),
+    );
+  }
+
+  /// 合并分组并把 rev 抬到合并结果水位（只增不减，docs/05 §6 不变式 1）。
+  Future<GroupMeta> _mergeAndBumpGroup(
+    GroupMeta local,
+    GroupMeta remote,
+    String deviceId,
+    String deviceName,
+  ) async {
+    var merged = _resolver.mergeGroup(
+      local: local,
+      remote: remote,
+      deviceId: deviceId,
+      deviceName: deviceName,
+      now: _now(),
+    );
+    final rev = await _store.nextGroupRev(local.groupId, atLeast: merged.rev);
+    if (rev != merged.rev) merged = merged.withRev(rev);
+    return merged;
+  }
+
+  GroupMeta? _parseGroup(String? json) {
+    if (json == null) return null;
+    try {
+      return GroupMeta.fromJsonString(json);
+    } on FormatException {
+      return null;
+    }
   }
 
   /// 阶段 4：哈希去重 + 逐本推送。返回"无需/不可上传正文"的 bookId 集合。
@@ -1339,6 +1937,7 @@ class SyncEngine {
     reading: meta.reading,
     annotations: meta.annotations,
     extra: meta.extra,
+    groupId: meta.groupId,
   );
 
   static BookMeta _makeTombstone(
@@ -1364,5 +1963,6 @@ class SyncEngine {
     reading: base.reading,
     annotations: base.annotations,
     extra: base.extra,
+    groupId: base.groupId,
   );
 }

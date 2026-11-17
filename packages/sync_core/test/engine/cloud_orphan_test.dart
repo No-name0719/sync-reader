@@ -224,6 +224,21 @@ class _FailingListBookFilesAdapter implements BackendAdapter {
       _inner.putTombstone(tombstoned, expectedRev: expectedRev);
 
   @override
+  Future<GroupListing> listGroups() => _inner.listGroups();
+
+  @override
+  Future<GroupMeta?> getGroup(String groupId, {String? ifNoneMatch}) =>
+      _inner.getGroup(groupId, ifNoneMatch: ifNoneMatch);
+
+  @override
+  Future<void> putGroup(GroupMeta meta, {required int expectedRev}) =>
+      _inner.putGroup(meta, expectedRev: expectedRev);
+
+  @override
+  Future<void> deleteGroupMeta(String groupId) =>
+      _inner.deleteGroupMeta(groupId);
+
+  @override
   Stream<List<int>> downloadBook(String bookId, {int? startByte}) =>
       _inner.downloadBook(bookId, startByte: startByte);
 

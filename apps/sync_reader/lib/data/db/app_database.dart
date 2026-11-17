@@ -1,4 +1,4 @@
-/// 应用数据库（docs/05 §5）：schemaVersion 3，WAL 模式。
+/// 应用数据库（docs/05 §5）：schemaVersion 4，WAL 模式。
 ///
 /// - 生产：drift_flutter 的 [driftDatabase]（懒加载 + 后台 isolate）；
 /// - 测试：[AppDatabase.forTesting] 注入内存 [NativeDatabase]。
@@ -32,6 +32,7 @@ part 'app_database.g.dart';
     BookGroups,
     LocalOnlyBooks,
     AppSettings,
+    GroupSyncState,
   ],
   daos: [
     BooksDao,
@@ -52,7 +53,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -60,10 +61,15 @@ class AppDatabase extends _$AppDatabase {
     onUpgrade: (m, from, to) async {
       // v1 → v2（2026-10-28，M4）：新增 reading_days / book_groups 表与
       // books.group_id 列。只增不删（docs/05 §6）。
+      //
+      // 注：book_groups 以**当前定义**建表（含 v4 的 deleted/deleted_at 列），
+      // 故 v4 分支在"本轮刚建表"时不再重复加列（否则 duplicate column）。
+      var bookGroupsCreatedNow = false;
       if (from < 2) {
         // 先建被引用表，再加外键列。
         await m.createTable(readingDays);
         await m.createTable(bookGroups);
+        bookGroupsCreatedNow = true;
         await m.addColumn(books, books.groupId);
       }
       // v2 → v3（2026-10-28，v1.1 重设计批 1）：新增 local_only_books
@@ -72,6 +78,16 @@ class AppDatabase extends _$AppDatabase {
       if (from < 3) {
         await m.createTable(localOnlyBooks);
         await m.createTable(appSettings);
+      }
+      // v3 → v4（2026-11-17，分组云端同步）：新增 group_sync_state 表，
+      // 并给 book_groups 加 deleted/deleted_at 两列（本地软删分组，行保留
+      // 以便离线补推分组墓碑）。只增不删（docs/05 §6）。
+      if (from < 4) {
+        await m.createTable(groupSyncState);
+        if (!bookGroupsCreatedNow) {
+          await m.addColumn(bookGroups, bookGroups.deleted);
+          await m.addColumn(bookGroups, bookGroups.deletedAt);
+        }
       }
     },
     beforeOpen: (details) async {

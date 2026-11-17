@@ -24,6 +24,7 @@ import 'package:drift/drift.dart';
 import 'package:sync_core/sync_core.dart';
 
 import '../db/app_database.dart';
+import '../db/daos/book_groups_dao.dart';
 import '../db/daos/books_dao.dart';
 import '../db/daos/progress_dao.dart';
 import '../files/book_file_store.dart';
@@ -132,6 +133,10 @@ final class DriftLocalLibrary implements LocalLibrary {
         ? prevPath
         : null;
 
+    // 分组归属（FR-107，docs/05 §2.2）：远端分组本地不存在 → 视为未分组
+    // （不得写入悬空外键；分组随后到达时由其 meta 应用补回）。
+    final remoteGroupId = await _resolveRemoteGroupId(meta.groupId);
+
     await _db
         .into(_db.books)
         .insertOnConflictUpdate(
@@ -149,8 +154,15 @@ final class DriftLocalLibrary implements LocalLibrary {
             addedAt: existing?.addedAt ?? meta.createdAt.millisecondsSinceEpoch,
             lastReadAt: meta.reading.lastReadAt.millisecondsSinceEpoch,
             totalSeconds: meta.reading.totalSeconds,
+            groupId: remoteGroupId,
           ),
         );
+
+    // 分组归属**显式落列**：drift 的 data class upsert 会忽略 null 值
+    // （toColumns(nullToAbsent=true)）→ "远端未分组"必须单独清空本地归属，
+    // 否则旧的 group_id 会残留（books.group_id 进 meta，docs/05 §2.2）。
+    await (_db.update(_db.books)..where((b) => b.bookId.equals(meta.bookId)))
+        .write(BooksCompanion(groupId: Value(remoteGroupId)));
 
     // 进度：远端无进度 → 清除本地进度行；有 → 覆盖（dirty=false，与云端一致）。
     final progress = meta.progress;
@@ -379,10 +391,148 @@ final class DriftLocalLibrary implements LocalLibrary {
     }
   }
 
+  // ── LocalLibrary：分组（FR-107 云端同步，docs/05 §2.1）──────────────
+
+  @override
+  Future<List<LocalGroupSnapshot>> listGroups() async {
+    final rows = await _groupsDao.allGroupsIncludingDeleted();
+    final states = await _groupStatesByGroupId();
+    return [
+      for (final row in rows) _groupSnapshotFor(row, states[row.groupId]),
+    ];
+  }
+
+  @override
+  Future<LocalGroupSnapshot?> group(String groupId) async {
+    final row = await _groupsDao.groupById(groupId);
+    if (row == null) return null;
+    final states = await _groupStatesByGroupId();
+    return _groupSnapshotFor(row, states[groupId]);
+  }
+
+  @override
+  Future<void> applyRemoteGroup(GroupMeta meta) async {
+    if (meta.isTombstone) {
+      // 分组在云端已删 → 本地移除该分组行（组内书籍由外键 ON DELETE SET NULL
+      // 回到未分组，不丢书）。
+      await (_db.delete(
+        _db.bookGroups,
+      )..where((g) => g.groupId.equals(meta.groupId))).go();
+      return;
+    }
+    final existing = await _groupsDao.groupById(meta.groupId);
+    if (existing == null) {
+      await _db
+          .into(_db.bookGroups)
+          .insert(
+            BookGroupsCompanion.insert(
+              groupId: meta.groupId,
+              name: meta.name,
+              sortOrder: Value(meta.sortOrder),
+              createdAt: meta.createdAt.millisecondsSinceEpoch,
+            ),
+          );
+      return;
+    }
+    // 改名/排序以远端为准（引擎已按 LWW 定序裁决）。
+    await (_db.update(
+      _db.bookGroups,
+    )..where((g) => g.groupId.equals(meta.groupId))).write(
+      BookGroupsCompanion(
+        name: Value(meta.name),
+        sortOrder: Value(meta.sortOrder),
+        deleted: const Value(false),
+        deletedAt: const Value(null),
+      ),
+    );
+  }
+
+  @override
+  Future<GroupMeta> buildLocalGroupMeta(
+    String groupId, {
+    required int rev,
+    required String deviceId,
+    required String deviceName,
+    required DateTime now,
+  }) async {
+    final row = await _groupsDao.groupById(groupId);
+    if (row == null) {
+      throw StateError('本地不存在该分组，无法构建 meta：$groupId');
+    }
+    return GroupMeta(
+      schemaVersion: kGroupSchemaVersion,
+      groupId: row.groupId,
+      rev: rev,
+      deviceId: deviceId,
+      deviceName: deviceName,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(row.createdAt),
+      updatedAt: now,
+      name: row.name,
+      sortOrder: row.sortOrder,
+      // 待推送形态恒为"活分组"；墓碑由引擎按删除路径显式构造。
+      deleted: false,
+    );
+  }
+
+  @override
+  Future<void> mergeLocalGroup({
+    required String fromGroupId,
+    required String toGroupId,
+    required String toName,
+    required int toSortOrder,
+  }) async {
+    await _groupsDao.mergeGroup(
+      fromGroupId: fromGroupId,
+      toGroupId: toGroupId,
+      toName: toName,
+      toSortOrder: toSortOrder,
+    );
+  }
+
+  /// 分组快照：dirty = 名称/排序与上次同步的副本不一致（docs/04 §5.1）。
+  LocalGroupSnapshot _groupSnapshotFor(
+    BookGroup row,
+    GroupSyncStateRow? state,
+  ) {
+    final synced = _parseGroupJson(state?.lastSyncedGroupJson);
+    final dirty = synced == null
+        ? false
+        : (synced.name != row.name || synced.sortOrder != row.sortOrder);
+    return LocalGroupSnapshot(
+      groupId: row.groupId,
+      name: row.name,
+      sortOrder: row.sortOrder,
+      createdAt: DateTime.fromMillisecondsSinceEpoch(row.createdAt),
+      exists: true,
+      deleted: row.deleted,
+      dirty: dirty,
+      hasBaseRev: state != null,
+      baseRev: state?.baseRev ?? 0,
+    );
+  }
+
+  /// 解析上次同步的分组副本（公共祖先；损坏时按 null 处理）。
+  GroupMeta? _parseGroupJson(String? raw) {
+    if (raw == null) return null;
+    try {
+      return GroupMeta.fromJsonString(raw);
+    } on FormatException {
+      return null;
+    }
+  }
+
+  Future<Map<String, GroupSyncStateRow>> _groupStatesByGroupId() async {
+    final rows = await (_db.select(
+      _db.groupSyncState,
+    )..where((s) => s.backendKey.equals(backendKey))).get();
+    return {for (final row in rows) row.groupId: row};
+  }
+
   // ── 内部工具 ──────────────────────────────────────────────────────────
 
   BooksDao get _booksDao => _db.booksDao;
   ProgressDao get _progressDao => _db.progressDao;
+  BookGroupsDao get _groupsDao => _db.bookGroupsDao;
 
   /// 有墓碑的 bookId 集合（本地已删除的书；不参与 diff）。
   Future<Set<String>> _tombstonedBookIds() async {
@@ -409,15 +559,37 @@ final class DriftLocalLibrary implements LocalLibrary {
     BookSyncState? state,
   ) {
     final hasBaseRev = state != null;
+    // 分组归属进入书籍 meta（docs/05 §2.2）→ 归属变了就是"未推送的修改"
+    // （与进度 dirty 同款语义：本地 group_id ≠ 上次同步的 group_id）。
+    final syncedGroupId = _parseBookMetaJson(state?.lastSyncedMetaJson)
+        ?.groupId;
+    final groupChanged = state != null && syncedGroupId != book.groupId;
     return LocalBookSnapshot(
       bookId: book.bookId,
       meta: _skeletonMeta(book, progress),
       exists: true,
-      dirty: progress?.dirty ?? false,
+      dirty: (progress?.dirty ?? false) || groupChanged,
       hasBaseRev: hasBaseRev,
       baseRev: state?.baseRev ?? 0,
       hasLocalContent: (book.localPath ?? '').isNotEmpty,
     );
+  }
+
+  /// 远端 groupId → 本地可用的 groupId（分组不存在则 null，避免悬空外键）。
+  Future<String?> _resolveRemoteGroupId(String? groupId) async {
+    if (groupId == null || groupId.isEmpty) return null;
+    final row = await _groupsDao.groupById(groupId);
+    return row == null ? null : groupId;
+  }
+
+  /// 解析上次同步的书籍 meta 副本（公共祖先；损坏时按 null 处理）。
+  BookMeta? _parseBookMetaJson(String? raw) {
+    if (raw == null) return null;
+    try {
+      return BookMeta.fromJsonString(raw);
+    } on FormatException {
+      return null;
+    }
   }
 
   /// 本地行 → meta 骨架（推送时才定 rev/设备信息，docs/04 §2；Diff/去重用）。
@@ -464,6 +636,7 @@ final class DriftLocalLibrary implements LocalLibrary {
         totalSeconds: book.totalSeconds,
         lastReadAt: lastReadAt,
       ),
+      groupId: book.groupId,
     );
   }
 }

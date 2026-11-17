@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import '../internal/json_fields.dart';
 import 'locator.dart';
 
 /// 当前元数据 schema 版本（docs/05 §6）。演进规则：只加字段、不删字段、
@@ -28,6 +29,7 @@ class BookMeta {
     required this.reading,
     this.annotations = const [],
     this.extra = const {},
+    this.groupId,
   });
 
   final int schemaVersion;
@@ -45,6 +47,13 @@ class BookMeta {
   final ReadingStats reading;
   final List<Object?> annotations; // v1 恒为空数组（v2 批注占位）
   final Map<String, Object?> extra; // 向前兼容扩展区，读方容忍未知键
+
+  /// 所属分组 id（FR-107，docs/05 §2.2）：null = 未分组。
+  ///
+  /// **可选字段**（只增不删，docs/05 §6）：旧版本客户端读到该字段会忽略
+  /// （`fromJson` 只取已知键），写回时丢失分组归属 = 降级为"未分组"，
+  /// 不破坏既有书籍同步语义。
+  final String? groupId;
 
   bool get isTombstone => deleted;
 
@@ -79,37 +88,40 @@ class BookMeta {
       reading: reading,
       annotations: annotations,
       extra: extra,
+      groupId: groupId,
     );
   }
 
   factory BookMeta.fromJson(Map<String, Object?> json) {
-    final schemaVersion = _requireInt(json, 'schemaVersion');
+    final schemaVersion = requireInt(json, 'schemaVersion');
     if (schemaVersion < 1) {
       throw const FormatException('schemaVersion 必须 ≥ 1');
     }
     final deleted = json['deleted'] == true;
     return BookMeta(
       schemaVersion: schemaVersion,
-      bookId: _requireString(json, 'bookId'),
-      rev: _requireRev(json),
-      deviceId: _requireString(json, 'deviceId'),
-      deviceName: _requireString(json, 'deviceName'),
-      createdAt: _requireTime(json, 'createdAt'),
-      updatedAt: _requireTime(json, 'updatedAt'),
+      bookId: requireString(json, 'bookId'),
+      rev: requireRev(json),
+      deviceId: requireString(json, 'deviceId'),
+      deviceName: requireString(json, 'deviceName'),
+      createdAt: requireTime(json, 'createdAt'),
+      updatedAt: requireTime(json, 'updatedAt'),
       deleted: deleted,
-      deletedAt: deleted ? _optionalTime(json, 'deletedAt') : null,
+      deletedAt: deleted ? optionalTime(json, 'deletedAt') : null,
       dedupOf: json['dedupOf'] is String ? json['dedupOf'] as String : null,
-      book: BookInfo.fromJson(_requireMap(json, 'book')),
+      book: BookInfo.fromJson(requireMap(json, 'book')),
       progress: json['progress'] == null
           ? null
-          : ReadingProgress.fromJson(_requireMap(json, 'progress')),
-      reading: ReadingStats.fromJson(_requireMap(json, 'reading')),
+          : ReadingProgress.fromJson(requireMap(json, 'progress')),
+      reading: ReadingStats.fromJson(requireMap(json, 'reading')),
       annotations: json['annotations'] is List
           ? (json['annotations'] as List).toList()
           : const [],
       extra: json['extra'] is Map
           ? (json['extra'] as Map).cast<String, Object?>()
           : const {},
+      // 可选字段：缺失容忍（只增不删，读方容忍未知/缺失键）。
+      groupId: json['groupId'] is String ? json['groupId'] as String : null,
     );
   }
 
@@ -132,6 +144,7 @@ class BookMeta {
     'reading': reading.toJson(),
     'annotations': List<Object?>.of(annotations),
     'extra': Map<String, Object?>.of(extra),
+    'groupId': groupId,
   };
 
   String toJsonString() => jsonEncode(toJson());
@@ -167,15 +180,15 @@ class BookInfo {
   final String tocFingerprint; // 目录指纹，不一致时进度降级为 percent
 
   factory BookInfo.fromJson(Map<String, Object?> json) => BookInfo(
-    title: _requireString(json, 'title'),
+    title: requireString(json, 'title'),
     author: json['author'] is String ? json['author'] as String : '',
-    format: _requireString(json, 'format'),
-    fileName: _requireString(json, 'fileName'),
-    contentHash: _requireString(json, 'contentHash'),
-    sizeBytes: _requireInt(json, 'sizeBytes'),
+    format: requireString(json, 'format'),
+    fileName: requireString(json, 'fileName'),
+    contentHash: requireString(json, 'contentHash'),
+    sizeBytes: requireInt(json, 'sizeBytes'),
     language: json['language'] is String ? json['language'] as String : null,
     coverHash: json['coverHash'] is String ? json['coverHash'] as String : null,
-    tocFingerprint: _requireString(json, 'tocFingerprint'),
+    tocFingerprint: requireString(json, 'tocFingerprint'),
   );
 
   Map<String, Object?> toJson() => {
@@ -204,14 +217,14 @@ class ReadingProgress {
   final DateTime updatedAt;
 
   factory ReadingProgress.fromJson(Map<String, Object?> json) {
-    final percent = _requireNum(json, 'percent');
+    final percent = requireNum(json, 'percent');
     if (percent < 0.0 || percent > 1.0) {
       throw FormatException('percent 越界: $percent');
     }
     return ReadingProgress(
-      locator: Locator.fromJson(_requireMap(json, 'locator')),
+      locator: Locator.fromJson(requireMap(json, 'locator')),
       percent: percent,
-      updatedAt: _requireTime(json, 'updatedAt'),
+      updatedAt: requireTime(json, 'updatedAt'),
     );
   }
 
@@ -231,55 +244,12 @@ class ReadingStats {
   final DateTime lastReadAt;
 
   factory ReadingStats.fromJson(Map<String, Object?> json) => ReadingStats(
-    totalSeconds: _requireInt(json, 'totalSeconds'),
-    lastReadAt: _requireTime(json, 'lastReadAt'),
+    totalSeconds: requireInt(json, 'totalSeconds'),
+    lastReadAt: requireTime(json, 'lastReadAt'),
   );
 
   Map<String, Object?> toJson() => {
     'totalSeconds': totalSeconds,
     'lastReadAt': lastReadAt.toUtc().toIso8601String(),
   };
-}
-
-int _requireInt(Map<String, Object?> json, String key) {
-  final v = json[key];
-  if (v is int) return v;
-  throw FormatException('$key 必须为 int，实际: $v');
-}
-
-double _requireNum(Map<String, Object?> json, String key) {
-  final v = json[key];
-  if (v is num) return v.toDouble();
-  throw FormatException('$key 必须为 num，实际: $v');
-}
-
-String _requireString(Map<String, Object?> json, String key) {
-  final v = json[key];
-  if (v is String && v.isNotEmpty) return v;
-  throw FormatException('$key 必须为非空 String，实际: $v');
-}
-
-int _requireRev(Map<String, Object?> json) {
-  final rev = _requireInt(json, 'rev');
-  if (rev >= 1) return rev;
-  throw FormatException('rev 必须 ≥ 1，实际: $rev');
-}
-
-DateTime _requireTime(Map<String, Object?> json, String key) {
-  final v = json[key];
-  if (v is String) {
-    return DateTime.parse(v);
-  }
-  throw FormatException('$key 必须为 ISO-8601 字符串，实际: $v');
-}
-
-DateTime? _optionalTime(Map<String, Object?> json, String key) {
-  final v = json[key];
-  return v is String ? DateTime.parse(v) : null;
-}
-
-Map<String, Object?> _requireMap(Map<String, Object?> json, String key) {
-  final v = json[key];
-  if (v is Map) return v.cast<String, Object?>();
-  throw FormatException('$key 必须为 object，实际: $v');
 }

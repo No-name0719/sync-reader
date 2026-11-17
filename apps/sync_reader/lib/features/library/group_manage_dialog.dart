@@ -1,9 +1,12 @@
-/// 分组管理对话框（FR-107 本地分类，v1 不参与同步）。
+/// 分组管理对话框（FR-107，v1.4 起分组参与云端同步，docs/05 §2.1）。
 ///
 /// 新建 / 重命名 / 删除分组，操作即时生效：直接调 `BookGroupsDao`，
 /// 列表经 [groupsProvider]（drift watch）自动刷新。重名经 `nameExists`
-/// 以 SnackBar 拒绝；删除分组不删书（外键 ON DELETE SET NULL，组内书籍
-/// 回到未分组）。
+/// 以 SnackBar 拒绝；删除分组不删书（组内书籍回到未分组）。
+///
+/// 同步：新建/重命名后经 [SyncFacade.pushGroupMeta] 即时上云；删除后经
+/// [SyncFacade.deleteGroup] 推分组墓碑（离线失败不影响本地，下次全量
+/// 同步补推——本地优先，docs/04 §1.3）。
 library;
 
 import 'dart:async';
@@ -13,6 +16,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/db/app_database.dart';
 import '../../data/db/daos/book_groups_dao.dart';
+import '../sync/sync_facade.dart';
 import 'library_providers.dart';
 
 /// 打开分组管理对话框。
@@ -54,8 +58,10 @@ class _GroupManageDialogState extends ConsumerState<GroupManageDialog> {
       return;
     }
     try {
-      await dao.createGroup(name);
+      final group = await dao.createGroup(name);
       _nameController.clear();
+      // 分组上云（FR-107）：失败不影响本地，下次全量同步补推。
+      unawaited(ref.read(syncFacadeProvider).pushGroupMeta(group.groupId));
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('新建分组失败：$e')));
     }
@@ -77,6 +83,8 @@ class _GroupManageDialogState extends ConsumerState<GroupManageDialog> {
     }
     try {
       await dao.renameGroup(group.groupId, trimmed);
+      // 分组改名上云（FR-107）：失败不影响本地，下次全量同步补推。
+      unawaited(ref.read(syncFacadeProvider).pushGroupMeta(group.groupId));
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('重命名分组失败：$e')));
     }
@@ -105,6 +113,8 @@ class _GroupManageDialogState extends ConsumerState<GroupManageDialog> {
     final (dao, messenger) = _deps();
     try {
       await dao.deleteGroup(group.groupId);
+      // 分组墓碑上云（FR-107）：其它设备同步后移除该分组。
+      unawaited(ref.read(syncFacadeProvider).deleteGroup(group.groupId));
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('删除分组失败：$e')));
     }

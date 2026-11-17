@@ -124,9 +124,9 @@ void main() {
 
   tearDown(() async => db.close());
 
-  test('以 user_version=2 打开：走 onUpgrade(2→3)，新表就位，旧数据完好', () async {
+  test('以 user_version=2 打开：走 onUpgrade(2→4)，新表就位，旧数据完好', () async {
     final versionRow = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(versionRow.data['user_version'], 3);
+    expect(versionRow.data['user_version'], 4);
 
     final tables =
         (await db
@@ -137,6 +137,8 @@ void main() {
             .map((row) => row.data['name'] as String)
             .toSet();
     expect(tables, containsAll(<String>['local_only_books', 'app_settings']));
+    // v4 新增表存在（分组云端同步，只增不删）。
+    expect(tables, contains('group_sync_state'));
     // 只增不删：v2 的表全部还在。
     expect(
       tables,
@@ -183,5 +185,5 @@ void main() {
     expect(row.value, '"ochre"');
   });
 
-  test('schemaVersion == 3（docs/05 §6）', () => expect(db.schemaVersion, 3));
+  test('schemaVersion == 4（docs/05 §6）', () => expect(db.schemaVersion, 4));
 }

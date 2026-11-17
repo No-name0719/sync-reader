@@ -43,6 +43,36 @@ class TombstoneLedgerEntry {
   final String contentHash;
 }
 
+/// 分组同步状态快照——与 docs/05 §5 `group_sync_state` 表一一对应。
+///
+/// 与 [BookSyncStateSnapshot] 同构但独立成表：分组是**独立文件类型**
+/// （`groups/{groupId}.json`），写端 rev 计数器与公共祖先缓存都按
+/// groupId 维度维护（docs/05 §2.1）。
+class GroupSyncStateSnapshot {
+  const GroupSyncStateSnapshot({
+    required this.groupId,
+    required this.backendKey,
+    required this.baseRev,
+    this.remoteEtag,
+    this.lastSyncedGroupJson,
+    required this.lastSyncedAt,
+  });
+
+  final String groupId;
+  final String backendKey;
+
+  /// 本地已确认"云端为该版本"的 rev（乐观锁基线）。
+  final int baseRev;
+
+  /// 上次同步的分组文件 ETag（WebDAV 条件请求用；可空）。
+  final String? remoteEtag;
+
+  /// 上次同步副本原文 = 冲突合并的公共祖先（docs/04 §6.3）。
+  final String? lastSyncedGroupJson;
+
+  final DateTime lastSyncedAt;
+}
+
 /// 每后端的同步游标与配额累计——与 docs/05 §5 `sync_cursor` 表一一对应。
 class BackendCursorSnapshot {
   const BackendCursorSnapshot({
@@ -119,4 +149,21 @@ abstract interface class SyncStore {
 
   /// 写（覆盖）某后端的游标快照。
   Future<void> saveCursorSnapshot(BackendCursorSnapshot snapshot);
+
+  // ── 分组同步状态（docs/05 §5 `group_sync_state`）─────────────────────
+
+  /// 取该分组写端计数器的下一个 rev（只增不减，docs/05 §6 不变式 1）。
+  Future<int> nextGroupRev(String groupId, {int atLeast});
+
+  /// 读单个分组的同步状态；从未同步过返回 null。
+  Future<GroupSyncStateSnapshot?> groupSyncState(
+    String groupId,
+    String backendKey,
+  );
+
+  /// 写（覆盖）单个分组的同步状态。
+  Future<void> saveGroupSyncState(GroupSyncStateSnapshot state);
+
+  /// 某后端全部分组的同步状态。
+  Future<List<GroupSyncStateSnapshot>> allGroupSyncStates(String backendKey);
 }

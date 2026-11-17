@@ -2,6 +2,7 @@ import 'dart:io';
 
 import '../diff/diff_engine.dart';
 import '../model/book_meta.dart';
+import '../model/group_meta.dart';
 import 'local_library.dart';
 import 'sync_store.dart';
 
@@ -13,6 +14,8 @@ class InMemorySyncStore implements SyncStore {
   final Map<String, BookSyncStateSnapshot> _states = {};
   final Map<String, TombstoneLedgerEntry> _ledger = {};
   final Map<String, BackendCursorSnapshot> _cursors = {};
+  final Map<String, int> _groupRevCounters = {};
+  final Map<String, GroupSyncStateSnapshot> _groupStates = {};
 
   @override
   Future<String> loadOrCreateDeviceId({
@@ -92,6 +95,37 @@ class InMemorySyncStore implements SyncStore {
     _cursors[snapshot.backendKey] = snapshot;
   }
 
+  // ── SyncStore：分组同步状态 ──────────────────────────────────────────
+
+  @override
+  Future<int> nextGroupRev(String groupId, {int atLeast = 0}) async {
+    final next = _max((_groupRevCounters[groupId] ?? 0) + 1, atLeast);
+    _groupRevCounters[groupId] = next;
+    return next;
+  }
+
+  @override
+  Future<GroupSyncStateSnapshot?> groupSyncState(
+    String groupId,
+    String backendKey,
+  ) async {
+    return _groupStates['$backendKey|$groupId'];
+  }
+
+  @override
+  Future<void> saveGroupSyncState(GroupSyncStateSnapshot state) async {
+    _groupStates['${state.backendKey}|${state.groupId}'] = state;
+  }
+
+  @override
+  Future<List<GroupSyncStateSnapshot>> allGroupSyncStates(
+    String backendKey,
+  ) async {
+    return _groupStates.values
+        .where((s) => s.backendKey == backendKey)
+        .toList(growable: false);
+  }
+
   static int _max(int a, int b) => a >= b ? a : b;
 }
 
@@ -108,6 +142,9 @@ class InMemoryLocalLibrary implements LocalLibrary {
 
   /// 本地书行（模拟 books 表 + progress 表的内存投影）。
   final Map<String, _LocalRow> _rows = {};
+
+  /// 本地分组行（模拟 book_groups 表的内存投影，docs/05 §2.1）。
+  final Map<String, _LocalGroupRow> _groups = {};
 
   int _cloudMissingMarks = 0;
   int _adoptCalls = 0;
@@ -166,6 +203,11 @@ class InMemoryLocalLibrary implements LocalLibrary {
     }
     final existing = _rows[meta.bookId];
     final localPath = _existingContentPath(meta.bookId, meta.book.format);
+    // 分组归属（FR-107，docs/05 §2.2）：远端分组本地不存在 → 视为未分组
+    // （不得写入悬空外键；分组稍后到达时会由其 meta 应用补回）。
+    final groupId = meta.groupId != null && _groups.containsKey(meta.groupId)
+        ? meta.groupId
+        : null;
     _rows[meta.bookId] = _LocalRow(
       bookId: meta.bookId,
       title: meta.book.title,
@@ -184,6 +226,7 @@ class InMemoryLocalLibrary implements LocalLibrary {
       dirty: false,
       hasBaseRev: existing?.hasBaseRev ?? false,
       baseRev: existing?.baseRev ?? 0,
+      groupId: groupId,
     );
   }
 
@@ -245,6 +288,10 @@ class InMemoryLocalLibrary implements LocalLibrary {
       dirty: false,
       hasBaseRev: true,
       baseRev: cloudMeta.rev,
+      groupId:
+          cloudMeta.groupId != null && _groups.containsKey(cloudMeta.groupId)
+          ? cloudMeta.groupId
+          : local?.groupId,
     );
   }
 
@@ -335,6 +382,7 @@ class InMemoryLocalLibrary implements LocalLibrary {
     String author = '',
     DateTime? addedAt,
     bool dirty = true,
+    String? groupId,
   }) async {
     final dir = Directory(_bookDir(bookId));
     await dir.create(recursive: true);
@@ -357,6 +405,7 @@ class InMemoryLocalLibrary implements LocalLibrary {
       dirty: dirty,
       hasBaseRev: false,
       baseRev: 0,
+      groupId: groupId,
     );
   }
 
@@ -388,6 +437,167 @@ class InMemoryLocalLibrary implements LocalLibrary {
   /// 正文文件保留，与 docs/04 §7.1 游离语义一致）。
   Future<void> removeLocalBook(String bookId) async {
     _rows.remove(bookId);
+  }
+
+  // ── LocalLibrary：分组（docs/05 §2.1）───────────────────────────────
+
+  @override
+  Future<List<LocalGroupSnapshot>> listGroups() async => _groups.values
+      .map(
+        (g) => LocalGroupSnapshot(
+          groupId: g.groupId,
+          name: g.name,
+          sortOrder: g.sortOrder,
+          createdAt: g.createdAt,
+          exists: true,
+          deleted: g.deleted,
+          dirty: g.dirty,
+          hasBaseRev: g.hasBaseRev,
+          baseRev: g.baseRev,
+        ),
+      )
+      .toList(growable: false);
+
+  @override
+  Future<LocalGroupSnapshot?> group(String groupId) async {
+    final g = _groups[groupId];
+    if (g == null) return null;
+    return LocalGroupSnapshot(
+      groupId: g.groupId,
+      name: g.name,
+      sortOrder: g.sortOrder,
+      createdAt: g.createdAt,
+      exists: true,
+      deleted: g.deleted,
+      dirty: g.dirty,
+      hasBaseRev: g.hasBaseRev,
+      baseRev: g.baseRev,
+    );
+  }
+
+  @override
+  Future<void> applyRemoteGroup(GroupMeta meta) async {
+    if (meta.isTombstone) {
+      // 分组消失 → 组内书籍回到未分组（外键 SET NULL 语义）。
+      _groups.remove(meta.groupId);
+      for (final row in _rows.values.toList()) {
+        if (row.groupId == meta.groupId) {
+          _rows[row.bookId] = row.withGroupId(null);
+        }
+      }
+      return;
+    }
+    final existing = _groups[meta.groupId];
+    _groups[meta.groupId] = _LocalGroupRow(
+      groupId: meta.groupId,
+      name: meta.name,
+      sortOrder: meta.sortOrder,
+      createdAt: existing?.createdAt ?? meta.createdAt,
+      deleted: false,
+      dirty: false,
+      hasBaseRev: true,
+      baseRev: meta.rev,
+    );
+  }
+
+  @override
+  Future<GroupMeta> buildLocalGroupMeta(
+    String groupId, {
+    required int rev,
+    required String deviceId,
+    required String deviceName,
+    required DateTime now,
+  }) async {
+    final g = _groups[groupId];
+    if (g == null) {
+      throw StateError('本地不存在该分组，无法构建 meta：$groupId');
+    }
+    return GroupMeta(
+      schemaVersion: kGroupSchemaVersion,
+      groupId: g.groupId,
+      rev: rev,
+      deviceId: deviceId,
+      deviceName: deviceName,
+      createdAt: g.createdAt,
+      updatedAt: now,
+      name: g.name,
+      sortOrder: g.sortOrder,
+      // 待推送形态恒为"活分组"；墓碑由引擎按删除路径显式构造。
+      deleted: false,
+    );
+  }
+
+  @override
+  Future<void> mergeLocalGroup({
+    required String fromGroupId,
+    required String toGroupId,
+    required String toName,
+    required int toSortOrder,
+  }) async {
+    final from = _groups.remove(fromGroupId);
+    final to = _groups[toGroupId];
+    _groups[toGroupId] = _LocalGroupRow(
+      groupId: toGroupId,
+      name: to == null || to.name.isEmpty ? toName : to.name,
+      sortOrder: to?.sortOrder ?? toSortOrder,
+      createdAt: to?.createdAt ?? from?.createdAt ?? DateTime.utc(2026, 1, 1),
+      deleted: false,
+      dirty: to?.dirty ?? false,
+      hasBaseRev: to?.hasBaseRev ?? false,
+      baseRev: to?.baseRev ?? 0,
+    );
+    for (final row in _rows.values.toList()) {
+      if (row.groupId == fromGroupId) {
+        // 归属变了 → 该书的 meta 变脏（需重新推送 groupId）。
+        _rows[row.bookId] = row.withGroupId(toGroupId, markDirty: true);
+      }
+    }
+  }
+
+  /// 测试辅助：新建本地分组。
+  Future<void> importLocalGroup({
+    required String groupId,
+    required String name,
+    int sortOrder = 0,
+    DateTime? createdAt,
+    bool dirty = true,
+  }) async {
+    _groups[groupId] = _LocalGroupRow(
+      groupId: groupId,
+      name: name,
+      sortOrder: sortOrder,
+      createdAt: createdAt ?? DateTime.utc(2026, 1, 1),
+      deleted: false,
+      dirty: dirty,
+      hasBaseRev: false,
+      baseRev: 0,
+    );
+  }
+
+  /// 测试辅助：重命名本地分组（标脏，待推送）。
+  Future<void> renameLocalGroup(String groupId, String name) async {
+    final g = _groups[groupId];
+    if (g == null) throw StateError('本地不存在该分组：$groupId');
+    _groups[groupId] = g.copyWith(name: name, dirty: true);
+  }
+
+  /// 测试辅助：本地删除分组（软删：行保留待推墓碑；组内书回到未分组）。
+  Future<void> deleteLocalGroup(String groupId) async {
+    final g = _groups[groupId];
+    if (g == null) return;
+    _groups[groupId] = g.copyWith(deleted: true, dirty: true);
+    for (final row in _rows.values.toList()) {
+      if (row.groupId == groupId) {
+        _rows[row.bookId] = row.withGroupId(null);
+      }
+    }
+  }
+
+  /// 测试辅助：把书放进分组（改 group_id → 该书 meta 变脏）。
+  Future<void> setBookGroup(String bookId, String? groupId) async {
+    final r = _rows[bookId];
+    if (r == null) throw StateError('本地不存在该书：$bookId');
+    _rows[bookId] = r.withGroupId(groupId, markDirty: true);
   }
 
   String? _existingContentPath(String bookId, String format) {
@@ -427,6 +637,7 @@ class InMemoryLocalLibrary implements LocalLibrary {
         totalSeconds: r.totalSeconds,
         lastReadAt: r.lastReadAt ?? updatedAt,
       ),
+      groupId: r.groupId,
     );
   }
 
@@ -455,6 +666,7 @@ class _LocalRow {
     required this.dirty,
     required this.hasBaseRev,
     required this.baseRev,
+    this.groupId,
     this.cloudMissing = false,
   });
 
@@ -476,6 +688,9 @@ class _LocalRow {
   final bool dirty;
   final bool hasBaseRev;
   final int baseRev;
+
+  /// 所属分组 id（FR-107，docs/05 §2.2）；null = 未分组。
+  final String? groupId;
   final bool cloudMissing;
 
   _LocalRow withLocalPath(String path) => _LocalRow(
@@ -495,6 +710,7 @@ class _LocalRow {
     dirty: dirty,
     hasBaseRev: hasBaseRev,
     baseRev: baseRev,
+    groupId: groupId,
     cloudMissing: cloudMissing,
   );
 
@@ -521,6 +737,7 @@ class _LocalRow {
     dirty: dirty,
     hasBaseRev: hasBaseRev,
     baseRev: baseRev,
+    groupId: groupId,
     cloudMissing: cloudMissing,
   );
 
@@ -542,6 +759,7 @@ class _LocalRow {
     dirty: dirty,
     hasBaseRev: hasBaseRev,
     baseRev: baseRev,
+    groupId: groupId,
     cloudMissing: cloudMissing,
   );
 
@@ -567,6 +785,7 @@ class _LocalRow {
     dirty: dirty,
     hasBaseRev: hasBaseRev,
     baseRev: baseRev,
+    groupId: groupId,
     cloudMissing: cloudMissing,
   );
 
@@ -587,6 +806,7 @@ class _LocalRow {
     dirty: false,
     hasBaseRev: true,
     baseRev: baseRev,
+    groupId: groupId,
     cloudMissing: cloudMissing,
   );
 
@@ -607,6 +827,76 @@ class _LocalRow {
     dirty: dirty,
     hasBaseRev: hasBaseRev,
     baseRev: baseRev,
+    groupId: groupId,
     cloudMissing: flag,
+  );
+
+  /// 改所属分组（FR-107 拖拽归组；null = 移出分组）。
+  ///
+  /// [markDirty]：分组归属进入书籍 meta（docs/05 §2.2），改动即产生
+  /// "未推送的本地修改"（app 侧按"本地 group_id ≠ 上次同步的 group_id"
+  /// 动态判定 dirty，等价语义）。
+  _LocalRow withGroupId(String? value, {bool markDirty = false}) => _LocalRow(
+    bookId: bookId,
+    title: title,
+    author: author,
+    format: format,
+    fileName: fileName,
+    contentHash: contentHash,
+    sizeBytes: sizeBytes,
+    tocFingerprint: tocFingerprint,
+    addedAt: addedAt,
+    localPath: localPath,
+    progress: progress,
+    totalSeconds: totalSeconds,
+    lastReadAt: lastReadAt,
+    dirty: markDirty ? true : dirty,
+    hasBaseRev: hasBaseRev,
+    baseRev: baseRev,
+    groupId: value,
+    cloudMissing: cloudMissing,
+  );
+}
+
+/// 本地分组行（book_groups 表的内存投影，docs/05 §2.1）。
+class _LocalGroupRow {
+  const _LocalGroupRow({
+    required this.groupId,
+    required this.name,
+    required this.sortOrder,
+    required this.createdAt,
+    required this.deleted,
+    required this.dirty,
+    required this.hasBaseRev,
+    required this.baseRev,
+  });
+
+  final String groupId;
+  final String name;
+  final int sortOrder;
+  final DateTime createdAt;
+
+  /// 本地已删除（待推墓碑）。
+  final bool deleted;
+
+  /// 名称/排序有未推送修改。
+  final bool dirty;
+  final bool hasBaseRev;
+  final int baseRev;
+
+  _LocalGroupRow copyWith({
+    String? name,
+    int? sortOrder,
+    bool? deleted,
+    bool? dirty,
+  }) => _LocalGroupRow(
+    groupId: groupId,
+    name: name ?? this.name,
+    sortOrder: sortOrder ?? this.sortOrder,
+    createdAt: createdAt,
+    deleted: deleted ?? this.deleted,
+    dirty: dirty ?? this.dirty,
+    hasBaseRev: hasBaseRev,
+    baseRev: baseRev,
   );
 }

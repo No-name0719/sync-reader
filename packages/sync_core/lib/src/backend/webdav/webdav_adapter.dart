@@ -7,6 +7,7 @@ import 'package:dio/dio.dart';
 
 import '../../internal/semaphore.dart';
 import '../../model/book_meta.dart';
+import '../../model/group_meta.dart';
 import '../backend_adapter.dart';
 import 'webdav_propfind.dart';
 import 'webdav_ulid.dart';
@@ -74,6 +75,13 @@ class WebDavAdapter implements BackendAdapter {
 
   /// etag → rev 缓存（两级清单的第二级，见类注释）。
   final Map<String, int> _revCache = {};
+
+  /// 分组 etag → 清单条目缓存（rev/name/sortOrder/tombstone）。
+  ///
+  /// 分组清单必须携带**名称**（同名分组去重要靠名称判定，docs/05 §2.1），
+  /// 而 PROPFIND 看不到 JSON 内容 → 与书籍同款"两级清单"：命中缓存零请求，
+  /// 未命中逐本补拉一次 GET（分组数量少，代价可忽略）。
+  final Map<String, _GroupCacheEntry> _groupCache = {};
 
   /// bookId → `books/` 下实际文件名缓存（ext 探测结果）。
   final Map<String, String> _bookFileCache = {};
@@ -198,7 +206,7 @@ class WebDavAdapter implements BackendAdapter {
   @override
   Future<void> ensureLayout() async {
     await _ensureRoot();
-    for (final dir in const ['meta', 'books', 'tmp']) {
+    for (final dir in const ['meta', 'books', 'tmp', 'groups']) {
       final resp = await _requestBytes(
         'PROPFIND',
         _uri(dir),
@@ -476,6 +484,178 @@ class WebDavAdapter implements BackendAdapter {
     final resp = await _requestBytes('DELETE', _uri('meta/$bookId.json'));
     if (resp.statusCode == 404) return; // 幂等（docs/04 §7.3 GC 专用）
     _throwIfBadStatus(resp, '删除 meta $bookId');
+  }
+
+  // ── 分组（docs/05 §2.1）───────────────────────────────────────────────
+
+  @override
+  Future<GroupListing> listGroups() async {
+    // 与 listMetas 同款两级清单：PROPFIND Depth:1 拿 etag/size/mtime，
+    // 缓存未命中的条目逐本补拉一次 GET（取权威 rev 与**名称**）。
+    final entries = await _propfind(_uri('groups'), depth: 1);
+    final stubs = <String, RemoteGroupStub>{};
+    final pending = <String, (DavEntry, String)>{};
+    for (final entry in entries) {
+      if (entry.isDir) continue;
+      final fileName = entry.name;
+      if (!fileName.endsWith('.json') || fileName.length <= 5) continue;
+      final groupId = fileName.substring(0, fileName.length - 5);
+      final etag = entry.etag ?? DavEntry.synthetic(entry.size, entry.modified);
+      final cached = _groupCache[etag];
+      if (cached != null) {
+        stubs[groupId] = _groupStubOf(groupId, entry, etag, cached);
+      } else {
+        pending[groupId] = (entry, etag);
+      }
+    }
+    if (pending.isNotEmpty) {
+      await Future.wait([
+        for (final e in pending.entries)
+          _listingSlots.run(() async {
+            final (entry, etag) = e.value;
+            final cached = await _groupByGet(e.key, etag);
+            if (cached == null) return; // 清单与 GET 之间文件被删 → 不进清单
+            stubs[e.key] = _groupStubOf(e.key, entry, etag, cached);
+          }),
+      ]);
+    }
+    return GroupListing(stubs: stubs);
+  }
+
+  RemoteGroupStub _groupStubOf(
+    String groupId,
+    DavEntry entry,
+    String etag,
+    _GroupCacheEntry cached,
+  ) => RemoteGroupStub(
+    groupId: groupId,
+    rev: cached.rev,
+    name: cached.name,
+    sortOrder: cached.sortOrder,
+    etag: etag,
+    size: entry.size,
+    modifiedAt: entry.modified,
+    deleted: cached.deleted,
+  );
+
+  /// 补拉单个分组取权威 rev/name（冷缓存路径）。
+  /// 返回 null = 文件已消失；解析失败缓存 rev=0（引擎按 Corruption 处理）。
+  Future<_GroupCacheEntry?> _groupByGet(String groupId, String etag) async {
+    final resp = await _requestBytes('GET', _uri('groups/$groupId.json'));
+    switch (resp.statusCode) {
+      case 404:
+        return null;
+      case 200:
+        try {
+          final group = GroupMeta.fromJsonString(
+            utf8.decode(resp.data ?? const []),
+          );
+          final entry = _GroupCacheEntry(
+            rev: group.rev,
+            name: group.name,
+            sortOrder: group.sortOrder,
+            deleted: group.isTombstone,
+          );
+          _groupCache[etag] = entry;
+          return entry;
+        } on FormatException {
+          final broken = _GroupCacheEntry(
+            rev: 0,
+            name: '',
+            sortOrder: 0,
+            deleted: false,
+          );
+          _groupCache[etag] = broken;
+          return broken;
+        }
+      default:
+        _throwIfBadStatus(resp, '分组清单补拉 $groupId');
+        return null;
+    }
+  }
+
+  @override
+  Future<GroupMeta?> getGroup(String groupId, {String? ifNoneMatch}) async {
+    final resp = await _requestBytes(
+      'GET',
+      _uri('groups/$groupId.json'),
+      headers: ifNoneMatch == null ? null : {'if-none-match': ifNoneMatch},
+    );
+    switch (resp.statusCode) {
+      case 304:
+        return null; // 条件请求命中（docs/04 §4 阶段 3）
+      case 404:
+        return null; // 引擎按远端缺失处理
+      case 200:
+        final group = GroupMeta.fromJsonString(
+          utf8.decode(resp.data ?? const []),
+        );
+        final etag =
+            resp.headers.value('etag') ??
+            DavEntry.synthetic(
+              _headerInt(resp, 'content-length'),
+              _headerDate(resp, 'last-modified'),
+            );
+        _groupCache[etag] = _GroupCacheEntry(
+          rev: group.rev,
+          name: group.name,
+          sortOrder: group.sortOrder,
+          deleted: group.isTombstone,
+        );
+        // 服务器不支持 304 时的兜底：200 但内容未变（etag 相同）按未变更处理。
+        if (ifNoneMatch != null && etagEquals(etag, ifNoneMatch)) return null;
+        return group;
+      default:
+        _throwIfBadStatus(resp, '读取分组 $groupId');
+        return null;
+    }
+  }
+
+  @override
+  Future<void> putGroup(GroupMeta meta, {required int expectedRev}) async {
+    // WebDAV 无 CAS → 写前重读（与书籍 meta 同款语义，docs/03 §4.3）。
+    final currentResp = await _requestBytes(
+      'GET',
+      _uri('groups/${meta.groupId}.json'),
+    );
+    GroupMeta? current;
+    switch (currentResp.statusCode) {
+      case 200:
+        current = GroupMeta.fromJsonString(
+          utf8.decode(currentResp.data ?? const []),
+        );
+      case 404:
+        current = null;
+      default:
+        _throwIfBadStatus(currentResp, '分组写前重读 ${meta.groupId}');
+    }
+    final currentRev = current?.rev ?? 0;
+    if (currentRev != expectedRev) {
+      throw GroupRevConflict(meta.groupId, currentRev, current);
+    }
+    final putResp = await _requestBytes(
+      'PUT',
+      _uri('groups/${meta.groupId}.json'),
+      data: utf8.encode(meta.toJsonString()),
+      contentType: 'application/json',
+    );
+    _throwIfBadStatus(putResp, '写入分组 ${meta.groupId}');
+    final respEtag = putResp.headers.value('etag');
+    if (respEtag != null) {
+      _groupCache[respEtag] = _GroupCacheEntry(
+        rev: meta.rev,
+        name: meta.name,
+        sortOrder: meta.sortOrder,
+        deleted: meta.isTombstone,
+      );
+    }
+  }
+
+  @override
+  Future<void> deleteGroupMeta(String groupId) async {
+    final resp = await _requestBytes('DELETE', _uri('groups/$groupId.json'));
+    if (resp.statusCode == 404) return; // 幂等成功
+    _throwIfBadStatus(resp, '删除云端分组 $groupId');
   }
 
   @override
@@ -967,4 +1147,22 @@ class WebDavAdapter implements BackendAdapter {
     final slash = base.lastIndexOf('/');
     return (dot > slash && dot >= 0) ? base.substring(dot + 1) : 'bin';
   }
+}
+
+/// 分组清单缓存条目（etag → 内容派生字段，docs/05 §2.1）。
+///
+/// etag 由内容决定 → 同一 etag 恒对应同一 (rev/name/sortOrder/deleted)，
+/// 缓存命中即可跳过补拉 GET。
+class _GroupCacheEntry {
+  const _GroupCacheEntry({
+    required this.rev,
+    required this.name,
+    required this.sortOrder,
+    required this.deleted,
+  });
+
+  final int rev;
+  final String name;
+  final int sortOrder;
+  final bool deleted;
 }
