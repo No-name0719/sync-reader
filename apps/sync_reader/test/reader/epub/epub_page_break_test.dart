@@ -86,7 +86,7 @@ void main() {
 
     for (var page = 0; page < 10; page++) {
       final moved = await renderer.controller.nextPage();
-      await tester.pump();
+      await tester.pumpAndSettle();
       if (!moved) break; // 文档末尾
       final offset = renderer.scrollController.offset;
       landings.add(offset);
@@ -166,15 +166,15 @@ void main() {
     final landings = <double>[];
     for (var i = 0; i < 3; i++) {
       await renderer.controller.nextPage();
-      await tester.pump();
+      await tester.pumpAndSettle();
       landings.add(renderer.scrollController.offset);
     }
     // 再翻 1 页，然后逐页退回，落点应逐一复原。
     await renderer.controller.nextPage();
-    await tester.pump();
+    await tester.pumpAndSettle();
     for (var i = landings.length - 1; i >= 0; i--) {
       await renderer.controller.previousPage();
-      await tester.pump();
+      await tester.pumpAndSettle();
       expect(
         renderer.scrollController.offset,
         closeTo(landings[i], 1.0),
@@ -202,7 +202,7 @@ void main() {
     var checked = 0;
     for (var page = 0; page < 12; page++) {
       final moved = await renderer.controller.nextPage();
-      await tester.pump();
+      await tester.pumpAndSettle();
       if (!moved) break;
       final offset = renderer.scrollController.offset;
       for (final line in epubDocumentLineBoxes(renderer)) {
@@ -239,7 +239,7 @@ void main() {
     final landings = <double>[];
     for (var page = 0; page < 12; page++) {
       final moved = await renderer.controller.nextPage();
-      await tester.pump();
+      await tester.pumpAndSettle();
       if (!moved) break;
       landings.add(renderer.scrollController.offset);
     }
@@ -306,7 +306,7 @@ void main() {
     final viewport = renderer.scrollController.position.viewportDimension;
     final before = renderer.scrollController.offset;
     expect(await renderer.controller.nextPage(), isTrue);
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(
       renderer.scrollController.offset - before,
       closeTo(viewport, 1.0),

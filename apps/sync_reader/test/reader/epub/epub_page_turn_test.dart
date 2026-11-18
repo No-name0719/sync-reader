@@ -65,9 +65,7 @@ Future<void> drainProgressThrottle(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('page 模式：nextPage 落到行边界页停（不切字）、previousPage 返回', (
-    tester,
-  ) async {
+  testWidgets('page 模式：nextPage 落到行边界页停（不切字）、previousPage 返回', (tester) async {
     final bf = (await tester.runAsync(writeEpubBook))!;
     final renderer = (await tester.runAsync(
       () => openRenderer(
@@ -83,14 +81,14 @@ void main() {
     // 面板首帧定位把首块顶对齐视口顶（滚过顶部 padding），先归零再测边界。
     if (renderer.scrollController.offset > 0) {
       expect(await renderer.controller.previousPage(), isTrue);
-      await tester.pump();
+      await tester.pumpAndSettle();
     }
 
     expect(await renderer.controller.previousPage(), isFalse, reason: '已在文档顶端');
     expect(renderer.scrollController.offset, 0);
 
     expect(await renderer.controller.nextPage(), isTrue);
-    await tester.pump();
+    await tester.pumpAndSettle();
     final viewport = renderer.scrollController.position.viewportDimension;
     final offset = renderer.scrollController.offset;
 
@@ -123,7 +121,7 @@ void main() {
     );
 
     expect(await renderer.controller.previousPage(), isTrue);
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(renderer.scrollController.offset, closeTo(0, 1.0));
 
     await drainProgressThrottle(tester);

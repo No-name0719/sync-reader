@@ -28,6 +28,7 @@ import '../../contract/progress_anchor.dart';
 import '../../contract/reader_controller.dart';
 import '../../contract/reader_settings.dart';
 import '../../contract/toc_entry.dart';
+import '../../reader_page_turn.dart';
 import 'pdf_locator.dart';
 import 'pdf_page_anchor.dart';
 import 'pdf_view_widgets.dart';
@@ -308,11 +309,17 @@ class PdfReaderController implements ReaderController {
               1,
             ),
             anchor: pdfrx.PdfPageAnchor.top,
+            // 翻页时长取公共规格（全格式一致，docs/10 §9.21）。缓动仍由
+            // pdfrx 内部固定为 easeInOut（库限制，见 §9.21.4 遗留风险）。
+            duration: ReaderPageTurnSpec.duration,
           );
           return;
         }
       }
-      await viewer.goToPage(pageNumber: index + 1);
+      await viewer.goToPage(
+        pageNumber: index + 1,
+        duration: ReaderPageTurnSpec.duration,
+      );
     } catch (e, s) {
       _log.warn('pdf 页码跳转失败：$e');
       _log.error('pdf 跳转异常详情', e, s);

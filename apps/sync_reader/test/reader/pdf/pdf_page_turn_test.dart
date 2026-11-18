@@ -12,6 +12,7 @@ import 'package:pdfrx/pdfrx.dart' as pdfrx;
 import 'package:sync_reader/features/reader/contract/progress_anchor.dart';
 import 'package:sync_reader/features/reader/contract/reader_settings.dart';
 import 'package:sync_reader/features/reader/formats/pdf/pdf_renderer.dart';
+import 'package:sync_reader/features/reader/reader_page_turn.dart';
 
 /// 最小 fake 页（只提供控制器消费的元数据）。
 class _FakePdfPage extends pdfrx.PdfPage {
@@ -114,6 +115,25 @@ class _FakePdfDocument extends pdfrx.PdfDocument {
   }) async {}
 }
 
+/// 记录 goToPage 参数的假 viewer 控制器（pdfium 不可用，无法真渲染）。
+class _FakeViewerController extends pdfrx.PdfViewerController {
+  int? lastPageNumber;
+  Duration? lastDuration;
+
+  @override
+  bool get isReady => true;
+
+  @override
+  Future<void> goToPage({
+    required int pageNumber,
+    pdfrx.PdfPageAnchor? anchor,
+    Duration duration = const Duration(milliseconds: 200),
+  }) async {
+    lastPageNumber = pageNumber;
+    lastDuration = duration;
+  }
+}
+
 PdfReaderController _openController(int pageCount) => PdfReaderController(
   document: _FakePdfDocument(pageCount),
   settings: ReaderSettings.defaults,
@@ -154,5 +174,20 @@ void main() {
     expect(await controller.nextPage(), isFalse);
     expect(await controller.previousPage(), isFalse);
     expect(controller.pageIndexListenable.value, 0);
+  });
+
+  test('v1.4.4：翻页动画时长取公共规格（全格式一致，docs/10 §9.21）', () async {
+    final controller = _openController(5);
+    addTearDown(controller.dispose);
+    final viewer = _FakeViewerController();
+    controller.attachViewer(viewer);
+
+    expect(await controller.nextPage(), isTrue);
+    expect(viewer.lastPageNumber, 2, reason: '跳到第 2 页（1 起）');
+    expect(
+      viewer.lastDuration,
+      ReaderPageTurnSpec.duration,
+      reason: '翻页时长必须取公共规格（280ms），不得各格式各写各的',
+    );
   });
 }

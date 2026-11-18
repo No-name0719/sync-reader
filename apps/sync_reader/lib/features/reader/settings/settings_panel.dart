@@ -202,9 +202,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
   Widget _buildHeader(BuildContext context) {
     return Row(
       children: [
-        Expanded(
-          child: Text('阅读设置', style: _headerTitleStyle(context)),
-        ),
+        Expanded(child: Text('阅读设置', style: _headerTitleStyle(context))),
         // 恢复默认（E5-1）：只重置排版项，保留主题/翻页模式/动画/编码等。
         IconButton(
           key: const ValueKey('aa-reset'),
@@ -250,8 +248,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
             fontFamilyFallback: font.fallback,
           ),
           children: [
-            if (_settings.firstLineIndent)
-              readerIndentSpan(_settings.fontSize),
+            if (_settings.firstLineIndent) readerIndentSpan(_settings.fontSize),
             TextSpan(text: _previewSample),
           ],
         ),
@@ -362,8 +359,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
       min: 0.8,
       max: 1.3,
       divisions: 10, // (1.3-0.8)/步进0.05 = 10
-      onChanged: (value) =>
-          _update(_settings.copyWith(nightBrightness: value)),
+      onChanged: (value) => _update(_settings.copyWith(nightBrightness: value)),
     );
   }
 
@@ -386,10 +382,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
               _update(_settings.copyWith(paragraphGap: value)),
         ),
         const SizedBox(height: AppSpacing.s1),
-        Text(
-          '以整行为单位',
-          style: _hintStyle(context),
-        ),
+        Text('以整行为单位', style: _hintStyle(context)),
       ],
     );
   }
@@ -503,14 +496,12 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
           crossAxisSpacing: AppSpacing.s2,
           childAspectRatio: 1.15,
           children: [
-            for (final theme in ReaderTheme.values) _themeSwatch(context, theme),
+            for (final theme in ReaderTheme.values)
+              _themeSwatch(context, theme),
           ],
         ),
         const SizedBox(height: AppSpacing.s1),
-        Text(
-          '与应用深浅色相互独立',
-          style: _hintStyle(context),
-        ),
+        Text('与应用深浅色相互独立', style: _hintStyle(context)),
       ],
     );
   }
@@ -564,15 +555,13 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
   /// 翻页方式（v1.3.7：原「翻页模式 + 翻页动画」两个控件合并为一个）。
   ///
   /// 只有两种方式：**滚动** 与 **分页**。翻页**方向**不再作为选项——
-  /// 电脑端翻页有两条与方向无关的路（点正文左右两侧热区、方向键；滚轮
-  /// 已在 v1.3.7 从分页模式移除），方向只影响「按住拖拽」这一个次要手势；
-  /// 而方向本身还随格式而异（txt 手机左右滑 / 电脑上下拖；epub 始终上下
-  /// 按屏吸附），写进选项名反而会误导 → 方向只在说明文字里逐格式标注。
+  /// v1.4.4 起全平台统一为**左右翻**（docs/10 §9.21），方向不再是用户
+  /// 可选项，写进选项名反而会误导 → 只在说明文字里逐格式标注现状。
   ///
   /// 说明文字如实标注各格式支持现状（B 要求「不要假装支持」）：滚动为
-  /// 上下滑动连续阅读；分页对 txt 为整行精确分页（方向按设备形态自动选）；
-  /// epub 为连续排版按屏吸附（纵向滑动）；md 暂以滚动呈现；pdf 的「页」
-  /// 由文件自带。
+  /// 上下滑动连续阅读；分页对 txt 为整行精确分页、对 epub 为左右翻页
+  /// （页界不切字、插图独占一页）；md 暂以滚动呈现；pdf 的「页」由文件
+  /// 自带（翻页动画由内置阅读器提供）。
   Widget _buildTurnMode(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -589,7 +578,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
           onChanged: (value) => _update(
             _settings.copyWith(
               pageMode: value,
-              // 分页方向已不是用户选项（按设备形态自动选），这里写横轴只是
+              // 分页方向已不是用户选项（v1.4.4：恒定左右翻），这里写横轴只是
               // 让持久化值保持一致（旧键只增不删）。
               pageTurnAxis: ReaderPageTurnAxis.horizontal,
             ),
@@ -598,7 +587,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
         const SizedBox(height: AppSpacing.s1),
         Text(
           '滚动 = 上下滑动连续阅读；分页 = 一页一页翻'
-          '（epub 按屏吸附；md 暂按滚动；pdf 按文件自带页）',
+          '（txt/epub 左右翻；md 暂按滚动；pdf 按文件自带页）',
           style: _hintStyle(context),
         ),
       ],
@@ -709,7 +698,8 @@ class _SegmentRow<T> extends StatelessWidget {
                   ),
                 ],
               )
-            : null,        child: Material(
+            : null,
+        child: Material(
           color: isSelected ? scheme.surface : Colors.transparent,
           borderRadius: BorderRadius.circular(6),
           clipBehavior: Clip.antiAlias,

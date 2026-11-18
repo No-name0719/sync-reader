@@ -49,6 +49,7 @@ import '../../contract/reader_controller.dart';
 import '../../contract/reader_settings.dart';
 import '../../contract/toc_entry.dart';
 import '../../reader_chrome.dart';
+import '../../reader_page_turn.dart';
 import '../../reader_scroll_physics.dart';
 import 'epub_block_parser.dart';
 import 'epub_images.dart';
@@ -282,6 +283,28 @@ class EpubRenderer extends BookRenderer
   int _locateGeneration = 0;
   int _settledIndex = -1;
   bool _recheckScheduled = false;
+
+  /// 翻页委托（v1.4.4，docs/10 §9.21）：page 模式由**视图层**播放统一的
+  /// 左右推移动画（双窗口横向交接），渲染器只负责算落点与提交。
+  ///
+  /// 参数 delta = +1 下一页 / -1 上一页；未挂视图（headless）或非 page
+  /// 模式时为 null → 渲染器退回自己的瞬时跳转路径。
+  Future<bool> Function(int delta)? _turnDelegate;
+
+  /// 翻页进度（0 = 当前页在位；1 = 下一页完全推入；-1 = 上一页完全推入）。
+  ///
+  /// 视图层每帧回报（跟手拖拽与补完动画都经它）——测试据此断言「位移 1:1
+  /// 跟手」「过阈值补完、不过阈值回弹」。
+  double _turnProgress = 0;
+
+  /// 当前翻页进度（只读；测试/诊断用）。
+  double get turnProgress => _turnProgress;
+
+  /// 视图层回报翻页进度。
+  void reportTurnProgress(double progress) {
+    if (_disposed) return;
+    _turnProgress = progress;
+  }
 
   // —— 节流上报（照抄 txt 的节流结构）——
   Timer? _pendingReport;
@@ -580,8 +603,124 @@ class EpubRenderer extends BookRenderer
       ctrl.jumpTo(target); // 触发 _handleScroll → 位置更新 + 节流上报
       return Future.value(true);
     }
-    // page 模式：落到**下一个页起点**（行边界；插图独占整页）。
+    // page 模式：优先交给**视图层**播放统一的左右推移动画（v1.4.4，
+    // docs/10 §9.21）——双窗口横向交接，跟手 + 补完/回弹。
+    final delegate = _turnDelegate;
+    if (delegate != null) return delegate(delta);
+    // 视图未挂载（headless）：退回瞬时跳转（落点语义与动画路径一致）。
     return _turnPageInPageMode(delta, viewport);
+  }
+
+  // —— 翻页动画支撑（视图层调用；docs/10 §9.21）——
+
+  /// 相邻页起点（只读探测，不写页起点链）。
+  ///
+  /// 视图层用它准备**推入页窗口**（双窗口交接的另一半）。null = 没有相邻
+  /// 页（已在首/末页）或页结构尚未测出。
+  double? pageTurnTargetFor(int delta) {
+    if (_disposed || !_scrollController.hasClients) return null;
+    final ctrl = _scrollController;
+    final viewport = ctrl.position.viewportDimension;
+    return _pageTurnTarget(ctrl.offset, delta, viewport);
+  }
+
+  /// 请求翻页（page 模式）：算落点 → 交给视图层播放左右推移动画。
+  ///
+  /// 返回是否**发起**了翻页：目标页存在即算发起（不可达时先逼出更多内容，
+  /// 下一帧重试——翻页仍会发生）；已在首/末页（没有相邻页）返回 false。
+  ///
+  /// 可达性是硬要求：惰性列表的 `maxScrollExtent` 只是「已构建内容」的高度，
+  /// 直接跳到超出末尾的页起点会被静默 clamp 到末尾（非页起点）→ 页界失效、
+  /// 页起点链被污染（用户实测「分页模式下滚轮会乱翻」）。
+  ///
+  /// 刻意**不 await 帧**：翻页是同步手势（按键/热区），等帧会把调用方卡住
+  /// （widget 测试会挂住）——重试走 [WidgetsBinding.instance
+  /// .addPostFrameCallback]。
+  bool requestTurn(int delta, void Function(double target) onReady) {
+    if (_disposed || !_scrollController.hasClients) return false;
+    return _requestTurn(delta, onReady, 0);
+  }
+
+  /// 请求翻页的递归实现（[requestTurn]）。
+  bool _requestTurn(int delta, void Function(double) onReady, int attempt) {
+    final ctrl = _scrollController;
+    if (_disposed || !ctrl.hasClients) return false;
+    final viewport = ctrl.position.viewportDimension;
+    final origin = ctrl.offset;
+    final target = _pageTurnTarget(origin, delta, viewport);
+    if (target == null) return false; // 没有相邻页（首/末页）
+    final max = ctrl.position.maxScrollExtent;
+    if (target > max + 0.5) {
+      // 目标超出末尾：滚到末尾逼出更多内容（惰性构建 → 末尾变长），下一帧再翻。
+      if (attempt >= _pageTurnGrowAttempts) return false;
+      if ((max - ctrl.offset).abs() < 0.5) return false; // 已在末尾
+      ctrl.jumpTo(max);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_disposed) return;
+        _requestTurn(delta, onReady, attempt + 1);
+      });
+      return true; // 已发起（下一帧兑现）
+    }
+    final clamped = target.clamp(0.0, max);
+    // 无实际移动（已在首/末页）：相邻页起点与当前位置重合 → 不翻。
+    if ((clamped - origin).abs() < 0.5) return false;
+    onReady(clamped);
+    return true;
+  }
+
+  /// 提交翻页落点：登记进页起点链**再**跳转。
+  ///
+  /// 顺序不能反：jumpTo 末尾会触发一次 `goBallistic(0)`，弹道按「就近页
+  /// 起点」吸附；链里若没有刚落点这一页，弹道会把页面**拽回上一页**
+  /// （实测：翻页后位置倒退一整页，翻页在两页间来回跳 = 用户说的「乱翻」）。
+  void commitPageStart(double target) {
+    if (_disposed || !_scrollController.hasClients) return;
+    _pages.registerPageStart(target);
+    _scrollController.jumpTo(target);
+  }
+
+  /// 目标页的正文高度（推入窗口的裁剪高；≤ 一屏）。
+  ///
+  /// 与 [pageContentHeight] 同口径：页终点 = 下一个页起点（行边界/插图
+  /// 边界），页尾不足一行处留白。候选未知时按视口高保守取值。
+  double pageHeightAt(double start, double viewportHeight) {
+    if (_disposed) return viewportHeight;
+    final next = _pages.peekNextPageStart(start);
+    if (next == null) return viewportHeight;
+    return (next - start).clamp(0.0, viewportHeight);
+  }
+
+  /// 目标页窗口的块区间（翻页动画的**推入页**复制渲染用）。
+  ///
+  /// 返回 (首块下标, 末块下标, 首块文档坐标顶)。目标页是**连续排版上的
+  /// 一个偏移区间**，不是独立内容——要让它与当前页同时可见，只能复制一份
+  /// 块渲染（复制件用独立 key，测量仍只认主列表的 GlobalKey）。
+  ///
+  /// null = 目标页的块尚未构建（惰性窗口外）→ 本次不做推入页窗口。
+  (int, int, double)? pageWindowBlocks(double start, double end) {
+    if (_disposed || !_scrollController.hasClients) return null;
+    final viewportBox = _renderBoxOf(_viewportKey.currentContext);
+    if (viewportBox == null || !viewportBox.hasSize) return null;
+    final viewportTop = viewportBox.localToGlobal(Offset.zero).dy;
+    final base = _scrollController.positions.length == 1
+        ? _scrollController.offset
+        : 0.0;
+    int? first;
+    int? last;
+    double? firstTop;
+    for (var i = _builtMin; i <= _builtMax && i < _blocks.length; i++) {
+      final box = _renderBoxOf(_keys[i].currentContext);
+      if (box == null || !box.attached || !box.hasSize) continue;
+      final top = base + box.localToGlobal(Offset.zero).dy - viewportTop;
+      final bottom = top + box.size.height;
+      if (bottom <= start) continue; // 整块在目标页之前
+      if (top >= end) break; // 整块在目标页之后（块序号递增）
+      first ??= i;
+      last = i;
+      firstTop ??= top;
+    }
+    if (first == null || last == null || firstTop == null) return null;
+    return (first, last, firstTop);
   }
 
   /// page 模式的翻页：目标 = 相邻**页起点**，且目标必须**可达**。
@@ -1226,11 +1365,16 @@ class EpubRenderer extends BookRenderer
   /// [pageMode] + [viewportHeight]：page 模式下图片块改为**整页槽**——
   /// 每张插图独占一个吸附页（漫画 epub 的核心诉求：整页扫描图不再被
   /// 视口裁成两屏）。viewportHeight = 吸附单位（视口高）。
+  ///
+  /// [key]：翻页动画的**目标页窗口**会复制一份块（同一内容同时出现在
+  /// 当前页与推入页两个窗口里），复制件必须用**不同的 key**——主副本用
+  /// [_keys]（GlobalKey，供测量取盒），复制件用调用方给的独立 key。
   Widget buildBlock(
     BuildContext context,
     int index, {
     bool pageMode = false,
     double viewportHeight = 0,
+    Key? key,
   }) {
     _noteBuilt(index);
     final block = _blocks[index];
@@ -1317,7 +1461,7 @@ class EpubRenderer extends BookRenderer
         ? EdgeInsets.zero
         : EdgeInsets.only(bottom: _settings.fontSize * 0.35);
     return KeyedSubtree(
-      key: _keys[index],
+      key: key ?? _keys[index],
       // 块渲染盒登记（测量用）：挂到树上时登记，离开树时注销——测量因此
       // 不用遍历 GlobalKey 的 context（重建期可能已失活）。
       child: Padding(padding: tailPadding, child: content),
@@ -1548,14 +1692,62 @@ class _EpubContentPane extends StatefulWidget {
   State<_EpubContentPane> createState() => _EpubContentPaneState();
 }
 
-class _EpubContentPaneState extends State<_EpubContentPane> {
+class _EpubContentPaneState extends State<_EpubContentPane>
+    with SingleTickerProviderStateMixin {
+  /// 翻页动画控制器（松手后补完/回弹；时长与缓动取自
+  /// [ReaderPageTurnSpec]，与 txt 等格式一致）。
+  late final AnimationController _turnAnim = AnimationController(
+    vsync: this,
+    duration: ReaderPageTurnSpec.duration,
+  );
+
+  /// 跟手拖拽模型：位移 → 翻页进度（纯逻辑，见 [ReaderPageTurnDrag]）。
+  final ReaderPageTurnDrag _drag = ReaderPageTurnDrag();
+
+  /// 翻页进度：0 = 当前页在位；1 = 下一页完全推入；-1 = 上一页完全推入。
+  double _s = 0;
+
+  /// 推入页的页起点（文档坐标）；null = 当前没有推入页。
+  double? _incomingStart;
+
+  /// 推入页的正文高度（窗口裁剪高；≤ 一屏）。
+  double _incomingHeight = 0;
+
+  /// 动画起止值（缓动施加在 [_onTurnTick]）。
+  double _animFrom = 0;
+  double _animTo = 0;
+
+  /// 动画是否在飞（动画中再次翻页 → 直接落到最终目标，不排队）。
+  bool _turning = false;
+
+  /// 视口尺寸（位移 → 进度换算；build 时记录）。
+  double _viewportWidth = 0;
+  double _viewportHeight = 0;
+
   @override
   void initState() {
     super.initState();
+    _turnAnim
+      ..addListener(_onTurnTick)
+      ..addStatusListener(_onTurnStatus);
+    // page 模式的翻页动画由本面板播放（统一左右推移，docs/10 §9.21）；
+    // scroll 模式不注册（滚动模式的翻页 = 滚一屏，由渲染器自己做）。
+    if (widget.renderer.settings.pageMode == ReaderPageMode.page) {
+      widget.renderer._turnDelegate = _turn;
+    }
     // 首帧后按渲染器当前逻辑位置定位（restore 可能早于视图创建发生）。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) widget.renderer.locateFromView();
     });
+  }
+
+  @override
+  void dispose() {
+    _turnAnim.dispose();
+    if (identical(widget.renderer._turnDelegate, _turn)) {
+      widget.renderer._turnDelegate = null;
+    }
+    super.dispose();
   }
 
   /// page 模式：**吞掉滚轮事件**（不翻页，正文也不因滚轮而动）。
@@ -1575,22 +1767,201 @@ class _EpubContentPaneState extends State<_EpubContentPane> {
     });
   }
 
-  /// page 模式：**横向滑动 → 翻页**（左滑下一页 / 右滑上一页）。
-  ///
-  /// v1.3.7 用户决定：移动端分页模式由「上下滑动」改为「左右滑动」——
-  /// 与 txt 的分页（横轴 PageView）一致。epub 的正文仍是**纵向连续排版**
-  /// （按页裁剪显示），故这里的翻页是「跳到相邻页起点」，视觉上是一次纵向
-  /// 跳页而非横向翻书动画（横向翻书需把正文重新分页成整页内容，属页结构
-  /// 层面的重构）。
-  ///
-  /// 仅**触摸**（手机端主交互）；鼠标不参与（分页模式的鼠标手势已全部禁用）。
-  void _onHorizontalSwipe(double dx) {
-    const threshold = 60.0;
-    if (dx <= -threshold) {
-      unawaited(widget.renderer.nextPage());
-    } else if (dx >= threshold) {
-      unawaited(widget.renderer.previousPage());
+  // —— 翻页动画（左右推移，v1.4.4 / docs/10 §9.21）——
+
+  /// 动画每帧：把控制器进度按统一缓动映射到翻页进度 [_s]。
+  void _onTurnTick() {
+    if (!mounted) return;
+    final t = ReaderPageTurnSpec.curve.transform(_turnAnim.value);
+    final s = _animFrom + (_animTo - _animFrom) * t;
+    widget.renderer.reportTurnProgress(s);
+    setState(() => _s = s);
+  }
+
+  /// 动画结束：提交落点（翻页成功）或复位（取消）。
+  void _onTurnStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed) return;
+    _settleTurn();
+  }
+
+  /// 翻页收尾：落点写进页起点链并跳转（提交），随后复位到静止态。
+  void _settleTurn() {
+    _turning = false;
+    final landing = _incomingStart;
+    final target = _animTo;
+    if (landing != null && target != 0) {
+      widget.renderer.commitPageStart(landing);
     }
+    widget.renderer.reportTurnProgress(0);
+    if (!mounted) return;
+    setState(() {
+      _s = 0;
+      _incomingStart = null;
+      _incomingHeight = 0;
+      _animTo = 0;
+    });
+  }
+
+  /// 翻页（键盘 / 热区 / 音量键）：与左右滑动**同一套**动画。
+  ///
+  /// 目标页准备 → 横向推移 → 动画收尾时提交落点（页起点链 + 跳转）。
+  Future<bool> _turn(int delta) {
+    if (_turning) {
+      // 动画中再次翻页：当前动画直接落到终点（提交落点），再开始新的翻页
+      // ——不得让动画中途的位置被覆盖而跳错页（docs/10 §9.21 §3.3）。
+      _turnAnim.stop();
+      _settleTurn();
+    }
+    final started = widget.renderer.requestTurn(delta, (target) {
+      _startTurn(delta, target);
+    });
+    return Future.value(started);
+  }
+
+  /// 起翻：准备推入页窗口 → 播放推移动画。
+  void _startTurn(int delta, double target) {
+    if (!mounted) return;
+    final r = widget.renderer;
+    _incomingStart = target;
+    _incomingHeight = r.pageHeightAt(target, _viewportHeight);
+    _animFrom = 0;
+    _animTo = delta > 0 ? 1 : -1;
+    _turning = true;
+    setState(() {});
+    _turnAnim
+      ..reset()
+      ..forward();
+  }
+
+  // —— 跟手拖拽（左右滑动）——
+
+  /// 拖拽开始：停掉在飞的补完动画，从静止态重新跟手。
+  void _onDragStart(DragStartDetails details) {
+    _turnAnim.stop();
+    _turning = false;
+    _drag.reset();
+    if (!mounted) return;
+    setState(() {
+      _s = 0;
+      _incomingStart = null;
+      _incomingHeight = 0;
+    });
+  }
+
+  /// 拖拽中：位移 1:1 映射到翻页进度（跟手），并准备推入页窗口。
+  void _onDragUpdate(DragUpdateDetails details) {
+    final width = _viewportWidth;
+    if (width <= 0) return;
+    _drag.update(details.primaryDelta ?? 0);
+    final s = _drag.progress(width);
+    _ensureIncoming(s);
+    widget.renderer.reportTurnProgress(s);
+    if (!mounted) return;
+    setState(() => _s = s);
+  }
+
+  /// 松手：过阈值补完到目标页，不过阈值弹回原页。
+  void _onDragEnd(DragEndDetails details) {
+    final width = _viewportWidth;
+    if (width <= 0) return;
+    switch (_drag.decide(width)) {
+      case ReaderPageTurnOutcome.next:
+        if (_incomingStart == null) {
+          _settleTo(0);
+          return;
+        }
+        _settleTo(1);
+      case ReaderPageTurnOutcome.previous:
+        if (_incomingStart == null) {
+          _settleTo(0);
+          return;
+        }
+        _settleTo(-1);
+      case ReaderPageTurnOutcome.cancel:
+        _settleTo(0);
+    }
+  }
+
+  /// 补完 / 回弹动画（统一时长与缓动）。
+  void _settleTo(double target) {
+    _animFrom = _s;
+    _animTo = target;
+    _turning = true;
+    _turnAnim
+      ..reset()
+      ..forward();
+  }
+
+  /// 拖拽方向确定后准备**推入页**（目标页起点 + 窗口高度）。
+  ///
+  /// 方向未定（位移过小）时不准备——推入页在屏幕外，迟一帧出现无感。
+  void _ensureIncoming(double s) {
+    if (_incomingStart != null) return;
+    if (s.abs() < 0.02) return;
+    final delta = s > 0 ? 1 : -1;
+    final target = widget.renderer.pageTurnTargetFor(delta);
+    if (target == null) return;
+    _incomingStart = target;
+    _incomingHeight = widget.renderer.pageHeightAt(target, _viewportHeight);
+  }
+
+  /// 推入页窗口（目标页的**复制渲染**）。
+  ///
+  /// epub 的「页」不是独立内容，而是连续排版上的一个偏移区间——要让当前页
+  /// 与目标页**同时可见**（横向推移的交接），只能把目标页覆盖的块复制一
+  /// 份渲染。复制件用独立 key（主副本的 GlobalKey 仍只归测量用），因此
+  /// 行盒测量、页停候选、插图独占页等既有成果全部不受影响。
+  Widget _buildIncomingWindow(double horizontal) {
+    final r = widget.renderer;
+    final start = _incomingStart;
+    if (start == null) return const SizedBox.shrink();
+    final range = r.pageWindowBlocks(start, start + _incomingHeight);
+    if (range == null) return const SizedBox.shrink();
+    final (first, last, firstTop) = range;
+    return Listener(
+      // 推入页盖在正文之上：滚轮仍要被吞掉（分页模式滚轮既不翻页也不滚动）。
+      onPointerSignal: _swallowWheel,
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        height: _incomingHeight,
+        width: double.infinity,
+        child: ClipRect(
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: horizontal),
+            child: Stack(
+              // 目标页只是连续排版的一个**窗口**：块列可以比窗口高（页尾的块
+              // 只露一半），故用 Stack + hardEdge 裁剪，而不是给列一个有限
+              // 高度（那样会 RenderFlex overflow）。
+              clipBehavior: Clip.hardEdge,
+              children: [
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  top: 0,
+                  child: Transform.translate(
+                    // 把目标页起点对到窗口顶（首块顶在目标页起点之上）。
+                    offset: Offset(0, -(start - firstTop)),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (var i = first; i <= last; i++)
+                          r.buildBlock(
+                            context,
+                            i,
+                            pageMode: true,
+                            viewportHeight: _viewportHeight,
+                            key: ValueKey('epub-incoming-$i'),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -1657,6 +2028,8 @@ class _EpubContentPaneState extends State<_EpubContentPane> {
         // 注意：[ScrollBehavior.copyWith] 会把 delegate 原样包一层
         // （_WrappedScrollBehavior），应用自定义的 dragDevices（桌面鼠标
         // 拖拽）仍然生效——这里只关 scrollbars。
+        _viewportWidth = constraints.maxWidth;
+        _viewportHeight = constraints.maxHeight;
         return ScrollConfiguration(
           behavior: ScrollConfiguration.of(context).copyWith(
             scrollbars: false,
@@ -1664,33 +2037,46 @@ class _EpubContentPaneState extends State<_EpubContentPane> {
             // 鼠标拖动会把正文在页中间拖着走，页界随之失效。
             dragDevices: kReaderTouchOnlyDragDevices,
           ),
-          child: _EpubPageViewport(
-            renderer: r,
-            // 记录**滑动起点**（拖拽开始时的偏移）：page 模式的弹道落点以它
-            // 为基准 —— 一次滑动 = 翻一页（与滑动幅度无关，移动端实测反馈
-            // 「直接滑动会一次性滚动很多」）。
-            // **横向滑动 → 翻页**（移动端分页改为左右滑动，v1.3.7）。
-            // 只认触摸（鼠标手势在分页模式已全部禁用）；正文不再随手指
-            // 上下滑动（page 模式禁止用户滚动）→ 手势与页界互不干扰。
-            child: RawGestureDetector(
-              gestures: <Type, GestureRecognizerFactory>{
-                HorizontalDragGestureRecognizer:
-                    GestureRecognizerFactoryWithHandlers<
-                      HorizontalDragGestureRecognizer
-                    >(
-                      () => HorizontalDragGestureRecognizer(
-                        supportedDevices: kReaderTouchOnlyDragDevices,
-                      ),
-                      (recognizer) {
-                        var accumulated = 0.0;
-                        recognizer.onStart = (_) => accumulated = 0;
-                        recognizer.onUpdate = (details) =>
-                            accumulated += details.primaryDelta ?? 0;
-                        recognizer.onEnd = (_) => _onHorizontalSwipe(accumulated);
-                      },
+          // **左右推移**（v1.4.4，docs/10 §9.21）：双窗口交接——
+          // 槽 A = 当前页（连续列表 + 页尾裁剪），槽 B = 推入页（目标页的
+          // 复制窗口）。当前页向左推出、推入页自右推入，位移 1:1 跟手。
+          //
+          // 只认触摸（鼠标手势在分页模式已全部禁用）；正文不再随手指上下滑动
+          // （page 模式禁止用户滚动）→ 手势与页界互不干扰。
+          child: RawGestureDetector(
+            gestures: <Type, GestureRecognizerFactory>{
+              HorizontalDragGestureRecognizer:
+                  GestureRecognizerFactoryWithHandlers<
+                    HorizontalDragGestureRecognizer
+                  >(
+                    () => HorizontalDragGestureRecognizer(
+                      supportedDevices: kReaderTouchOnlyDragDevices,
                     ),
-              },
-              child: list,
+                    (recognizer) {
+                      recognizer.onStart = _onDragStart;
+                      recognizer.onUpdate = _onDragUpdate;
+                      recognizer.onEnd = _onDragEnd;
+                    },
+                  ),
+            },
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // 槽 A：当前页。向左推出（s > 0）/ 向右让位（s < 0）。
+                Transform.translate(
+                  offset: Offset(-constraints.maxWidth * _s, 0),
+                  child: _EpubPageViewport(renderer: r, child: list),
+                ),
+                // 槽 B：推入页。自右推入（s > 0）/ 自左推入（s < 0）。
+                if (_incomingStart != null)
+                  Transform.translate(
+                    offset: Offset(
+                      constraints.maxWidth * (1 - _s.abs()) * (_s < 0 ? -1 : 1),
+                      0,
+                    ),
+                    child: _buildIncomingWindow(horizontal),
+                  ),
+              ],
             ),
           ),
         );
@@ -1816,14 +2202,13 @@ class EpubPageScrollPhysics extends ScrollPhysics {
   ///
   /// 分页模式下正文按页裁剪显示（页界 = 页起点..下一页起点），用户滚动会
   /// 把正文拖到页中间 → 页界与可见内容对不齐。翻页改由**键盘**与
-  /// **左右滑动**驱动（见 [_EpubContentPaneState._onHorizontalSwipe]）。
+  /// **左右滑动**驱动（见 [_EpubContentPaneState._onDragUpdate]）。
   ///
   /// 置 false 的副作用：Scrollable 的 `setCanDrag(false)` → 拖拽识别器不再
   /// 参与手势竞技场（触摸滑动也不会带动正文 ✓，正是要的效果）；程序化滚动
   /// （`jumpTo`/`animateTo`：翻页、恢复进度、跳章）不受影响 ✓。
   @override
   bool shouldAcceptUserOffset(ScrollMetrics position) => false;
-
 
   @override
   bool get allowImplicitScrolling => false;

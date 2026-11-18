@@ -122,7 +122,7 @@ void main() {
       // 先翻几页：制造一条**旧页起点链**（跳转前的位置）。
       for (var i = 0; i < 3; i++) {
         await renderer.controller.nextPage();
-        await tester.pump();
+        await tester.pumpAndSettle();
       }
       final oldChain = renderer.pageStarts;
       expect(oldChain.length, greaterThan(1), reason: '应有旧页起点链');
@@ -170,7 +170,7 @@ void main() {
 
       for (var i = 0; i < 3; i++) {
         await renderer.controller.nextPage();
-        await tester.pump();
+        await tester.pumpAndSettle();
       }
       final jump = renderer.controller.jumpTo(chapter2Entry);
       await pumpFrames(tester, 40);
@@ -179,7 +179,7 @@ void main() {
 
       // 按一次 ↓：落点必须是**紧邻的下一页起点**（一屏之内的最靠下候选）。
       expect(await renderer.controller.nextPage(), isTrue);
-      await tester.pump();
+      await tester.pumpAndSettle();
       final after = renderer.scrollController.offset;
       final viewport = renderer.scrollController.position.viewportDimension;
       final stops = epubDocumentStops(renderer);
@@ -205,7 +205,7 @@ void main() {
 
       // 再按一次 ↓：仍然只前进一页（不是每次都跳两页）。
       await renderer.controller.nextPage();
-      await tester.pump();
+      await tester.pumpAndSettle();
       expect(
         renderer.scrollController.offset - after,
         lessThanOrEqualTo(viewport + 1.0),
@@ -235,13 +235,13 @@ void main() {
 
       // ↑ 回到落点的**前一页**（上一章的末页）。
       expect(await renderer.controller.previousPage(), isTrue);
-      await tester.pump();
+      await tester.pumpAndSettle();
       final prev = renderer.scrollController.offset;
       expect(prev, lessThan(landing), reason: '↑ 应回到落点之前的一页（$prev < $landing）');
 
       // ↓ 精确回到落点（页起点链往返一致）。
       expect(await renderer.controller.nextPage(), isTrue);
-      await tester.pump();
+      await tester.pumpAndSettle();
       expect(
         renderer.scrollController.offset,
         closeTo(landing, 1.0),
@@ -319,7 +319,7 @@ void main() {
 
       // ↑ 回到上一章的末页：该页的裁剪终点必须**正好**是章起点。
       expect(await renderer.controller.previousPage(), isTrue);
-      await tester.pump();
+      await tester.pumpAndSettle();
       final viewport = renderer.scrollController.position.viewportDimension;
       final clipEnd =
           renderer.scrollController.offset +
@@ -369,7 +369,7 @@ void main() {
       var guard = 0;
       while (guard++ < 30) {
         final moved = await renderer.controller.nextPage();
-        await tester.pump();
+        await tester.pumpAndSettle();
         if (!moved) break;
         landings.add(renderer.scrollController.offset);
         if (renderer.positionSpine >= 1) break;

@@ -52,6 +52,7 @@ import 'contract/toc_fingerprint.dart';
 import 'reader_key_action.dart';
 import 'reader_brightness.dart';
 import 'reader_chrome.dart';
+import 'reader_page_turn.dart';
 import 'reading_day.dart';
 import 'settings/settings_panel.dart';
 import 'volume_key_page_turn.dart';
@@ -144,6 +145,13 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   /// 进度滑块），按键事件沿焦点链冒泡都会先经这里判给翻页——否则 Slider
   /// 会吃掉方向键去改进度值，造成「按方向键进度乱跳」。
   final FocusNode _readerFocus = FocusNode();
+
+  /// 边界回弹（v1.4.4，docs/10 §9.21）：翻页被首/末页挡住时的统一反馈。
+  ///
+  /// 由宿主统一播放——四种格式共用一套「原地轻微回弹」，不再无声吞掉
+  /// （滚动模式不播：连续滚动到文档末尾停住是正常行为）。
+  final GlobalKey<ReaderBoundaryBounceState> _bounceKey =
+      GlobalKey<ReaderBoundaryBounceState>();
 
   // DAO 与设置仓库在 initState 取好引用（dispose 中不允许再用 ref）。
   late final ProgressDao _progressDao;
@@ -584,11 +592,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
 
   /// 音量键事件 → 翻页。语义冻结：音量上键 = 上一页，音量下键 = 下一页。
   void _onVolumeKeyEvent(String event) {
-    final controller = _session?.renderer.controller;
-    if (controller == null) return;
-    unawaited(
-      event == 'up' ? controller.previousPage() : controller.nextPage(),
-    );
+    if (_session == null) return;
+    // up = 上一页 / down = 下一页（与键盘方向键同一路径，含边界回弹）。
+    unawaited(_turnPage(event != 'up'));
   }
 
   /// 停用音量键拦截并取消事件订阅（dispose / 会话切换共用）：try/finally
@@ -676,12 +682,15 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
           fit: StackFit.expand,
           children: [
             ColoredBox(
-              // 内缩带（顶条/底条之下）用阅读背景色铺满，避免露出 Scaffold
+              // 内缩带（顶/底条之下）用阅读背景色铺满，避免露出 Scaffold
               // 底色形成色带。
               color: _readerPalette.bg,
               child: Padding(
                 padding: readerBodyInsets(context),
-                child: ready.session.renderer.buildView(context),
+                child: ReaderBoundaryBounce(
+                  key: _bounceKey,
+                  child: ready.session.renderer.buildView(context),
+                ),
               ),
             ),
             _buildHotZones(ready),
@@ -717,14 +726,29 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
         return KeyEventResult.handled;
       case ReaderKeyAction.turnNext:
       case ReaderKeyAction.turnPrevious:
-        final controller = _session!.renderer.controller;
-        unawaited(
-          action == ReaderKeyAction.turnNext
-              ? controller.nextPage()
-              : controller.previousPage(),
-        );
+        unawaited(_turnPage(action == ReaderKeyAction.turnNext));
         return KeyEventResult.handled;
     }
+  }
+
+  /// 发起一次翻页（键盘 / 热区 / 音量键共用这一条路径）。
+  ///
+  /// 翻页被首/末页挡住时（[ReaderController.nextPage] 返回 false）播放
+  /// **统一边界回弹**（v1.4.4，docs/10 §9.21）：能翻就翻，不能翻就原地
+  /// 轻微回弹，而不是无声吞掉。四种格式共用宿主这一处实现。
+  ///
+  /// 滚动模式不回弹：连续滚动到文档末尾停住是正常行为，不是「翻不动」。
+  Future<void> _turnPage(bool next) async {
+    final session = _session;
+    if (session == null) return;
+    final controller = session.renderer.controller;
+    final moved = next
+        ? await controller.nextPage()
+        : await controller.previousPage();
+    if (moved) return;
+    if (_readerSettings.pageMode != ReaderPageMode.page) return;
+    // 顶一下的方向：翻下一页被挡 → 内容向左顶；翻上一页被挡 → 向右顶。
+    _bounceKey.currentState?.play(next ? -1 : 1);
   }
 
   // —— 点击热区（A8）：左右两翼 22% 翻页，中间 56% 唤出/收起控制条 ——
@@ -740,7 +764,6 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
   /// （v1.2 B6 的「文字优先」判定已按实际使用反馈移除）。文字选择语义
   /// 由拖拽承担：本回调只在 tap（无位移）时触发，与拖动选择不冲突。
   Widget _buildHotZones(_ReadyState ready) {
-    final controller = ready.session.renderer.controller;
     final narrow = MediaQuery.sizeOf(context).width <= kReaderNarrowBreakpoint;
     return Positioned.fill(
       child: Row(
@@ -752,7 +775,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
               behavior: HitTestBehavior.translucent,
               onTap: narrow
                   ? _toggleControls
-                  : () => unawaited(controller.previousPage()),
+                  : () => unawaited(_turnPage(false)),
             ),
           ),
           Expanded(
@@ -770,7 +793,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
               behavior: HitTestBehavior.translucent,
               onTap: narrow
                   ? _toggleControls
-                  : () => unawaited(controller.nextPage()),
+                  : () => unawaited(_turnPage(true)),
             ),
           ),
         ],
@@ -928,7 +951,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     final chapterTitle = _currentChapterTitle(ready.toc);
     final screenWidth = MediaQuery.sizeOf(context).width;
     final narrow = screenWidth <= kReaderNarrowBreakpoint;
-    final height = narrow ? kReaderBottomBarHeightNarrow : kReaderBottomBarHeight;
+    final height = narrow
+        ? kReaderBottomBarHeightNarrow
+        : kReaderBottomBarHeight;
     final (leftMeta, rightMeta) = _bottomBarMeta(ready);
     return Positioned(
       bottom: 0,
@@ -1401,10 +1426,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
           const SizedBox(height: 16),
           const Text('正文尚未下载'),
           const SizedBox(height: 8),
-          Text(
-            '下载正文后即可阅读',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
+          Text('下载正文后即可阅读', style: Theme.of(context).textTheme.bodySmall),
           const SizedBox(height: 16),
           FilledButton.icon(
             key: const ValueKey('reader-download-button'),

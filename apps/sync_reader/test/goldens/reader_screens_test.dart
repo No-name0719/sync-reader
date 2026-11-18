@@ -29,10 +29,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sync_reader/features/reader/contract/book_file.dart';
 import 'package:sync_reader/features/reader/contract/progress_anchor.dart';
 import 'package:sync_reader/features/reader/contract/reader_settings.dart';
+import 'package:sync_reader/features/reader/formats/epub/epub_format_handler.dart';
+import 'package:sync_reader/features/reader/formats/md/md_format_handler.dart';
 import 'package:sync_reader/features/reader/formats/txt/txt_format_handler.dart';
 import 'package:sync_reader/features/reader/formats/txt/txt_paginator.dart';
 import 'package:sync_reader/features/reader/reader_brightness.dart';
 import 'package:sync_reader/features/reader/reader_chrome.dart';
+
+import '../library/support/text_only_epub.dart';
 
 /// 4 档视口（v1.1 逐屏比对同一组宽度）。
 const _viewports = <(String, Size)>[
@@ -120,9 +124,8 @@ Future<void> _loadFonts() async {
     final file = _locateFont(entry.value);
     assert(file.existsSync(), '字体文件缺失：${file.path}');
     final bytes = await file.readAsBytes();
-    final loader =
-        FontLoader(entry.key)
-          ..addFont(Future.value(ByteData.view(bytes.buffer)));
+    final loader = FontLoader(entry.key)
+      ..addFont(Future.value(ByteData.view(bytes.buffer)));
     await loader.load();
   }
 }
@@ -157,10 +160,15 @@ void main() {
     addTearDown(tester.view.reset);
 
     final bf = await tester.runAsync(_writeBook);
-    final renderer = (await tester.runAsync(
-          () => TxtFormatHandler().createRenderer(bf!, settings, ProgressAnchor.empty),
-        ))!
-        as dynamic;
+    final renderer =
+        (await tester.runAsync(
+              () => TxtFormatHandler().createRenderer(
+                bf!,
+                settings,
+                ProgressAnchor.empty,
+              ),
+            ))!
+            as dynamic;
     addTearDown(renderer.dispose);
 
     await tester.pumpWidget(
@@ -227,50 +235,221 @@ void main() {
   }
 
   // 夜间亮度 80%（B3：整屏变暗仍达标）——深灰主题两轴向。
-  testWidgets('reader-1440-dark-v-brightness80', (tester) => shoot(
-    tester,
-    name: 'reader-1440-dark-v-brightness80',
-    surface: const Size(1440, 900),
-    settings: ReaderSettings.defaults.copyWith(
-      theme: ReaderTheme.dark,
-      pageMode: ReaderPageMode.page,
-      pageTurnAxis: ReaderPageTurnAxis.vertical,
-      nightBrightness: 0.8,
+  testWidgets(
+    'reader-1440-dark-v-brightness80',
+    (tester) => shoot(
+      tester,
+      name: 'reader-1440-dark-v-brightness80',
+      surface: const Size(1440, 900),
+      settings: ReaderSettings.defaults.copyWith(
+        theme: ReaderTheme.dark,
+        pageMode: ReaderPageMode.page,
+        pageTurnAxis: ReaderPageTurnAxis.vertical,
+        nightBrightness: 0.8,
+      ),
     ),
-  ));
-  testWidgets('reader-1440-dusk-h-brightness80', (tester) => shoot(
-    tester,
-    name: 'reader-1440-dusk-h-brightness80',
-    surface: const Size(1440, 900),
-    settings: ReaderSettings.defaults.copyWith(
-      theme: ReaderTheme.dusk,
-      pageMode: ReaderPageMode.page,
-      pageTurnAxis: ReaderPageTurnAxis.horizontal,
-      nightBrightness: 0.8,
+  );
+  testWidgets(
+    'reader-1440-dusk-h-brightness80',
+    (tester) => shoot(
+      tester,
+      name: 'reader-1440-dusk-h-brightness80',
+      surface: const Size(1440, 900),
+      settings: ReaderSettings.defaults.copyWith(
+        theme: ReaderTheme.dusk,
+        pageMode: ReaderPageMode.page,
+        pageTurnAxis: ReaderPageTurnAxis.horizontal,
+        nightBrightness: 0.8,
+      ),
     ),
-  ));
+  );
 
   // 翻页动画进行中（B5 证据）——深灰主题两轴向。
-  testWidgets('reader-1440-dark-v-midturn', (tester) => shoot(
-    tester,
-    name: 'reader-1440-dark-v-midturn',
-    surface: const Size(1440, 900),
-    settings: ReaderSettings.defaults.copyWith(
-      theme: ReaderTheme.dark,
-      pageMode: ReaderPageMode.page,
-      pageTurnAxis: ReaderPageTurnAxis.vertical,
+  testWidgets(
+    'reader-1440-dark-v-midturn',
+    (tester) => shoot(
+      tester,
+      name: 'reader-1440-dark-v-midturn',
+      surface: const Size(1440, 900),
+      settings: ReaderSettings.defaults.copyWith(
+        theme: ReaderTheme.dark,
+        pageMode: ReaderPageMode.page,
+        pageTurnAxis: ReaderPageTurnAxis.vertical,
+      ),
+      midTurn: true,
     ),
-    midTurn: true,
-  ));
-  testWidgets('reader-1440-dark-h-midturn', (tester) => shoot(
-    tester,
-    name: 'reader-1440-dark-h-midturn',
-    surface: const Size(1440, 900),
-    settings: ReaderSettings.defaults.copyWith(
-      theme: ReaderTheme.dark,
-      pageMode: ReaderPageMode.page,
-      pageTurnAxis: ReaderPageTurnAxis.horizontal,
+  );
+  testWidgets(
+    'reader-1440-dark-h-midturn',
+    (tester) => shoot(
+      tester,
+      name: 'reader-1440-dark-h-midturn',
+      surface: const Size(1440, 900),
+      settings: ReaderSettings.defaults.copyWith(
+        theme: ReaderTheme.dark,
+        pageMode: ReaderPageMode.page,
+        pageTurnAxis: ReaderPageTurnAxis.horizontal,
+      ),
+      midTurn: true,
     ),
-    midTurn: true,
-  ));
+  );
+
+  // —— v1.4.4：四格式「翻页中帧」对照（docs/10 §9.21 §6.2）——
+  //
+  // 核心验收物：**四格式的翻页中帧看不出差别**（同样的推移方向与位移）。
+  //
+  // 覆盖说明（如实记录，不假装齐全）：
+  // - txt / epub / md：可进 harness（纯 Dart 渲染，字体已注册）；
+  // - **pdf 进不了**：pdfrx 需要 pdfium 原生库，flutter test 环境不加载
+  //   （见 test/reader/pdf/pdf_page_turn_test.dart 头注）→ pdf 的翻页帧
+  //   只能真机截图（scripts/drive_app.ps1），且其动画由库提供（纵向平移，
+  //   见 docs/10 §9.21.4 遗留风险）；
+  // - **md 没有翻页动画**：md 暂按滚动呈现（FR-204 未强制分页），故只出
+  //   静止帧，用于确认「md 与其它格式的差异只在于翻页方式」。
+
+  /// 翻页对照的两种视口（手机竖屏 + 桌面）。
+  const turnViewports = <(String, Size)>[
+    ('390', Size(390, 844)),
+    ('1440', Size(1440, 900)),
+  ];
+
+  /// 写 md 夹具（与 txt 样章同文，便于肉眼比对排版）。
+  Future<BookFile> writeMdBook() async {
+    final dir = await Directory.systemTemp.createTemp('reader_turn_md');
+    final file = File('${dir.path}${Platform.pathSeparator}样章.md');
+    await file.writeAsBytes(Uint8List.fromList(utf8.encode(_bookText)));
+    return BookFile.fromPath(file.path);
+  }
+
+  /// 写 epub 夹具（**纯文字**：插图独占一页且解码异步，会让「翻页中帧」的
+  /// 推入页拍成空白，无法与其它格式同口径比对）。
+  Future<BookFile> writeEpubBook() async {
+    final dir = await Directory.systemTemp.createTemp('reader_turn_epub');
+    final file = File('${dir.path}${Platform.pathSeparator}样章.epub');
+    await file.writeAsBytes(buildTextOnlyEpub());
+    return BookFile.fromPath(file.path);
+  }
+
+  /// 四格式翻页对照截图。
+  ///
+  /// [midTurn] = true 时截「翻页动画进行中」的一帧（约 2/3 行程）。
+  Future<void> shootTurn(
+    WidgetTester tester, {
+    required String format,
+    required String widthName,
+    required Size surface,
+    required bool midTurn,
+  }) async {
+    tester.view.physicalSize = surface;
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final settings = ReaderSettings.defaults.copyWith(
+      theme: ReaderTheme.paper,
+      pageMode: ReaderPageMode.page,
+    );
+    final dynamic renderer;
+    switch (format) {
+      case 'txt':
+        final bf = await tester.runAsync(_writeBook);
+        renderer = await tester.runAsync(
+          () => TxtFormatHandler().createRenderer(
+            bf!,
+            settings,
+            ProgressAnchor.empty,
+          ),
+        );
+      case 'epub':
+        final bf = await tester.runAsync(writeEpubBook);
+        renderer = await tester.runAsync(
+          () => EpubFormatHandler().createRenderer(
+            bf!,
+            settings,
+            ProgressAnchor.empty,
+          ),
+        );
+      case 'md':
+        final bf = await tester.runAsync(writeMdBook);
+        renderer = await tester.runAsync(
+          () => MdFormatHandler().createRenderer(
+            bf!,
+            settings,
+            ProgressAnchor.empty,
+          ),
+        );
+      default:
+        throw StateError('未知格式 $format');
+    }
+    addTearDown(renderer.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => ReaderBrightnessFilter(
+              isNightTheme: settings.theme.isNight,
+              brightness: settings.nightBrightness,
+              child: Padding(
+                padding: readerBodyInsets(context),
+                child: renderer.buildView(context),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    if (midTurn) {
+      // 起翻 → 推进到约 2/3 行程（统一时长 280ms + easeOutCubic）捕获推移
+      // 中间帧。txt/epub 的翻页动画时长与缓动同源于公共规格。
+      unawaited(renderer.controller.nextPage());
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pump(const Duration(milliseconds: 140));
+    }
+    await expectLater(
+      find.byType(Scaffold),
+      matchesGoldenFile(
+        '../../../../ui_audit/turn_v14/$format-$widthName-${midTurn ? 'midturn' : 'rest'}.png',
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  for (final (widthName, surface) in turnViewports) {
+    for (final format in const ['txt', 'epub']) {
+      testWidgets(
+        'turn-$format-$widthName-rest',
+        (tester) => shootTurn(
+          tester,
+          format: format,
+          widthName: widthName,
+          surface: surface,
+          midTurn: false,
+        ),
+      );
+      testWidgets(
+        'turn-$format-$widthName-midturn',
+        (tester) => shootTurn(
+          tester,
+          format: format,
+          widthName: widthName,
+          surface: surface,
+          midTurn: true,
+        ),
+      );
+    }
+    // md：只有滚动，没有翻页动画 → 只出静止帧（差异如实记录）。
+    testWidgets(
+      'turn-md-$widthName-rest',
+      (tester) => shootTurn(
+        tester,
+        format: 'md',
+        widthName: widthName,
+        surface: surface,
+        midTurn: false,
+      ),
+    );
+  }
 }

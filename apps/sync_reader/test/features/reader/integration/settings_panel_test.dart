@@ -97,7 +97,11 @@ void main() {
     await pumpPanel(tester);
 
     final before = tester.widget<Text>(previewText());
-    expect(previewIndentCount(before), greaterThan(0), reason: '首行缩进 2em（行内占位符）');
+    expect(
+      previewIndentCount(before),
+      greaterThan(0),
+      reason: '首行缩进 2em（行内占位符）',
+    );
     expect(before.textSpan!.style!.fontSize, 16, reason: '出厂字号 16（v1.3 视觉对齐）');
 
     await tester.drag(
@@ -108,7 +112,11 @@ void main() {
 
     final after = tester.widget<Text>(previewText());
     final repo = container.read(readerSettingsRepositoryProvider);
-    expect(after.textSpan!.style!.fontSize, repo.current.fontSize, reason: '预览随选项即时变化');
+    expect(
+      after.textSpan!.style!.fontSize,
+      repo.current.fontSize,
+      reason: '预览随选项即时变化',
+    );
     expect(after.textSpan!.style!.height, repo.current.lineHeight);
   });
 
@@ -207,8 +215,29 @@ void main() {
     expect(repo.current.txtEncodingOverride, ReaderTextEncoding.gbk);
   });
 
-  group('v1.2 B4/B5 新增设置项', () {
+  testWidgets('v1.4.4：翻页方式说明如实标注各格式现状', (tester) async {
+    await pumpPanel(tester);
+    await tester.dragUntilVisible(
+      find.text('翻页方式'),
+      panelScroller(),
+      const Offset(0, -60),
+    );
+    await tester.pumpAndSettle();
+    // md 暂不支持分页 → 必须如实写明（不假装支持）。
+    expect(
+      find.textContaining('md 暂按滚动'),
+      findsOneWidget,
+      reason: 'md 暂按滚动必须写在说明文字里',
+    );
+    // v1.4.4：分页统一为左右翻（txt/epub）。
+    expect(
+      find.textContaining('左右翻'),
+      findsOneWidget,
+      reason: '分页方向统一为左右翻，说明文字应如实反映',
+    );
+  });
 
+  group('v1.2 B4/B5 新增设置项', () {
     testWidgets('段距三选（B4）：空一行写入并持久化', (tester) async {
       await pumpPanel(tester);
       await tester.dragUntilVisible(
@@ -249,11 +278,13 @@ void main() {
       );
     });
 
-    testWidgets('夜间亮度（B3）：浅色背景不显示滑杆，夜间背景显示且可调',
-        (tester) async {
+    testWidgets('夜间亮度（B3）：浅色背景不显示滑杆，夜间背景显示且可调', (tester) async {
       await pumpPanel(tester);
       // 出厂白色（浅色系）：无夜间亮度滑杆。
-      expect(find.byKey(const ValueKey('settings-night-brightness')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('settings-night-brightness')),
+        findsNothing,
+      );
 
       // 切到夜间系背景（深灰）后滑杆出现。
       await tester.dragUntilVisible(
@@ -276,15 +307,15 @@ void main() {
         const Offset(-120, 0),
       );
       await tester.pump();
-      final value =
-          container.read(readerSettingsRepositoryProvider).current.nightBrightness;
+      final value = container
+          .read(readerSettingsRepositoryProvider)
+          .current
+          .nightBrightness;
       expect(value, lessThan(1.0), reason: '左拖应调暗（最小 0.8）');
       expect(value, greaterThanOrEqualTo(0.8));
     });
 
-    testWidgets('v1.3.7：翻页动画控件已下线，合并进「翻页方式」一项', (
-      tester,
-    ) async {
+    testWidgets('v1.3.7：翻页动画控件已下线，合并进「翻页方式」一项', (tester) async {
       await pumpPanel(tester);
       // 原「翻页动画」独立控件不再存在（只有滚动 / 分页两种方式）。
       expect(
@@ -374,9 +405,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       // 选中项 = 滚动（面板自绘分段控件：选中项文字为前景色 + 600 字重）。
-      final scrollSegment = tester.widget<Text>(
-        find.text('滚动').last,
-      );
+      final scrollSegment = tester.widget<Text>(find.text('滚动').last);
       expect(
         scrollSegment.style?.fontWeight,
         FontWeight.w600,

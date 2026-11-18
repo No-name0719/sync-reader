@@ -145,7 +145,7 @@ void main() {
 
     for (var page = 0; page < 6; page++) {
       final moved = await renderer.controller.nextPage();
-      await tester.pump();
+      await tester.pumpAndSettle();
       if (!moved) break;
       final clip = renderer.pageContentHeight(viewport);
       expect(
@@ -196,7 +196,7 @@ void main() {
     final viewport = renderer.scrollController.position.viewportDimension;
     for (var page = 0; page < 6; page++) {
       final moved = await renderer.controller.nextPage();
-      await tester.pump();
+      await tester.pumpAndSettle();
       if (!moved) break;
       final offset = renderer.scrollController.offset;
       final clip = renderer.pageContentHeight(viewport);
@@ -242,7 +242,7 @@ void main() {
             '第 $page 页翻页中间态的裁剪高度不得等于整屏'
             '（会先露出被切断的半行/半图，下一帧又收紧 → 闪烁）',
       );
-      await tester.pump();
+      await tester.pumpAndSettle();
       if (!moved) break;
     }
 

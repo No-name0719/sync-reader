@@ -7,7 +7,8 @@
 ///   [TxtRenderer.applySettings]（设置变更入口，集成阶段由设置流驱动调用）。
 /// - [TxtReaderController]：[ReaderController] 实现——restore 三分支
 ///   （docs/05 §3.3）、节流上报（500ms，∈250ms–1s）、jumpTo、同步 currentLocator。
-/// - page 模式：PageView 翻页（B5：轴向随设置切换上下滑动/左右翻页），
+/// - page 模式：PageView 翻页（v1.4.4：**全平台统一左右翻**，轴向固定横轴；
+///   动画时长/缓动取自 [ReaderPageTurnSpec]，与其它格式一致），
 ///   分页内核为整行分页（B1：页界落在行边界，无半行），首屏只分页当前章
 ///   （isolate），章间经首尾"章间页"衔接；页码信息经
 ///   [ReaderPageInfoProvider.currentPageInfo] 供宿主底部控制条展示。
@@ -42,6 +43,7 @@ import '../../contract/reader_settings.dart';
 import '../../contract/toc_entry.dart';
 import '../../reader_chrome.dart';
 import '../../reader_indent.dart';
+import '../../reader_page_turn.dart';
 import 'txt_book_parser.dart';
 import 'txt_chapter_anchor.dart';
 import 'txt_locator.dart';
@@ -748,8 +750,8 @@ class _TxtPagePane extends StatefulWidget {
 }
 
 class _TxtPagePaneState extends State<_TxtPagePane> {
-  /// 翻页动画时长（原型 TURN_MS = 340ms 的就近取整）。
-  static const Duration _turnDuration = Duration(milliseconds: 300);
+  /// 翻页动画时长（**全格式统一**，见 [ReaderPageTurnSpec.duration]）。
+  static const Duration _turnDuration = ReaderPageTurnSpec.duration;
 
   int _pagesChapter = -1;
   int _syncedOffset = -1;
@@ -939,7 +941,7 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
             .animateToPage(
               target,
               duration: _turnDuration,
-              curve: Curves.easeOutCubic,
+              curve: ReaderPageTurnSpec.curve,
             )
             .catchError((_) {}),
       );
@@ -984,73 +986,78 @@ class _TxtPagePaneState extends State<_TxtPagePane> {
     final pages = _pages;
     final pageCtrl = _pageCtrl;
     final margin = widget.renderer.settings.pageMargin;
-    // 翻页方向（v1.3.7）：**按设备形态自动选**，不再作为用户选项——
-    // 移动端（窄视口 ≤460）用横轴（左右翻页的翻书手感）；
-    // 桌面端用纵轴（正文纵向排版，纵轴翻页与阅读方向一致）。
-    final narrow = MediaQuery.sizeOf(context).width <= kReaderNarrowBreakpoint;
-    final axis = narrow ? Axis.horizontal : Axis.vertical;
+    // 翻页方向（v1.4.4，docs/10 §9.21）：**全平台统一左右翻**。
+    //
+    // v1.3.7 §9.14 曾按设备形态自动选（手机横轴 / 桌面纵轴），理由是「桌面
+    // 纵轴与滚轮、鼠标拖拽同向」；但滚轮已在 §9.16、鼠标拖动已在 §9.17 从
+    // 分页模式移除，那条理由已不成立。而「四格式的翻页中帧看不出差别」要求
+    // 推移方向也统一——手机与桌面用同一套左右翻，桌面左右热区点击与推移
+    // 方向也天然吻合。
+    const axis = Axis.horizontal;
     // 分页模式：**不接受鼠标拖动**（见 [kReaderTouchOnlyDragDevices]）——
     // 鼠标拖动翻页与滚轮一样会打乱页界；触摸滑动与键盘照常。
     return ScrollConfiguration(
-      behavior: ScrollConfiguration.of(context).copyWith(
-        dragDevices: kReaderTouchOnlyDragDevices,
-      ),
+      behavior: ScrollConfiguration.of(context)
+          .copyWith(dragDevices: kReaderTouchOnlyDragDevices),
       child: Padding(
         padding: EdgeInsets.symmetric(vertical: margin),
         child: (pageCtrl == null || pages == null)
             ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
             : PageView.builder(
-              controller: pageCtrl,
-              scrollDirection: axis,
-              itemCount: pages.length + 2,
-              onPageChanged: _onPageChanged,
-              itemBuilder: (context, global) {
-                // 页项内的 Listener 抢注滚轮事件（见 _swallowWheel 注释）：
-                // 分页模式下滚轮被吞掉（不翻页、不滚动）；opaque 让页边空白
-                // 处也命中。
-                return Listener(
-                  onPointerSignal: _swallowWheel,
-                  behavior: HitTestBehavior.opaque,
-                  child: (global == 0 || global == pages.length + 1)
-                      ? Center(
-                          child: Icon(
-                            Icons.auto_stories_outlined,
-                            color: colors.dim,
-                          ),
-                        )
-                      : ClipRect(
-                          child: Align(
-                            alignment: Alignment.topCenter,
-                            child: SizedBox(
-                              width: widget.content.width,
-                              child: Text.rich(
-                                // 与分页器同一显示变换（缩进/段距）+ 页尾分页符
-                                // 不渲染空行盒（txtPageDisplaySpan，B1）。
-                                txtPageDisplaySpan(
-                                  _chapterText,
-                                  pages[global - 1].start,
-                                  pages[global - 1].end,
-                                  style: widget.renderer.bodyTextStyle(),
-                                  fontSize: widget.renderer.settings.fontSize,
-                                  indentEm: widget
-                                          .renderer.settings.firstLineIndent
-                                      ? kReaderParagraphIndentEm
-                                      : 0,
-                                  paragraphGapLines: widget
-                                      .renderer.settings.paragraphGap.lines,
+                controller: pageCtrl,
+                scrollDirection: axis,
+                itemCount: pages.length + 2,
+                onPageChanged: _onPageChanged,
+                itemBuilder: (context, global) {
+                  // 页项内的 Listener 抢注滚轮事件（见 _swallowWheel 注释）：
+                  // 分页模式下滚轮被吞掉（不翻页、不滚动）；opaque 让页边空白
+                  // 处也命中。
+                  return Listener(
+                    onPointerSignal: _swallowWheel,
+                    behavior: HitTestBehavior.opaque,
+                    child: (global == 0 || global == pages.length + 1)
+                        ? Center(
+                            child: Icon(
+                              Icons.auto_stories_outlined,
+                              color: colors.dim,
+                            ),
+                          )
+                        : ClipRect(
+                            child: Align(
+                              alignment: Alignment.topCenter,
+                              child: SizedBox(
+                                width: widget.content.width,
+                                child: Text.rich(
+                                  // 与分页器同一显示变换（缩进/段距）+ 页尾分页符
+                                  // 不渲染空行盒（txtPageDisplaySpan，B1）。
+                                  txtPageDisplaySpan(
+                                    _chapterText,
+                                    pages[global - 1].start,
+                                    pages[global - 1].end,
+                                    style: widget.renderer.bodyTextStyle(),
+                                    fontSize: widget.renderer.settings.fontSize,
+                                    indentEm:
+                                        widget.renderer.settings.firstLineIndent
+                                        ? kReaderParagraphIndentEm
+                                        : 0,
+                                    paragraphGapLines: widget
+                                        .renderer
+                                        .settings
+                                        .paragraphGap
+                                        .lines,
+                                  ),
+                                  key: _pageTextKeys.putIfAbsent(
+                                    global,
+                                    GlobalKey.new,
+                                  ),
+                                  textAlign: TextAlign.justify,
                                 ),
-                                key: _pageTextKeys.putIfAbsent(
-                                  global,
-                                  GlobalKey.new,
-                                ),
-                                textAlign: TextAlign.justify,
                               ),
                             ),
                           ),
-                        ),
-                );
-              },
-            ),
+                  );
+                },
+              ),
       ),
     );
   }
@@ -1124,7 +1131,10 @@ class _TxtScrollPaneState extends State<_TxtScrollPane> {
   /// B6 文字命中判定：点击点是否落在任一已构建章正文的字形盒上。
   bool _probeText(Offset global) {
     for (final key in _scrollTextKeys.values) {
-      final hit = _hitTestParagraph(key.currentContext?.findRenderObject(), global);
+      final hit = _hitTestParagraph(
+        key.currentContext?.findRenderObject(),
+        global,
+      );
       if (hit) return true;
     }
     return false;

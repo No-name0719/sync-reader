@@ -35,6 +35,11 @@ class FakeReaderController extends ReaderController {
   /// percent 的返回值。
   double percentValue = 0;
 
+  /// 翻页的返回值（true = 真的翻了；false = 已在首/末页 = 边界）。
+  ///
+  /// v1.4.4：宿主据此决定是否播放**统一边界回弹**（docs/10 §9.21）。
+  bool turnResult = true;
+
   @override
   Future<ReaderRestoreResult> restore(ProgressAnchor saved) async {
     restoreCalls.add(saved);
@@ -58,13 +63,13 @@ class FakeReaderController extends ReaderController {
   @override
   Future<bool> nextPage() async {
     turnCalls.add(1);
-    return true;
+    return turnResult;
   }
 
   @override
   Future<bool> previousPage() async {
     turnCalls.add(-1);
-    return true;
+    return turnResult;
   }
 
   @override
