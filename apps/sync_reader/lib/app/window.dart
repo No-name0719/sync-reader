@@ -15,6 +15,12 @@ import 'package:window_manager/window_manager.dart';
 
 import '../core/app_logger.dart';
 
+/// 窗口最小尺寸（与 [WindowOptions.minimumSize] 一致）。
+///
+/// 也用作「已存状态是否可用」的判据：Windows 在窗口**最小化**时报的 bounds
+/// 是「最小化矩形」（实测 159×37 @ (-25600, -25600)），必然小于它。
+const Size kWindowMinimumSize = Size(420, 420);
+
 /// 窗口状态（尺寸 + 位置）。
 class WindowState {
   const WindowState({
@@ -46,6 +52,16 @@ class WindowState {
   final double left;
   final double top;
 
+  /// 这份状态是否**可用**（不可用 → 丢弃，改用默认尺寸居中显示）。
+  ///
+  /// 判据只看**尺寸**：小于最小尺寸的矩形就是 Windows 的「最小化矩形」，
+  /// 用它恢复窗口会得到一个屏幕外的小框 → **打开软件看不到界面**
+  /// （用户实测：`window_state.json` 里存的就是 159×37 @ -25600）。
+  ///
+  /// 位置不作废据：多屏布局里窗口合法地落在负坐标（副屏在主屏左侧）。
+  bool get isUsable =>
+      width >= kWindowMinimumSize.width && height >= kWindowMinimumSize.height;
+
   Map<String, Object?> toJson() => {
     'width': width,
     'height': height,
@@ -53,6 +69,14 @@ class WindowState {
     'top': top,
   };
 }
+
+/// 判定一次窗口状态是否应当**持久化**。
+///
+/// 最小化时**不存**：Windows 报的 bounds 是「最小化矩形」，存下去等于把
+/// 窗口位置写成屏幕外——下次启动就再也「打不开界面」了。此时保留上一次
+/// 存下的好状态（用户没动过窗口时它本来就是对的）。
+bool shouldPersistWindowState(WindowState state, {required bool isMinimized}) =>
+    !isMinimized && state.isUsable;
 
 /// 初始化桌面窗口（非 Windows 直接返回）。
 Future<void> initDesktopWindow() async {
@@ -64,7 +88,7 @@ Future<void> initDesktopWindow() async {
     final options = WindowOptions(
       size: Size(saved?.width ?? 1200, saved?.height ?? 800),
       center: saved == null,
-      minimumSize: const Size(420, 420),
+      minimumSize: kWindowMinimumSize,
       title: 'SyncReader',
     );
     await windowManager.waitUntilReadyToShow(options, () async {
@@ -87,7 +111,13 @@ Future<WindowState?> _load() async {
     final file = await _stateFile();
     if (!file.existsSync()) return null;
     final json = jsonDecode(await file.readAsString());
-    return json is Map<String, Object?> ? WindowState.fromJson(json) : null;
+    final state = json is Map<String, Object?>
+        ? WindowState.fromJson(json)
+        : null;
+    // 不可用的状态（典型：最小化矩形）→ 当作没有存过 → 用默认尺寸居中，
+    // 免得窗口恢复到屏幕外、**打开软件看不到界面**。
+    if (state == null || !state.isUsable) return null;
+    return state;
   } catch (_) {
     return null;
   }
@@ -100,21 +130,39 @@ Future<File> _stateFile() async {
 
 Future<void> _save() async {
   try {
+    final minimized = await windowManager.isMinimized();
     final bounds = await windowManager.getBounds();
-    final file = await _stateFile();
-    await file.writeAsString(
-      jsonEncode(
-        WindowState(
-          width: bounds.width,
-          height: bounds.height,
-          left: bounds.left,
-          top: bounds.top,
-        ).toJson(),
+    await writeWindowState(
+      file: await _stateFile(),
+      state: WindowState(
+        width: bounds.width,
+        height: bounds.height,
+        left: bounds.left,
+        top: bounds.top,
       ),
+      isMinimized: minimized,
     );
   } catch (e) {
     debugPrint('[WARN] 保存窗口状态失败：$e');
   }
+}
+
+/// 写入窗口状态（**可单测**：文件与状态由调用方注入）。
+///
+/// 返回是否真的写了：
+/// - **最小化 → 不写**（bounds 是「最小化矩形」，写下去等于把窗口位置存到
+///   屏幕外 → 下次启动界面看不见）；
+/// - 尺寸异常（小于最小尺寸）→ 不写。
+///
+/// 不写时**保留文件原内容**（上一次存下的好状态），不做清空。
+Future<bool> writeWindowState({
+  required File file,
+  required WindowState state,
+  required bool isMinimized,
+}) async {
+  if (!shouldPersistWindowState(state, isMinimized: isMinimized)) return false;
+  await file.writeAsString(jsonEncode(state.toJson()));
+  return true;
 }
 
 /// 关闭序列（**可单测**）：先落盘窗口状态 → 解除「阻止关闭」→ 原生关窗。

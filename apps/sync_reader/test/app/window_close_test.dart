@@ -12,7 +12,11 @@
 /// 3. 落盘失败要被上报（可诊断）。
 library;
 
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 import 'package:sync_reader/app/window.dart';
 
 void main() {
@@ -56,5 +60,127 @@ void main() {
       ),
       throwsA(isA<StateError>()),
     );
+  });
+
+  group('窗口状态：最小化矩形不得被存下/读回（v1.4.5）', () {
+    // 实测（用户「打开软件没显示」）：窗口最小化后关闭，Windows 报的 bounds
+    // 是「最小化矩形」159×37 @ (-25600, -25600)；它被原样存进
+    // window_state.json → 下次启动窗口恢复到屏幕外 → 界面看不见。
+    const minimizedRect = WindowState(
+      width: 159.2,
+      height: 37.6,
+      left: -25600,
+      top: -25600,
+    );
+
+    test('最小化时：不持久化（保留上一次存下的好状态）', () {
+      expect(
+        shouldPersistWindowState(minimizedRect, isMinimized: true),
+        isFalse,
+        reason: '最小化矩形存下去＝下次启动窗口在屏幕外',
+      );
+    });
+
+    test('最小化矩形即便没标记最小化也不可用（尺寸小于最小尺寸）', () {
+      expect(minimizedRect.isUsable, isFalse);
+      expect(
+        shouldPersistWindowState(minimizedRect, isMinimized: false),
+        isFalse,
+      );
+    });
+
+    test('正常窗口：可持久化、可用', () {
+      const normal = WindowState(
+        width: 1200,
+        height: 800,
+        left: 100,
+        top: 80,
+      );
+      expect(normal.isUsable, isTrue);
+      expect(shouldPersistWindowState(normal, isMinimized: false), isTrue);
+    });
+
+    test('负坐标的合法窗口（副屏在左侧）仍可用——位置不作废据', () {
+      const offLeft = WindowState(
+        width: 1200,
+        height: 800,
+        left: -1920,
+        top: 100,
+      );
+      expect(
+        offLeft.isUsable,
+        isTrue,
+        reason: '多屏布局里窗口合法落在负坐标，不能一刀切作废',
+      );
+    });
+
+    test('从 JSON 读回：最小化矩形被识别为不可用', () {
+      final state = WindowState.fromJson(const {
+        'width': 159.20000000000073,
+        'height': 37.599999999998545,
+        'left': -25600.0,
+        'top': -25600.0,
+      });
+      expect(state, isNotNull);
+      expect(state!.isUsable, isFalse);
+    });
+
+    test('落盘：最小化时不写文件（保留上一次存下的好状态）', () async {
+      final dir = await Directory.systemTemp.createTemp('sr_window_state');
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {
+          // 清理失败不阻塞测试
+        }
+      });
+      final file = File(p.join(dir.path, 'window_state.json'));
+      const good = '{"width":1200.0,"height":800.0,"left":424.0,"top":176.0}';
+      await file.writeAsString(good);
+
+      final written = await writeWindowState(
+        file: file,
+        state: minimizedRect,
+        isMinimized: true,
+      );
+
+      expect(written, isFalse, reason: '最小化矩形不得被写下去');
+      expect(
+        await file.readAsString(),
+        good,
+        reason: '不写时必须保留原内容（不能清空成空文件）',
+      );
+    });
+
+    test('落盘：正常窗口写入新状态', () async {
+      final dir = await Directory.systemTemp.createTemp('sr_window_state');
+      addTearDown(() async {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {
+          // 清理失败不阻塞测试
+        }
+      });
+      final file = File(p.join(dir.path, 'window_state.json'));
+      const normal = WindowState(
+        width: 1200,
+        height: 800,
+        left: 424,
+        top: 176,
+      );
+
+      final written = await writeWindowState(
+        file: file,
+        state: normal,
+        isMinimized: false,
+      );
+
+      expect(written, isTrue);
+      final back = WindowState.fromJson(
+        jsonDecode(await file.readAsString()) as Map<String, Object?>,
+      );
+      expect(back!.width, 1200);
+      expect(back.left, 424);
+    });
   });
 }
