@@ -227,7 +227,9 @@ final class _GuidePageState extends ConsumerState<JianguoYunGuidePage> {
     );
     // 凭据已变：丢弃旧引擎，下一次同步按新适配器重建（Phase C 切换点生效处）。
     await ref.read(syncFacadeProvider).resetEngine();
-    if (mounted) Navigator.of(context).pop();
+    // pop(true)：告诉调用方「配置已保存」。首启引导页据此判定首启完成
+    // （docs/10 §4.9）；同步设置页的入口忽略返回值，行为不变。
+    if (mounted) Navigator.of(context).pop(true);
   }
 
   @override
