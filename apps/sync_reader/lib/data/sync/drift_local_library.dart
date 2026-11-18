@@ -6,14 +6,14 @@
 /// - rev/baseRev 不落书表（以 sync_state 为准，由 [DriftSyncStore] 持有），
 ///   快照里的 baseRev 视图从 sync_state 表读出供 Diff 兜底。
 ///
-/// 删除语义（docs/10 §4.7b，v1.1 变更）：
-/// - **本端删除** = 删正文/封面文件 + 保留 `books` 行（`local_path` 置 NULL，
-///   落进书库「未下载」区）+ 写 `deleted_books` 墓碑；带墓碑的书**不参与
-///   diff**（否则会被当正常书推回云端，与刚推上去的 tombstone 打架）；
-/// - **收到远端墓碑**：本端已有墓碑（= 本端自己删的）→ 幂等，不动 books 行、
-///   不覆盖已有的 deletedAt/pushed/contentHash（否则下次同步会把保留的
-///   元数据抹掉，书就从书库消失了）；本端未发起的（其它设备删的）→ 沿用
-///   docs/04 §7.1.2 既有行为：删 books 行（正文文件保留为游离文件）。
+/// 删除语义（docs/10 §4.7b，2026-11-18 变更）：
+/// - **本端删除** = 删正文/封面文件 + **移出书库**（`books` 行删除）+ 写
+///   `deleted_books` 墓碑；带墓碑的书**不参与 diff**（否则会被当正常书推回
+///   云端，与刚推上去的 tombstone 打架）；
+/// - **收到远端墓碑**：本端已有墓碑（= 本端自己删的）→ 幂等，不覆盖已有的
+///   deletedAt/pushed/contentHash（否则会把待推墓碑的记账抹掉）；本端未发起
+///   的（其它设备删的）→ 沿用 docs/04 §7.1.2 既有行为：删 books 行（正文
+///   文件保留为游离文件）。
 library;
 
 import 'dart:convert';
@@ -61,8 +61,9 @@ final class DriftLocalLibrary implements LocalLibrary {
     };
     final states = await _statesByBookId();
     // 排除两类书（docs/10 §4.7b / §4.7c）：
-    // 1. 有墓碑的书（本地已删除）——否则同步引擎会把它当正常书推回云端，
-    //    与刚推上去的 tombstone 打架；
+    // 1. 有墓碑的书（本地已删除）——本地删除已移出书库（无 `books` 行），
+    //    这里再排除一次是兜底：防止"墓碑已记账但行仍在"的竞态下被引擎当
+    //    正常书推回云端，与刚推上去的 tombstone 打架；
     // 2. 仅本地的书（local_only_books）——它们永不进 diff，既不推 meta
     //    也不传正文（用户明确选择"不上传"）。
     final tombstoned = await _tombstonedBookIds();
@@ -90,32 +91,33 @@ final class DriftLocalLibrary implements LocalLibrary {
   Future<void> applyRemoteMeta(BookMeta meta) async {
     if (meta.isTombstone) {
       await _db.transaction(() async {
-        // 幂等（docs/10 §4.7b 实施要点 3）：本端已有该书的墓碑 ⇒ 本端自己
-        // 删的（本地删除保留 books 行、只置空 local_path）。再次收到该墓碑
-        // 时**不能删 books 行**——否则下次同步会把保留的元数据抹掉，书就从
-        // 书库消失了；也不覆盖已有的 deletedAt / pushed / contentHash。
+        // 记 tombstone 已确认（docs/04 §7.1.2：sync_state 记录删除已确认）。
+        // 本端已有该书的墓碑 ⇒ 本端自己删的 → **不覆盖**已有的
+        // deletedAt / pushed / contentHash：`pushed=false` 是"待推墓碑"的
+        // 记账，覆盖成 true 会让离线删除的墓碑永远推不出去。
         final existing = await (_db.select(
           _db.deletedBooks,
         )..where((d) => d.bookId.equals(meta.bookId))).getSingleOrNull();
-        if (existing != null) {
-          return; // 本端已处理过该墓碑：保持幂等，不动本地书库视图。
-        }
-        // 记 tombstone 已确认（docs/04 §7.1.2：sync_state 记录删除已确认）。
-        await _db
-            .into(_db.deletedBooks)
-            .insertOnConflictUpdate(
-              DeletedBooksCompanion(
-                bookId: Value(meta.bookId),
-                deletedAt: Value(
-                  (meta.deletedAt ?? DateTime.now()).millisecondsSinceEpoch,
+        if (existing == null) {
+          await _db
+              .into(_db.deletedBooks)
+              .insertOnConflictUpdate(
+                DeletedBooksCompanion(
+                  bookId: Value(meta.bookId),
+                  deletedAt: Value(
+                    (meta.deletedAt ?? DateTime.now()).millisecondsSinceEpoch,
+                  ),
+                  pushed: const Value(true),
+                  contentHash: Value(meta.book.contentHash),
                 ),
-                pushed: const Value(true),
-                contentHash: Value(meta.book.contentHash),
-              ),
-            );
-        // 本端未发起的删除（其它设备删的）→ 沿用 docs/04 §7.1.2 既有行为：
-        // 移出书库视图（books 行删除，progress 级联清除）；正文文件保留
-        // （游离，docs/04 §7.1.2 不变）。
+              );
+        }
+        // 移出书库（books 行删除，progress 级联清除）——本端自己删的与
+        // 其它设备删的同款处理：删除即移出书库（docs/10 §4.7b）。
+        // 本端自己删的通常已无行（本地删除时删掉了），这里是幂等兜底；
+        // 它真正兜住的是"墓碑还没推上去、书却被别的设备改活"的竞态：
+        // 那次拉活会重建 books 行（占位书），墓碑回来时必须把它收走。
+        // 本地正文文件保留（游离，docs/04 §7.1.2 不变）。
         await (_db.delete(
           _db.books,
         )..where((b) => b.bookId.equals(meta.bookId))).go();

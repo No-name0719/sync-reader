@@ -13,7 +13,7 @@
 ///    B 的本地正文文件保留（游离语义，§7.1 第 2 条）。
 ///
 /// 注：LocalLibrary/引擎不设"本地删除"API——删除的上半段（写 tombstone +
-/// 移出视图 + 记账本）属端上应用层约定（app 侧 softDelete + tombstone 推送），
+/// 移出视图 + 记账本）属端上应用层约定（app 侧 `BooksDao.deleteBook` + tombstone 推送），
 /// 引擎只负责 tombstone 作为普通 meta 的定序与传播，故用例按 §7.1 原语模拟。
 library;
 

@@ -433,7 +433,7 @@ class InMemoryLocalLibrary implements LocalLibrary {
     }
   }
 
-  /// 测试辅助：移除本地行（模拟 app softDelete 的书库视图移除；
+  /// 测试辅助：移除本地行（模拟 app 侧删除的书库视图移除（`BooksDao.deleteBook`）；
   /// 正文文件保留，与 docs/04 §7.1 游离语义一致）。
   Future<void> removeLocalBook(String bookId) async {
     _rows.remove(bookId);

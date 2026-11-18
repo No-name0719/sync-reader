@@ -235,8 +235,9 @@ void main() {
     await facade.fullSync(source: SyncTriggerSource.manual);
     expect(adapter.metas.containsKey(localId), isTrue);
 
-    // app 删除顺序：先本地 softDelete，再后台 deleteBook（FR-408）。
-    await db.booksDao.softDelete(localId);
+    // app 删除顺序：先本地 deleteBook（移出书库），再后台 deleteBook 推
+    // tombstone（FR-408）。本地行已删 → 墓碑内容取自 sync_state 的公共祖先。
+    await db.booksDao.deleteBook(localId);
     final report = await facade.deleteBook(localId);
     expect(report, isNotNull);
     if (!report!.success) {
@@ -261,7 +262,7 @@ void main() {
     final localId = await importLocalBook(title: '手动同步才动');
     await facade.fullSync(source: SyncTriggerSource.manual);
 
-    await db.booksDao.softDelete(localId);
+    await db.booksDao.deleteBook(localId);
     final report = await facade.deleteBook(localId);
     expect(report, isNotNull);
     expect(report!.success, isTrue);

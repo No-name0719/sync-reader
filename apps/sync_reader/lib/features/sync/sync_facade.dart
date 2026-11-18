@@ -276,9 +276,10 @@ final class SyncFacade {
   ///
   /// 跳过两类书（docs/10 §4.7b / §4.7c）：
   /// - **仅本地**的书：用户明确选择"不上传"，读进度时也不能顺手推上云；
-  /// - **本地已删除且正文已删**的书：推送正常 meta 会与刚推上去的 tombstone
-  ///   打架（云端复活一本书）。已删除但正文已重新下载的书不在此列——它按
-  ///   docs/04 §7.2 的既有语义走"正常 meta 胜出即复活"。
+  /// - **本地已删除**的书：删除即移出书库（`books` 行已删），推送正常 meta
+  ///   会与刚推上去的 tombstone 打架（云端复活一本书）。墓碑已确认且正文
+  ///   未重新下载时一律跳过——正文已重新下载的情形按 docs/04 §7.2 的既有
+  ///   语义走"正常 meta 胜出即复活"。
   Future<SyncReport?> pushBookMeta(String bookId) async {
     if (await _skipPush(bookId)) return null;
     final engine = await _ensureEngine();

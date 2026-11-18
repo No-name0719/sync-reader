@@ -122,11 +122,11 @@ void main() {
 
   tearDown(() async => db.close());
 
-  test('以 user_version=1 打开：走 onUpgrade(1→4)，新表/新列就位，旧数据完好', () async {
+  test('以 user_version=1 打开：走 onUpgrade(1→5)，新表/新列就位，旧数据完好', () async {
     // 首个查询触发打开路径；若迁移抛错这里直接失败。
     final versionRow = await db.customSelect('PRAGMA user_version').getSingle();
     // drift 迁移成功后已把版本写为 3（证明确实发生了迁移而非 onCreate）。
-    expect(versionRow.data['user_version'], 4);
+    expect(versionRow.data['user_version'], 5);
 
     // v2 新增表存在。
     final tables =
@@ -175,5 +175,5 @@ void main() {
     expect((await db.booksDao.getById(_v1BookId))!.groupId, isNull);
   });
 
-  test('schemaVersion == 4（docs/05 §6）', () => expect(db.schemaVersion, 4));
+  test('schemaVersion == 5（docs/05 §6）', () => expect(db.schemaVersion, 5));
 }

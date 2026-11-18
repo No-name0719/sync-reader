@@ -124,9 +124,9 @@ void main() {
 
   tearDown(() async => db.close());
 
-  test('以 user_version=2 打开：走 onUpgrade(2→4)，新表就位，旧数据完好', () async {
+  test('以 user_version=2 打开：走 onUpgrade(2→5)，新表就位，旧数据完好', () async {
     final versionRow = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(versionRow.data['user_version'], 4);
+    expect(versionRow.data['user_version'], 5);
 
     final tables =
         (await db
@@ -185,5 +185,5 @@ void main() {
     expect(row.value, '"ochre"');
   });
 
-  test('schemaVersion == 4（docs/05 §6）', () => expect(db.schemaVersion, 4));
+  test('schemaVersion == 5（docs/05 §6）', () => expect(db.schemaVersion, 5));
 }

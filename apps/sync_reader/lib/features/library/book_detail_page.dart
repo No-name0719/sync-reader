@@ -2,8 +2,8 @@
 /// Hero（大封面 + 书名/作者/标签 + 进度条 + 主操作）、「阅读数据」卡
 /// （4 统计块 + 近 7 天阅读量柱状图，FR-208）、「文件信息」卡（定义列表）、
 /// 「目录」卡（新增目录预览）。提供"打开阅读 / 重新选择文件（FR-410）/
-/// 删除"操作；删除语义遵循 FR-408 的 v1.1 变更（docs/10 §4.7b）：
-/// 删正文文件 + 保留元数据 + 写墓碑。
+/// 删除"操作；删除语义遵循 FR-408（docs/10 §4.7b，2026-11-18 变更）：
+/// 删正文文件 + 移出书库 + 写墓碑。
 library;
 
 import 'dart:async';
@@ -252,8 +252,8 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
     }
   }
 
-  /// 删除确认（FR-408 新删除语义，docs/10 §4.7b）→ softDelete（删正文、
-  /// 留元数据 + 写墓碑）→ 推 tombstone → 返回书库。
+  /// 删除确认（FR-408 删除语义，docs/10 §4.7b）→ 移出书库（删正文、
+  /// 删 books 行 + 写墓碑）→ 推 tombstone → 返回书库。
   Future<void> _confirmDelete(Book book) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -275,11 +275,11 @@ class _BookDetailPageState extends ConsumerState<BookDetailPage> {
     if (confirmed != true || !mounted) return;
 
     final store = await ref.read(bookFileStoreProvider.future);
-    // 新删除语义（docs/10 §4.7b）：删正文/封面文件 + 保留 books 行
-    // （local_path 置 NULL → 落进书库「未下载」区）+ 写墓碑；进度行保留。
+    // 删除语义（docs/10 §4.7b）：删正文/封面文件 + 移出书库（books 行
+    // 删除 → 书库里不再出现）+ 写墓碑；进度行随之级联清除。
     await ref
         .read(booksDaoProvider)
-        .softDelete(book.bookId, removeFiles: store.deleteBookFiles);
+        .deleteBook(book.bookId, removeFiles: store.deleteBookFiles);
     // 云端 tombstone 推送（FR-408）：本地优先之后台进行，不阻塞返回书库；
     // 失败由引擎记入 tombstone 账本，下次全量同步补推收敛。
     unawaited(ref.read(syncFacadeProvider).deleteBook(book.bookId));

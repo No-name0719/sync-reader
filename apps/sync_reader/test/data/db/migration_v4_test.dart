@@ -137,7 +137,9 @@ void main() {
 
   test('以 user_version=3 打开：走 onUpgrade(3→4)，新表/新列就位，旧数据完好', () async {
     final versionRow = await db.customSelect('PRAGMA user_version').getSingle();
-    expect(versionRow.data['user_version'], 4);
+    // 当前 schemaVersion 已到 5（2026-11-18，v1.4.1 数据迁移）：v3 库打开时
+    // 连跑 3→4 与 4→5 两步迁移，最终 user_version = 5。
+    expect(versionRow.data['user_version'], 5);
 
     final tables =
         (await db
@@ -195,5 +197,5 @@ void main() {
     expect(book!.groupId, isNull, reason: '组内书回到未分组');
   });
 
-  test('schemaVersion == 4（docs/05 §6）', () => expect(db.schemaVersion, 4));
+  test('schemaVersion == 5（docs/05 §6）', () => expect(db.schemaVersion, 5));
 }

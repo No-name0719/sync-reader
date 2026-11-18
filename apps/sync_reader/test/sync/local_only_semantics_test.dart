@@ -2,14 +2,16 @@
 /// A19 删除语义变更 + A21/A22「仅本地 / 未上传」状态。
 ///
 /// 覆盖任务书的 5 条验收场景：
-/// 1. 本地删除 → 书仍在书库（books 行在、localPath 为 NULL、进度行仍在）
-///    → 同步**不**把它推回云端 → 下次同步不丢元数据；
+/// 1. 本地删除 → **书移出书库**（books 行删除、进度级联清除）
+///    → 同步**不**把它推回云端 → 墓碑正常上云；
 /// 2. 导入时选「不上传」→ 全量同步后云端无此书 → 手动「上传到云端」后
 ///    正常上架（云端有 meta + 正文被上传）；
 /// 3. 「从云端移除」→ 云端 meta 消失 → 本地保留且可读 → 不会被重新推上去；
 /// 4. 仅本地书读了之后，进度不会被推上云；
 /// 5. 两端删除同一本书后收敛一致（tombstone 幂等：本端已有墓碑时收到远端
-///    墓碑，books 行不被误删）。
+///    墓碑，不覆盖本地记账）；
+/// 6. 场景 6（2026-11-18 用户实测反馈）：云端 + 本地都删除后，书库里
+///    **不再出现**该书（旧实现留下一条「未下载」残影，永久显示）。
 ///
 /// 夹具：内存 drift 库 + InMemoryAdapter（sync_core 内存参考实现）+
 /// 临时目录文件存储；真实 IO 不涉及（正文文件用临时目录真文件）。
@@ -109,24 +111,22 @@ void main() {
   }
 
   group('场景 1：本地删除（docs/10 §4.7b）', () {
-    test('书仍在书库 + 进度保留 + 正文删盘 + 同步不推回云端 + 元数据不丢', () async {
+    test('书移出书库 + 正文删盘 + 墓碑上云 + 同步不推回云端', () async {
       final bookId = await seedLocalBook(withProgress: true);
       // 首次同步：正常上架。
       final first = await facade.fullSync(source: SyncTriggerSource.manual);
       expect(first!.success, isTrue);
       expect(adapter.metas.containsKey(bookId), isTrue);
 
-      // 本地删除：删正文/封面 + 保留 books 行 + 写墓碑。
-      await db.booksDao.softDelete(
+      // 本地删除：删正文/封面 + 移出书库（books 行删除）+ 写墓碑。
+      await db.booksDao.deleteBook(
         bookId,
         removeFiles: fileStore.deleteBookFiles,
       );
-      // 书仍在书库（books 行在、localPath 为 NULL、进度行仍在）。
-      final book = await db.booksDao.getById(bookId);
-      expect(book, isNotNull);
-      expect(book!.localPath, isNull);
-      expect(book.title, '本地书');
-      expect(await db.progressDao.getByBookId(bookId), isNotNull);
+      // 书已从书库移除（回归：删除后不该再以「未下载」残影留在书库里）。
+      expect(await db.booksDao.getById(bookId), isNull);
+      // 进度随书级联清除。
+      expect(await db.progressDao.getByBookId(bookId), isNull);
       expect(await db.booksDao.hasTombstone(bookId), isTrue);
       // 正文文件真删盘。
       expect(
@@ -134,7 +134,8 @@ void main() {
         isFalse,
       );
 
-      // 推 tombstone 到云端（详情页删除流程的同一动作）。
+      // 推 tombstone 到云端（详情页删除流程的同一动作）：本地行已删，
+      // 墓碑内容取自 sync_state 的上次同步副本，仍能正常上云。
       final deleted = await facade.deleteBook(bookId);
       expect(deleted!.success, isTrue);
       expect(
@@ -150,17 +151,14 @@ void main() {
         isTrue,
         reason: '本地已删除的书不得被推回云端（否则与墓碑打架）',
       );
-      // 元数据不丢：books 行仍在。
-      final after = await db.booksDao.getById(bookId);
-      expect(after, isNotNull);
-      expect(after!.title, '本地书');
-      expect(await db.progressDao.getByBookId(bookId), isNotNull);
+      // 本地也不复活（books 行不重建）。
+      expect(await db.booksDao.getById(bookId), isNull);
     });
 
     test('被删除的书不参与 diff（listBooks 排除墓碑书）', () async {
       final bookId = await seedLocalBook();
       await facade.fullSync(source: SyncTriggerSource.manual);
-      await db.booksDao.softDelete(bookId);
+      await db.booksDao.deleteBook(bookId);
       // 快照里不应再出现这本书。
       final snapshots = await library.listBooks();
       expect(
@@ -300,6 +298,70 @@ void main() {
     });
   });
 
+  group('场景 6：云端 + 本地都删除（用户实测反馈，2026-11-18）', () {
+    test('「从云端移除」后本地再删：书库中不再出现该书', () async {
+      final bookId = await seedLocalBook(title: '两边都删的书');
+      await facade.fullSync(source: SyncTriggerSource.manual);
+      expect(adapter.metas.containsKey(bookId), isTrue);
+
+      // ① 云端移除：云端 meta 消失，本地副本保留。
+      expect(await facade.removeFromCloud(bookId), isTrue);
+      expect(adapter.metas.containsKey(bookId), isFalse);
+      expect(await db.booksDao.getById(bookId), isNotNull);
+
+      // ② 本地删除：移出书库（books 行删除）+ 正文删盘 + 写墓碑。
+      await db.booksDao.deleteBook(
+        bookId,
+        removeFiles: fileStore.deleteBookFiles,
+      );
+      expect(await db.booksDao.getById(bookId), isNull);
+      expect(await db.booksDao.readAllBookIds(), isNot(contains(bookId)));
+      expect(await db.booksDao.hasTombstone(bookId), isTrue);
+      expect(
+        File(fileStore.resolveBookPath(bookId, 'txt')).existsSync(),
+        isFalse,
+      );
+
+      // ③ 推墓碑：云端本就没有该书（已移除）→ 只记账本，不再造云端条目。
+      final report = await facade.deleteBook(bookId);
+      expect(report!.success, isTrue);
+      expect(adapter.metas.containsKey(bookId), isFalse);
+      final ledger = await store.tombstoneLedger();
+      expect(ledger.single.bookId, bookId);
+      expect(ledger.single.pushed, isTrue);
+
+      // ④ 下次全量同步：书不会回来（本地无行、云端无 meta）。
+      final sync = await facade.fullSync(source: SyncTriggerSource.manual);
+      expect(sync!.success, isTrue);
+      expect(await db.booksDao.getById(bookId), isNull);
+      expect(adapter.metas.containsKey(bookId), isFalse);
+    });
+
+    test('本地先删、再从云端移除：同样不会在书库留下残影', () async {
+      final bookId = await seedLocalBook(title: '先删后移除');
+      await facade.fullSync(source: SyncTriggerSource.manual);
+
+      // 本地删除 → 墓碑上云（云端 meta 变墓碑）。
+      await db.booksDao.deleteBook(
+        bookId,
+        removeFiles: fileStore.deleteBookFiles,
+      );
+      final report = await facade.deleteBook(bookId);
+      expect(report!.success, isTrue);
+      expect(
+        BookMeta.fromJsonString(adapter.metas[bookId]!).isTombstone,
+        isTrue,
+      );
+      expect(await db.booksDao.getById(bookId), isNull);
+
+      // 云端那侧再移除（墓碑文件被删）→ 本地依旧没有这本书。
+      await facade.removeFromCloud(bookId);
+      final sync = await facade.fullSync(source: SyncTriggerSource.manual);
+      expect(sync!.success, isTrue);
+      expect(await db.booksDao.getById(bookId), isNull);
+    });
+  });
+
   group('场景 4：仅本地书的进度不被推上云', () {
     test('pushBookMeta 对仅本地书是 no-op（云端无此书）', () async {
       final bookId = await seedLocalBook(withProgress: true);
@@ -325,16 +387,17 @@ void main() {
   });
 
   group('场景 5：两端删除同一本书后收敛一致（tombstone 幂等）', () {
-    test('本端已有墓碑时收到远端墓碑：books 行不被误删（幂等）', () async {
+    test('本端已有墓碑时收到远端墓碑：幂等（不覆盖本地记账）', () async {
       final bookId = await seedLocalBook();
       await facade.fullSync(source: SyncTriggerSource.manual);
-      // 本端删除：books 行保留 + 墓碑入账。
-      await db.booksDao.softDelete(bookId);
+      // 本端删除：移出书库 + 墓碑入账。
+      await db.booksDao.deleteBook(bookId);
       final localTombstone = (await db.select(db.deletedBooks).getSingle());
       expect(localTombstone.pushed, isFalse);
 
-      // 收到远端墓碑（同一本书、别的设备也删了）→ 幂等：不动 books 行，
-      // 不覆盖已有的 deletedAt / pushed / contentHash。
+      // 收到远端墓碑（同一本书、别的设备也删了）→ 幂等：不覆盖已有的
+      // deletedAt / pushed / contentHash（`pushed=false` 是"待推墓碑"的
+      // 记账，覆盖成 true 会让离线删除的墓碑永远推不出去）。
       final remoteMeta = BookMeta(
         schemaVersion: kCurrentSchemaVersion,
         bookId: bookId,
@@ -361,13 +424,77 @@ void main() {
       );
       await library.applyRemoteMeta(remoteMeta);
 
-      final book = await db.booksDao.getById(bookId);
-      expect(book, isNotNull, reason: '本端自己删的书，元数据不能被抹掉');
-      expect(book!.title, '本地书');
+      expect(await db.booksDao.getById(bookId), isNull);
       final tombstone = (await db.select(db.deletedBooks).getSingle());
       expect(tombstone.deletedAt, localTombstone.deletedAt);
       expect(tombstone.pushed, localTombstone.pushed);
       expect(tombstone.contentHash, localTombstone.contentHash);
+    });
+
+    test('本端墓碑在账 + books 行又出现（墓碑没推上去、书被别端改活）→ 收到墓碑时收走', () async {
+      final bookId = await seedLocalBook();
+      await facade.fullSync(source: SyncTriggerSource.manual);
+      // 本端删除：移出书库 + 墓碑入账（待推，pushed=false）。
+      await db.booksDao.deleteBook(bookId);
+      expect(await db.booksDao.getById(bookId), isNull);
+
+      // 墓碑没推上去，而别的设备把书改活并推了正常 meta → 本端拉活会重建
+      // books 行（占位书，localPath=NULL）。
+      final liveMeta = BookMeta(
+        schemaVersion: kCurrentSchemaVersion,
+        bookId: bookId,
+        rev: 50,
+        deviceId: 'other-device',
+        deviceName: '其他设备',
+        createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+        updatedAt: DateTime.fromMillisecondsSinceEpoch(9999),
+        book: BookInfo(
+          title: '被改活的书',
+          author: '',
+          format: 'txt',
+          fileName: '本地书.txt',
+          contentHash: 'sha256:live',
+          sizeBytes: 1,
+          tocFingerprint: 'tfp:0000000000000000',
+        ),
+        reading: ReadingStats(
+          totalSeconds: 0,
+          lastReadAt: DateTime.fromMillisecondsSinceEpoch(1000),
+        ),
+      );
+      await library.applyRemoteMeta(liveMeta);
+      expect(await db.booksDao.getById(bookId), isNotNull);
+
+      // 墓碑随后回来 → books 行必须被收走（否则书库里留下复活残影）。
+      final remoteTombstone = BookMeta(
+        schemaVersion: kCurrentSchemaVersion,
+        bookId: bookId,
+        rev: 51,
+        deviceId: 'other-device',
+        deviceName: '其他设备',
+        createdAt: DateTime.fromMillisecondsSinceEpoch(1000),
+        updatedAt: DateTime.fromMillisecondsSinceEpoch(9999),
+        deleted: true,
+        deletedAt: DateTime.fromMillisecondsSinceEpoch(9999),
+        book: BookInfo(
+          title: '被改活的书',
+          author: '',
+          format: 'txt',
+          fileName: '本地书.txt',
+          contentHash: 'sha256:live',
+          sizeBytes: 1,
+          tocFingerprint: 'tfp:0000000000000000',
+        ),
+        reading: ReadingStats(
+          totalSeconds: 0,
+          lastReadAt: DateTime.fromMillisecondsSinceEpoch(1000),
+        ),
+      );
+      await library.applyRemoteMeta(remoteTombstone);
+      expect(await db.booksDao.getById(bookId), isNull);
+      // 本地待推记账不被覆盖（pushed 仍是 false）。
+      final ledger = await db.select(db.deletedBooks).getSingle();
+      expect(ledger.pushed, isFalse);
     });
 
     test('本端未发起的删除（其它设备删的）：沿用既有语义删 books 行', () async {

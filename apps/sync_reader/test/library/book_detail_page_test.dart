@@ -474,12 +474,12 @@ void main() {
     await shutdown(tester);
   });
 
-  testWidgets('删除：确认对话框说明语义 → 软删（删正文留元数据）+ 返回书库', (tester) async {
+  testWidgets('删除：确认对话框说明语义 → 移出书库（删正文删行）+ 返回书库', (tester) async {
     await bootstrap(tester);
     await seedBook(tester);
     final localPath = p.join(store!.booksDir.path, bookId, 'source.txt');
     final coverPath = store!.resolveCoverPath(bookId);
-    // 补一个封面文件：新删除语义要求正文与封面一并删除。
+    // 补一个封面文件：删除语义要求正文与封面一并删除。
     await tester.runAsync(() async {
       await File(coverPath).writeAsBytes(tinyPng, flush: true);
       await db!.booksDao.updateCoverPath(bookId, coverPath);
@@ -490,26 +490,22 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('删除《三体》？'), findsOneWidget);
     expect(find.textContaining('立即删除'), findsOneWidget); // 语义说明
-    expect(find.textContaining('未下载'), findsOneWidget);
+    expect(find.textContaining('从书库移除'), findsOneWidget);
 
     await tester.tap(find.text('删除'));
     await settleReal(tester);
 
     // 已返回书库路由。
     expect(find.text('书库-stub'), findsOneWidget);
-    // 新删除语义（docs/10 §4.7b）：books 行保留（localPath 置 NULL）+ 墓碑
-    // 入账 + 正文/封面文件真删盘（不进游离区）。
+    // 删除语义（docs/10 §4.7b）：books 行删除（书从书库消失）+ 墓碑入账
+    // + 正文/封面文件真删盘（不进游离区）。
     await tester.runAsync(() async {
-      final book = await db!.booksDao.getById(bookId);
-      expect(book, isNotNull);
-      expect(book!.localPath, isNull);
-      expect(book.coverPath, isNull);
-      expect(book.title, '三体');
+      expect(await db!.booksDao.getById(bookId), isNull);
       final tombstone = await db!.select(db!.deletedBooks).getSingle();
       expect(tombstone.bookId, bookId);
       expect(tombstone.contentHash, contentHash);
-      // 进度行保留（同文件重新导入后可恢复位置）。
-      expect(await db!.progressDao.getByBookId(bookId), isNotNull);
+      // 进度随书级联清除（books 行删 → ON DELETE CASCADE 触发）。
+      expect(await db!.progressDao.getByBookId(bookId), isNull);
       // 正文与封面文件都不在磁盘上，且没有进游离区。
       expect(File(localPath).existsSync(), isFalse);
       expect(File(coverPath).existsSync(), isFalse);

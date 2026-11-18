@@ -153,7 +153,7 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
 
   // ── 打开书籍（Q15：点封面直接开书）────────────────────────────────
 
-  /// 有正文 → 进阅读器；未下载（仅云端/已删除）→ 先下载，成功后进阅读器。
+  /// 有正文 → 进阅读器；未下载（仅云端占位书）→ 先下载，成功后进阅读器。
   void _openBook(Book book) {
     if ((book.localPath ?? '').isNotEmpty) {
       context.push('/reader/${book.bookId}');
@@ -324,7 +324,7 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
     await _setBookGroup(context, ref, book.bookId, groupId, name);
   }
 
-  /// 删除确认（文案与详情页一致，docs/10 §4.7b）→ softDelete + 推墓碑。
+  /// 删除确认（文案与详情页一致，docs/10 §4.7b）→ 移出书库 + 推墓碑。
   Future<void> _confirmDelete(Book book) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -346,11 +346,11 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
     if (confirmed != true || !mounted) return;
 
     final store = await ref.read(bookFileStoreProvider.future);
-    // 与详情页同一路径（docs/10 §4.7b）：删正文/封面文件 + 保留 books 行
-    // （落「未下载」区）+ 写墓碑；云端 tombstone 后台推送。
+    // 与详情页同一路径（docs/10 §4.7b）：删正文/封面文件 + 移出书库
+    // （books 行删除）+ 写墓碑；云端 tombstone 后台推送。
     await ref
         .read(booksDaoProvider)
-        .softDelete(book.bookId, removeFiles: store.deleteBookFiles);
+        .deleteBook(book.bookId, removeFiles: store.deleteBookFiles);
     unawaited(ref.read(syncFacadeProvider).deleteBook(book.bookId));
   }
 

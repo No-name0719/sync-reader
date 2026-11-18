@@ -1,7 +1,9 @@
-/// 书籍 DAO：书库查询 / 去重 / 软删除（FR-101/102/105/106/408）。
+/// 书籍 DAO：书库查询 / 去重 / 删除（FR-101/102/105/106/408）。
 ///
-/// 删除语义（docs/10 §4.7b）：本地删除 = **删正文文件 + 保留元数据 + 写墓碑**
-/// ——`books` 行保留、`local_path` 置 NULL，该书自然落进书库的「未下载」区。
+/// 删除语义（docs/10 §4.7b，2026-11-18 变更）：本地删除 = **移出书库 +
+/// 删正文文件 + 写墓碑**——`books` 行删除（进度级联清除），该书立刻从书库
+/// 消失，与"其它设备删除后本机收到墓碑"的行为一致（同一语义两种表现是
+/// 旧实现的缺陷）。墓碑账本仍在，驱动云端 tombstone 推送与 GC。
 library;
 
 import 'package:drift/drift.dart';
@@ -60,8 +62,8 @@ class BooksDao extends DatabaseAccessor<AppDatabase> with _$BooksDaoMixin {
     }
     // 未下载过滤（FR-402 占位书：云端有元数据、本地无正文；与分组过滤
     // 的互斥由调用方保证，本层独立叠加）。
-    // 注：本地已删除的书 `local_path` 同为 NULL（docs/10 §4.7b 新删除语义），
-    // 因此天然落进这一桶——书库视图不再区分「已删除」与「未下载」（Q21）。
+    // 注：本地已删除的书**不在此列表**——删除即移出书库（`books` 行删除，
+    // docs/10 §4.7b），故「未下载」桶只剩真正的云端占位书。
     if (undownloadedOnly) {
       statement.where((b) => b.localPath.isNull());
     }
@@ -200,21 +202,21 @@ class BooksDao extends DatabaseAccessor<AppDatabase> with _$BooksDaoMixin {
     )..where((b) => b.bookId.equals(bookId))).write(companion);
   }
 
-  /// 软删除（FR-408 / docs/10 §4.7b 新删除语义）：
-  /// **删正文文件 + 保留元数据 + 写墓碑**。
+  /// 删除本书（FR-408 / docs/10 §4.7b 删除语义）：
+  /// **移出书库 + 删正文文件 + 写墓碑**。
   ///
-  /// - `books` 行**保留**，`local_path` / `cover_path` 置 NULL → 该书自然落进
-  ///   书库的「未下载」区（占位书视图），无需新增筛选维度（books 表不允许
-  ///   加列，docs/05 §5 DDL 是同步语义的一部分）；
-  /// - 写 `deleted_books` 墓碑账本（供同步引擎排除与 tombstone 推送）；
-  /// - **进度行保留**（books 行不删 → `progress` 的 `ON DELETE CASCADE` 不
-  ///   触发）：同文件重新导入后可恢复阅读位置；
+  /// - `books` 行**删除** → 该书立刻从书库消失（进度行随之级联清除：
+  ///   `progress` / `reading_days` 的 `ON DELETE CASCADE`）；
+  /// - 写 `deleted_books` 墓碑账本（供同步引擎推云端 tombstone 与 90 天
+  ///   GC）；**云端正文文件不删**（docs/04 §7.1 规则 4：云端正文永不删除，
+  ///   残留由"云端孤儿清理"工具回收）；
+  /// - 清除「仅本地」标记（书已不存在，标记留着会让"未上传的书"计数虚高）；
   /// - 正文/封面文件由调用方删除：DAO 不持有 file store，通过 [removeFiles]
   ///   回调串起来（传 `store.deleteBookFiles` 即可）。回调在事务提交后执行，
   ///   失败不回滚 DB 变更（文件删除是幂等的，可重试）。
   ///
   /// 幂等：重复删除同一本书不报错（墓碑按首次删除时间保留）。
-  Future<void> softDelete(
+  Future<void> deleteBook(
     String bookId, {
     DateTime? deletedAt,
     Future<void> Function(String bookId)? removeFiles,
@@ -236,10 +238,11 @@ class BooksDao extends DatabaseAccessor<AppDatabase> with _$BooksDaoMixin {
           ),
         );
       }
-      // 保留 books 行，只置空文件指征列 → 落进「未下载」区。
-      await (update(books)..where((b) => b.bookId.equals(bookId))).write(
-        const BooksCompanion(localPath: Value(null), coverPath: Value(null)),
-      );
+      // 移出书库：删 books 行（progress / reading_days 级联清除）。
+      await (delete(books)..where((b) => b.bookId.equals(bookId))).go();
+      // 「仅本地」标记随书一起失效（否则"未上传的书"计数虚高）。
+      final localOnly = attachedDatabase.localOnlyBooks;
+      await (delete(localOnly)..where((l) => l.bookId.equals(bookId))).go();
       return true;
     });
     if (removed && removeFiles != null) {
@@ -250,8 +253,8 @@ class BooksDao extends DatabaseAccessor<AppDatabase> with _$BooksDaoMixin {
 
   /// 该书是否有本地墓碑（本地删除或已确认的远端 tombstone）。
   ///
-  /// UI 的「已删除」判定入口（docs/10 §4.7b：书库视图一律显示「未下载」，
-  /// 差异只留在数据层）。未删除的书返回 false。
+  /// 「已删除」判定入口（docs/10 §4.7b）：删除即移出书库，本表有墓碑即表示
+  /// 该书已被删除（或已确认的远端 tombstone）。未删除的书返回 false。
   Future<bool> hasTombstone(String bookId) async {
     final query = selectOnly(deletedBooks)
       ..addColumns([deletedBooks.bookId])

@@ -1,4 +1,4 @@
-/// 应用数据库（docs/05 §5）：schemaVersion 4，WAL 模式。
+/// 应用数据库（docs/05 §5）：schemaVersion 5，WAL 模式。
 ///
 /// - 生产：drift_flutter 的 [driftDatabase]（懒加载 + 后台 isolate）；
 /// - 测试：[AppDatabase.forTesting] 注入内存 [NativeDatabase]。
@@ -53,7 +53,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.executor);
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -88,6 +88,27 @@ class AppDatabase extends _$AppDatabase {
           await m.addColumn(bookGroups, bookGroups.deleted);
           await m.addColumn(bookGroups, bookGroups.deletedAt);
         }
+      }
+      // v4 → v5（2026-11-18，v1.4.1 删除语义变更：删除即移出书库）：
+      // **纯数据迁移**（DDL 不变）。清理旧版「删正文、留元数据」语义留下的
+      // 残影行：`deleted_books` 有墓碑的 `books` 行（旧版软删除保留行、只置空
+      // local_path → 落进书库「未下载」区**永久显示**，云端和本地都删掉的
+      // 书也一样）。新语义下「有墓碑 ⇒ 不在书库里」，故删掉这些行。
+      //
+      // 注：迁移在事务内执行，`PRAGMA foreign_keys`（在 beforeOpen 里开）
+      // 此时尚未生效 → 外键级联不会自动触发，子表行**显式**先删。
+      if (from < 5) {
+        const ghostIds = 'SELECT book_id FROM deleted_books';
+        await customStatement(
+          'DELETE FROM progress WHERE book_id IN ($ghostIds)',
+        );
+        await customStatement(
+          'DELETE FROM reading_days WHERE book_id IN ($ghostIds)',
+        );
+        await customStatement(
+          'DELETE FROM local_only_books WHERE book_id IN ($ghostIds)',
+        );
+        await customStatement('DELETE FROM books WHERE book_id IN ($ghostIds)');
       }
     },
     beforeOpen: (details) async {

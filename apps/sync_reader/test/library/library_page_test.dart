@@ -587,7 +587,7 @@ void main() {
     await shutdown(tester);
   });
 
-  testWidgets('长按菜单「删除本书」→ 确认后 softDelete（正文删盘 + 留行 + 墓碑）', (tester) async {
+  testWidgets('长按菜单「删除本书」→ 确认后移出书库（正文删盘 + 删行 + 墓碑）', (tester) async {
     await bootstrapSafely(tester);
     final store = BookFileStore(tmp!);
     final localPath = (await tester.runAsync(() async {
@@ -612,7 +612,7 @@ void main() {
     expect(find.text('删除《待删书》？'), findsOneWidget);
     await tester.tap(find.text('删除'));
     await tester.pump();
-    // softDelete 的删盘是真实 IO：进 runAsync 窗口等文件消失
+    // 删除的删盘是真实 IO：进 runAsync 窗口等文件消失
     // （offline_env settleReal 同款手法），再继续断言。
     await tester.runAsync(() async {
       for (var i = 0; i < 20 && File(localPath).existsSync(); i++) {
@@ -621,12 +621,11 @@ void main() {
     });
     await tester.pumpAndSettle();
 
-    // 书目保留（落「未下载」区）+ 墓碑 + 正文删盘。
-    expect(find.text('待删书'), findsWidgets);
+    // 书目从书库消失（回归：删除后不该再以「未下载」残影留在书库里）
+    // + 墓碑入账 + 正文删盘。
+    expect(find.text('待删书'), findsNothing);
     await tester.runAsync(() async {
-      final book = await db!.booksDao.getById('01A');
-      expect(book, isNotNull);
-      expect(book!.localPath, isNull);
+      expect(await db!.booksDao.getById('01A'), isNull);
       final ledger = await db!.select(db!.deletedBooks).get();
       expect(ledger, hasLength(1));
       expect(File(localPath).existsSync(), isFalse);

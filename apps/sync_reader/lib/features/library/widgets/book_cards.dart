@@ -34,7 +34,7 @@ enum CoverBadgeKind {
   /// 仅本地（brand-soft 底 brand-text 字）。
   localOnly,
 
-  /// 未下载（含占位书与本地已删除的书，Q21；墨色胶囊）。
+  /// 未下载（仅云端占位书；墨色胶囊）。
   notDownloaded,
 
   /// 阅读百分比（brand 胶囊白字）。

@@ -88,17 +88,16 @@ void main() {
       expect(await db.readingDaysDao.totalSeconds('不存在'), 0);
     });
 
-    test('本地删除后按天记录保留（新删除语义：books 行不删，不触发级联）', () async {
+    test('本地删除后按天记录级联清除（删除即移出书库）', () async {
       await seedBook('01A');
       await db.readingDaysDao.addSeconds('01A', '2026-10-27', 30);
       await db.readingDaysDao.addSeconds('01A', '2026-10-28', 12);
-      // 新删除语义（docs/10 §4.7b）：books 行保留（只置空 local_path），
-      // 因此 `ON DELETE CASCADE` 不触发——按天阅读统计随书保留，重新下载
-      // 同一文件后统计不丢。
-      await db.booksDao.softDelete('01A');
-      expect(await db.booksDao.getById('01A'), isNotNull);
-      expect(await db.readingDaysDao.daysByBook('01A'), hasLength(2));
-      expect(await db.readingDaysDao.totalSeconds('01A'), 42);
+      // 删除语义（docs/10 §4.7b）：books 行删除 → `ON DELETE CASCADE`
+      // 触发，按天阅读统计随书一起清除（书已不在书库里，统计无意义）。
+      await db.booksDao.deleteBook('01A');
+      expect(await db.booksDao.getById('01A'), isNull);
+      expect(await db.readingDaysDao.daysByBook('01A'), isEmpty);
+      expect(await db.readingDaysDao.totalSeconds('01A'), 0);
     });
   });
 }

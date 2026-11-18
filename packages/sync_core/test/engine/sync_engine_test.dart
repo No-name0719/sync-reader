@@ -624,7 +624,7 @@ void main() {
         reason: '离线失败已入账本',
       );
 
-      // 模拟 app softDelete：本地行移除（正文保留不在本测试范围）。
+      // 模拟 app 侧删除：本地行移除（正文保留不在本测试范围）。
       await library.removeLocalBook(bookIdOf(3));
 
       // 恢复网络后全量同步：补推 tombstone，且已删书不得被拉回（复活守卫）。

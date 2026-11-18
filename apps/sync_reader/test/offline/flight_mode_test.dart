@@ -241,16 +241,13 @@ void main() {
     await tester.tap(find.text('删除'));
     await settleReal(tester);
 
-    // 已返回书库。新删除语义（docs/10 §4.7b）：书目**保留**在书库（落进
-    // 「未下载」区），只有正文文件被删盘。（标题在卡片封面与文字行各出现一次。）
-    expect(find.text('离线待删书'), findsWidgets);
+    // 已返回书库。删除语义（docs/10 §4.7b）：书**移出书库**，正文文件删盘。
+    expect(find.text('离线待删书'), findsNothing);
     expectNoBlockingErrorUi(tester, reason: '（删除完成后——tombstone 推送失败必须静默）');
 
-    // 本地删除真实生效：书目行保留（localPath 置 NULL）+ 墓碑账本 + 正文删盘。
+    // 本地删除真实生效：books 行删除（书从书库消失）+ 墓碑账本 + 正文删盘。
     await tester.runAsync(() async {
-      final book = await env.db.booksDao.getById(bookId);
-      expect(book, isNotNull);
-      expect(book!.localPath, isNull);
+      expect(await env.db.booksDao.getById(bookId), isNull);
       final ledger = await env.db.select(env.db.deletedBooks).get();
       expect(ledger, hasLength(1));
       expect(ledger.single.bookId, bookId);

@@ -33,9 +33,10 @@ enum LibraryStatusBucket {
   /// 云端没有 + 本地有正文（含导入时选「不上传」与「从云端移除」两来源）。
   localOnly,
 
-  /// 云端有 + 本地没有正文。本地已删除的书（墓碑 + 正文已删，
-  /// `localPath` 同为 NULL）落这桶，与普通占位书完全一样（Q21：
-  /// 书库视图不区分「已删除」与「未下载」）。
+  /// 云端有 + 本地没有正文（真正的云端占位书）。
+  ///
+  /// 本地已删除的书**不在书库里**（删除即移出书库，docs/10 §4.7b），
+  /// 故这一桶不再混入「已删除」的书。
   cloudOnly,
 }
 
@@ -43,7 +44,7 @@ enum LibraryStatusBucket {
 ///
 /// 1. `localOnlyIds` 命中，或（本地有正文 且 无 baseRev），或（在
 ///    `cloudMissingMarks` 且本地有正文）→ 仅本地；
-/// 2. `localPath` 为 NULL → 仅云端（含占位书与本地已删除的书，Q21）；
+/// 2. `localPath` 为 NULL → 仅云端（真正的云端占位书）；
 /// 3. 其余（本地有正文 且 有 baseRev 且不在 cloudMissing）→ 已同步。
 ///
 /// [cloudBaseIds] = `sync_state` 有行的 bookId（baseRev 存在）；
