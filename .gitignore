@@ -48,3 +48,4 @@ apps/sync_reader/android/key/
 
 # 本地文档
 /docs/local/
+/.zcode
