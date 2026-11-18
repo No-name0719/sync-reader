@@ -25,6 +25,8 @@ library;
 
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 
 // ===========================================================================
@@ -117,17 +119,46 @@ abstract final class AppLayout {
 
 /// 字体栈常量（不打包字体文件，走系统字体；Q4）。
 abstract final class AppFonts {
-  /// UI 字体族：Material 默认族（Android 原生即 Roboto）。
+  /// UI 字体族（拉丁部分）：**按运行平台解析**（docs/10 §3.2）。
+  ///
+  /// 此前硬写 'Roboto'（Android 原生族），在 Windows 上该字体并不存在 →
+  /// 引擎回退到平台默认字体（Segoe UI），中文再落到 DirectWrite 的系统回退链，
+  /// 得到的是一支与拉丁不同源、且不认 `w600` 字重的怪字体：中英混排像两种字体，
+  /// 标题字重也被抹平（见 docs/10 §9.20）。
+  ///
+  /// 现在按平台取「该平台真正装着的拉丁字体」，CJK 由 [uiFallback] 显式接上，
+  /// 不再依赖引擎的系统回退（那支脸各机器不同）。
   ///
   /// 字阶**必须**显式带上字体族：Material 的 `englishLike` typography 本身就
   /// 是 'Roboto'，而 `textTheme` 槽位是从 typography 合并而来（带字体族）；
   /// 直接使用裸字阶样式（如 `SwitchListTile` 标题、`AppBarTheme.titleTextStyle`）
-  /// 就会丢掉它，导致同一页面上部分文字落到别的字体（Windows 上落到 Segoe UI、
-  /// 测试环境落到默认字体），与全站不一致。
+  /// 就会丢掉它，导致同一页面上部分文字落到别的字体，与全站不一致。
+  static String get ui => switch (defaultTargetPlatform) {
+    TargetPlatform.windows => 'Segoe UI',
+    TargetPlatform.macOS || TargetPlatform.iOS => 'Helvetica Neue',
+    TargetPlatform.android => 'Roboto',
+    _ => 'Noto Sans',
+  };
+
+  /// UI 字体的 CJK 回退栈：主字体没有的汉字按此顺序取。
   ///
-  /// Windows 不装 Roboto 时，Flutter 会回退到平台默认字体（Segoe UI），
-  /// 中文再由系统回退补齐——与不设字体族时的观感一致，故可安全显式声明。
-  static const String ui = 'Roboto';
+  /// 各平台取**该平台通用的中文字体**（Windows 微软雅黑、macOS/iOS 苹方、
+  /// Android/Linux 思源黑体），保证「拉丁 + 汉字」是同一套观感，且字重可用
+  /// （雅黑/苹方/思源都有真正的 Bold 面，不会被合成）。
+  static List<String> get uiFallback => switch (defaultTargetPlatform) {
+    TargetPlatform.windows => const <String>[
+      'Microsoft YaHei UI',
+      'Microsoft YaHei',
+      'Noto Sans SC',
+    ],
+    TargetPlatform.macOS ||
+    TargetPlatform.iOS => const <String>['PingFang SC', 'Heiti SC'],
+    TargetPlatform.android => const <String>[
+      'Noto Sans SC',
+      'Noto Sans CJK SC',
+    ],
+    _ => const <String>['Noto Sans CJK SC', 'WenQuanYi Zen Hei', 'DejaVu Sans'],
+  };
 
   /// 阅读正文衬线栈首选：思源宋体 / Noto Serif SC。
   static const String serif = 'Noto Serif SC';
@@ -792,6 +823,7 @@ class AppDesignTokens extends ThemeExtension<AppDesignTokens> {
 
   TextStyle _style(AppTextStyleSpec spec, Color color) => TextStyle(
     fontFamily: AppFonts.ui,
+    fontFamilyFallback: AppFonts.uiFallback,
     fontSize: spec.fontSize,
     height: spec.heightRatio,
     fontWeight: spec.weight,
@@ -1032,6 +1064,11 @@ abstract final class AppTheme {
       useMaterial3: true,
       brightness: t.brightness,
       colorScheme: scheme,
+      // 字体族也落到 ThemeData 上：Material 自己拼的字（输入框、菜单、
+      // 悬浮提示等）从 typography 继承字体族——只给 textTheme 槽位设族，
+      // 这些控件仍会落回 'Roboto'（Windows 上不存在）→ 回退链又乱了。
+      fontFamily: AppFonts.ui,
+      fontFamilyFallback: AppFonts.uiFallback,
       scaffoldBackgroundColor: t.bg,
       canvasColor: t.bg,
       textTheme: _textTheme(t),
