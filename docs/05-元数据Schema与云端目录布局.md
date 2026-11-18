@@ -308,6 +308,8 @@ CREATE TABLE sync_state (
 );
 
 -- tombstone 本地账本（删除同步与 GC）
+-- 注：删除即移出书库（`books` 行删除，docs/10 §4.7b / 04 §7.1），
+-- 本表是「已删除」的**唯一**留痕：驱动云端 tombstone 推送与 90 天 GC。
 CREATE TABLE deleted_books (
   book_id     TEXT PRIMARY KEY,
   deleted_at  INTEGER NOT NULL,
@@ -418,7 +420,8 @@ CREATE TABLE app_settings (
 | 1 | 初版 | — |
 | 2（2026-10-28，M4） | 本地库新增 `reading_days` / `book_groups` 表与 `books.group_id` 列 | drift `schemaVersion` 1→2，**只增不删**；三者均为本地列/表，不入云端 meta JSON，v1 不参与同步 |
 | 3（2026-10-28，v1.1 重设计批 1） | 本地库新增 `local_only_books` / `app_settings` 表 | drift `schemaVersion` 2→3，**只增不删**（两张新表均为纯本地表，不入云端 meta JSON，不参与同步）；`local_only_books` 承载「仅本地 / 未上传」状态（docs/10 §4.7c），`app_settings` 承载应用级本地设置（如 accent 持久化） |
-| 4（当前，2026-11-17，v1.4 分组云端同步） | 本地库新增 `group_sync_state` 表；`book_groups` 增 `deleted` / `deleted_at` 两列 | drift `schemaVersion` 3→4，**只增不删**（新增一张表 + 两列；`books` 表未动）；分组本体从"纯本地"升级为"参与云端同步"（FR-107，docs/05 §2.1）：分组对象以 `groups/{groupId}.json` 上云，书籍 meta 增**可选**字段 `groupId`（§2.2）。**云端 meta 的 `schemaVersion` 保持 1 不变**——新增的是可选字段，不改变既有字段的语义与类型，属"只增不删"的兼容演进（旧读方忽略未知键即可） |
+| 4（2026-11-17，v1.4 分组云端同步） | 本地库新增 `group_sync_state` 表；`book_groups` 增 `deleted` / `deleted_at` 两列 | drift `schemaVersion` 3→4，**只增不删**（新增一张表 + 两列；`books` 表未动）；分组本体从"纯本地"升级为"参与云端同步"（FR-107，docs/05 §2.1）：分组对象以 `groups/{groupId}.json` 上云，书籍 meta 增**可选**字段 `groupId`（§2.2）。**云端 meta 的 `schemaVersion` 保持 1 不变**——新增的是可选字段，不改变既有字段的语义与类型，属"只增不删"的兼容演进（旧读方忽略未知键即可） |
+| 5（当前，2026-11-18，v1.4.1 删除语义变更） | **纯数据迁移，DDL 不变**：清理旧版「删正文、留元数据」语义留下的残影行 | drift `schemaVersion` 4→5，**DDL 完全不变**（只增不删不变式不受影响）；迁移删掉 `deleted_books` 有墓碑的 `books` 行（旧版软删除保留行、只置空 `local_path` → 落进书库「未下载」区永久显示）+ 其 `progress` / `reading_days` / `local_only_books` 子行（迁移在事务内跑、`PRAGMA foreign_keys` 尚未生效，级联不会自动触发 → 显式先删）。**墓碑账本保留**——它才是"已删除"的留痕（驱动云端 tombstone 推送与 90 天 GC）。删除语义见 docs/10 §4.7b / 04 §7.1 |
 | 次版本演进（云端 meta 的 1 → 2） | **只允许**：新增可选字段、新增 `extra` 键、locator 新增 `type` | 旧客户端读到新版本：按已知字段使用 + `percent` 兜底，**不得报错**；写回时保留原 `schemaVersion` 不变，避免降级破坏。**实例**：v1.4 的 `groupId`（§2.2）即属此类——只加可选字段，`schemaVersion` 仍为 1 |
 | 分组 meta（`groups/*.json`）的演进 | 与书籍 meta 同规则（只增不删、读方容忍未知字段） | 分组是独立文件类型：老客户端根本不读 `groups/` 目录 → 分组同步对旧客户端零风险；旧客户端**写回**的书籍 meta 不含 `groupId` → 该书的分组归属降级为"未分组"（已知取舍，docs/07 登记） |
 | 破坏性演进（大版本） | 字段改名/类型变更/语义变更 | 客户端内置迁移器：读到旧版本 → 迁移到当前版本再写回并升 `schemaVersion`；迁移矩阵与用例纳入 `sync_core` 单元测试 |
