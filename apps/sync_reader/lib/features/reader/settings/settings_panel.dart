@@ -15,9 +15,9 @@
 /// - 右侧数值 12px/前景色/等宽数字（`.rd-val`）；
 /// - 说明小字 11px/行高 1.6/muted（`.rd-hint-text`）；对比度读数 11px
 ///   （`.rd-ty-note`）；
-/// - 分段控件自绘（`_SegmentRow`，仿 `.rd-seg`）：surfaceContainerHighest
-///   底 + 圆角 8 + 内边距 3 + 子项间距 2；子项 12px muted，选中项白底
-///   + 600 字重 + 轻阴影，**不带 ✓ 勾选图标**；
+/// - 分段控件自绘（`AppSegmentRow`，仿 `.rd-seg`；见 `shared/segment_row.dart`）：
+///   surfaceContainerHighest 底 + 圆角 8 + 内边距 3 + 子项间距 2；子项 12px
+///   muted，选中项白底 + 600 字重 + 轻阴影，**不带 ✓ 勾选图标**；
 /// - 滑块统一细轨道（3px）+ 12px 圆点手柄（accent 色不变）。
 ///
 /// 所有变更即时 `repository.save` 持久化（排版设置仅本地保存、不同步，
@@ -35,6 +35,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/design_tokens.dart';
+import '../../../shared/segment_row.dart';
 import '../contract/reader_settings.dart';
 import '../reader_indent.dart';
 
@@ -370,7 +371,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
       children: [
         Text('段距', style: _labelStyle(context)),
         const SizedBox(height: AppSpacing.s2),
-        _SegmentRow<ReaderParagraphGap>(
+        AppSegmentRow<ReaderParagraphGap>(
           key: const ValueKey('settings-paragraph-gap'),
           options: const [
             (ReaderParagraphGap.tight, '紧'),
@@ -395,7 +396,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
         const SizedBox(height: AppSpacing.s5),
         Text('首行缩进', style: _labelStyle(context)),
         const SizedBox(height: AppSpacing.s2),
-        _SegmentRow<bool>(
+        AppSegmentRow<bool>(
           key: const ValueKey('settings-first-line-indent'),
           options: const [(true, '缩进 2em'), (false, '不缩进')],
           selected: _settings.firstLineIndent,
@@ -568,7 +569,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
       children: [
         Text('翻页方式', style: _labelStyle(context)),
         const SizedBox(height: AppSpacing.s2),
-        _SegmentRow<ReaderPageMode>(
+        AppSegmentRow<ReaderPageMode>(
           key: const ValueKey('settings-page-mode'),
           options: const [
             (ReaderPageMode.page, '分页'),
@@ -600,7 +601,7 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
       children: [
         Text('txt 编码', style: _labelStyle(context)),
         const SizedBox(height: AppSpacing.s2),
-        _SegmentRow<ReaderTextEncoding>(
+        AppSegmentRow<ReaderTextEncoding>(
           key: const ValueKey('settings-encoding'),
           options: const [
             (ReaderTextEncoding.auto, '自动'),
@@ -627,105 +628,6 @@ class _ReaderSettingsPanelState extends ConsumerState<ReaderSettingsPanel> {
       value: _settings.volumeKeyPageTurn,
       onChanged: (value) =>
           _update(_settings.copyWith(volumeKeyPageTurn: value)),
-    );
-  }
-}
-
-/// 面板内私有分段控件（单元 2 自绘，替代 Material [SegmentedButton]）。
-///
-/// 形态对齐原型 `ui_prototype/reader.css` 的 `.rd-seg`：
-/// - 外层容器：surfaceContainerHighest 底、圆角 8、内边距 3、子项间距 2；
-/// - 子项：Expanded、垂直居中、padding 6/8、字号 12、muted 文字色；
-/// - 选中项：surface 底 + 前景色 600 字重 + 轻阴影，**不带 ✓ 勾选图标**。
-///
-/// 语义：以 [Semantics] 的 `button` + `selected` 暴露选中态（读屏可用），
-/// [InkWell] 保留点击/悬停/键盘（Enter/Space）操作能力。
-class _SegmentRow<T> extends StatelessWidget {
-  const _SegmentRow({
-    super.key,
-    required this.options,
-    required this.selected,
-    required this.onChanged,
-  });
-
-  /// 选项列表：每项为 `(值, 文案)`。
-  final List<(T, String)> options;
-
-  /// 当前选中值。
-  final T selected;
-
-  /// 选中项变更回调。
-  final ValueChanged<T> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(3),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          for (var i = 0; i < options.length; i++) ...[
-            if (i > 0) const SizedBox(width: 2),
-            Expanded(child: _buildItem(context, options[i])),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildItem(BuildContext context, (T, String) option) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final isSelected = option.$1 == selected;
-    return Semantics(
-      button: true,
-      selected: isSelected,
-      child: Container(
-        decoration: isSelected
-            ? BoxDecoration(
-                borderRadius: BorderRadius.circular(6),
-                // 选中项：白底 + 很轻的阴影（原型 `.rd-seg button.is-on`）。
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.08),
-                    blurRadius: 4,
-                    offset: const Offset(0, 1),
-                  ),
-                ],
-              )
-            : null,
-        child: Material(
-          color: isSelected ? scheme.surface : Colors.transparent,
-          borderRadius: BorderRadius.circular(6),
-          clipBehavior: Clip.antiAlias,
-          child: InkWell(
-            onTap: () => onChanged(option.$1),
-            borderRadius: BorderRadius.circular(6),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              child: Text(
-                option.$2,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: theme.textTheme.bodySmall!.copyWith(
-                  fontSize: 12,
-                  height: 1.3,
-                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
-                  color: isSelected
-                      ? scheme.onSurface
-                      : scheme.onSurfaceVariant,
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
     );
   }
 }
