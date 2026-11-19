@@ -242,16 +242,24 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
       ),
     ];
 
-    final overlay =
-        Overlay.of(context, rootOverlay: true).context.findRenderObject()!
-            as RenderBox;
+    // 菜单的定位坐标系：**菜单路由落在 shell 子 Navigator 的 Overlay 里**
+    // （go_router 的 ShellRoute 会建子导航器，其 Overlay 只覆盖侧栏右侧的
+    // 内容区），而右键/长按给的是**全局坐标**——直接把全局坐标当
+    // [RelativeRect] 用，菜单会被整体平移一个「子导航器原点」的距离
+    // （= 侧栏宽度 232），表现为「菜单从离点击处一段距离的地方弹出」
+    // （用户实测）。这里先换算到该 Overlay 的本地坐标。
+    //
+    // 翻转边界也必须用**同一个** Overlay 的尺寸：用根 Overlay 的尺寸算
+    // 「右侧剩余空间」，菜单贴边时就会翻错方向。
+    final overlay = Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final local = overlay.globalToLocal(position);
     final action = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(
-        position.dx,
-        position.dy,
-        overlay.size.width - position.dx,
-        overlay.size.height - position.dy,
+        local.dx,
+        local.dy,
+        overlay.size.width - local.dx,
+        overlay.size.height - local.dy,
       ),
       items: items,
     );

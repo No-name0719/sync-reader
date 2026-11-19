@@ -192,6 +192,51 @@ void main() {
   }
 
 
+  /// 按**真实外壳结构**装配书库页：go_router 的 [ShellRoute] 会建一个
+  /// **子 Navigator**，其 Overlay 只覆盖侧栏右侧的内容区。
+  ///
+  /// 上面 [pumpLibrary] 用的是精简路由（无 ShellRoute）→ 只有一个 Navigator，
+  /// 菜单路由落在根 Overlay（原点 0,0）→ 右键坐标偏移在测试里**复现不出来**。
+  /// 要钉住这个缺陷，必须用带外壳的装配。
+  Future<void> pumpLibraryInShell(WidgetTester tester) async {
+    tester.view.physicalSize = const Size(1440, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          databaseProvider.overrideWithValue(db!),
+          bookFileStoreProvider.overrideWith((ref) async => BookFileStore(tmp!)),
+          secureCredentialStoreProvider.overrideWithValue(
+            InMemoryCredentialStore(),
+          ),
+          syncAdapterProvider.overrideWithValue(
+            const InMemorySyncAdapterProvider(),
+          ),
+        ],
+        child: MaterialApp.router(
+          theme: AppTheme.light(AppAccent.terracotta),
+          routerConfig: GoRouter(
+            initialLocation: '/',
+            routes: [
+              ShellRoute(
+                builder: (context, state, child) => AppShell(
+                  location: state.matchedLocation,
+                  child: child,
+                ),
+                routes: [
+                  GoRoute(path: '/', builder: (_, _) => const LibraryPage()),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
   testWidgets('空书库显示空态', (tester) async {
     await bootstrapSafely(tester);
     await pumpLibrary(tester);
@@ -513,6 +558,45 @@ void main() {
   });
 
   // ---- 上下文菜单（A20：触屏长按 / 桌面右键，按状态裁剪）----
+
+  testWidgets('右键书卡：菜单落在右键处，不偏移一个侧栏宽度', (tester) async {
+    await bootstrapSafely(tester);
+    await tester.runAsync(
+      () => db!.booksDao.upsertCompanion(
+        bookRow('01B', title: '占位书', localPath: null),
+      ),
+    );
+    await pumpLibraryInShell(tester);
+
+    // 右键**封面**（书卡上部）：菜单高约 216px，点书名（卡片底部）时菜单
+    // 放不下会被框架整体上推（那是正常的「贴边避让」，不是缺陷）。
+    final target = tester.getCenter(find.byType(CoverView).first);
+    await tester.tapAt(target, buttons: kSecondaryMouseButton);
+    await tester.pumpAndSettle();
+
+    expect(find.text('书籍信息'), findsOneWidget);
+    final menu = tester.getRect(
+      find
+          .ancestor(of: find.text('书籍信息'), matching: find.byType(Material))
+          .first,
+    );
+    // 菜单路由落在 shell **子 Navigator** 的 Overlay 里（只覆盖侧栏右侧），
+    // 而右键给的是全局坐标——旧实现直接当 RelativeRect 用，菜单被整体右移
+    // 一个侧栏宽度（232px），表现为「菜单从离点击处一段距离的地方弹出」
+    // （用户实测）。
+    expect(
+      (menu.left - target.dx).abs(),
+      lessThan(4),
+      reason: '菜单横向偏移 ${menu.left - target.dx}px（右键点 $target，菜单 $menu）',
+    );
+    expect(
+      (menu.top - target.dy).abs(),
+      lessThan(4),
+      reason: '菜单纵向偏移 ${menu.top - target.dy}px（右键点 $target，菜单 $menu）',
+    );
+
+    await shutdown(tester);
+  });
 
   testWidgets('长按未下载书：菜单有「下载正文」，无上传/设为仅本地/继续阅读', (tester) async {
     await bootstrapSafely(tester);
