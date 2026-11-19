@@ -209,6 +209,31 @@ class EpubPageStructure {
     return best >= 0 ? _safe[best] : null;
   }
 
+  /// 起点 [start] 处的**一页内容高度**（页终点 - 起点；≤ 一屏）。
+  ///
+  /// **保守兜底**（主视口与推入页共用同一口径）：
+  /// ① 页终点（下一个页起点 = 行边界/插图边界）→ 用它，页尾留白不足一行；
+  /// ② 候选未知 → 裁到区间内最后一条**安全边界**（宁可页尾多留白）；
+  /// ③ 内容到此为止（文档末尾）→ 整段露出，不切任何字；
+  /// ④ 什么都没有 → **留白**。
+  ///
+  /// **绝不退化成整屏**：整屏的切线落在任意 y 上，会把一行字拦腰切断——
+  /// 推入页（旧实现：高度冻在起翻瞬间，候选未知时直接给满一屏）因此会在
+  /// 翻页途中露出半行，收尾后又消失（用户实测「翻页时一闪一截断的行」）。
+  double contentHeightAt(double start, double viewportHeight) {
+    if (viewportHeight <= 0) return 0;
+    viewport = viewportHeight;
+    final next = peekNextPageStart(start);
+    if (next != null) return (next - start).clamp(0.0, viewportHeight);
+    final safe = largestSafeWithin(start + 0.5, start + viewportHeight);
+    if (safe != null) return (safe - start).clamp(0.0, viewportHeight);
+    final end = _contentEnd;
+    if (end != null && end > start) {
+      return (end - start).clamp(0.0, viewportHeight);
+    }
+    return 0;
+  }
+
   // —— 翻页查询 ——
 
   /// 下一页起点（严格大于 [from]）。

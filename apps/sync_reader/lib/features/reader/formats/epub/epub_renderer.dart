@@ -679,15 +679,25 @@ class EpubRenderer extends BookRenderer
     _scrollController.jumpTo(target);
   }
 
-  /// 目标页的正文高度（推入窗口的裁剪高；≤ 一屏）。
+  /// 指定起点处的**一页内容高度**（页终点 - 起点；≤ 一屏）。
   ///
-  /// 与 [pageContentHeight] 同口径：页终点 = 下一个页起点（行边界/插图
-  /// 边界），页尾不足一行处留白。候选未知时按视口高保守取值。
-  double pageHeightAt(double start, double viewportHeight) {
-    if (_disposed) return viewportHeight;
-    final next = _pages.peekNextPageStart(start);
-    if (next == null) return viewportHeight;
-    return (next - start).clamp(0.0, viewportHeight);
+  /// 与 [pageContentHeight] **同一口径、同一保守兜底**（页终点 = 下一个页
+  /// 起点 = 行边界/插图边界，页尾不足一行处留白）：
+  ///
+  /// ① 页终点候选已知 → 用它；
+  /// ② 候选未知 → 裁到视口内最后一条**安全边界**（宁可页尾多留白）；
+  /// ③ 内容到此为止（文档末尾）→ 整段露出；
+  /// ④ 什么都没有 → **留白**。
+  ///
+  /// **绝不退化成整屏**：整屏的切线落在任意 y 上，会把一行字拦腰切断——
+  /// 推入页（旧实现按固定高度开窗，候选未知时直接给满一屏）因此会在翻页
+  /// 途中露出半行，收尾后又消失（用户实测「翻页时一闪一截断的行」）。
+  double pageContentHeightAt(double start, double viewportHeight) {
+    if (_disposed || !_scrollController.hasClients) return 0;
+    // 面板重建期可能短暂挂了两个滚动视图（同一 controller）→ 不取位置。
+    if (_scrollController.positions.length != 1) return 0;
+    // 口径与兜底全在 [EpubPageStructure.contentHeightAt]（纯 Dart，可单测）。
+    return _pages.contentHeightAt(start, viewportHeight);
   }
 
   /// 目标页窗口的块区间（翻页动画的**推入页**复制渲染用）。
@@ -1045,24 +1055,7 @@ class EpubRenderer extends BookRenderer
     if (_disposed || !_scrollController.hasClients) return viewportHeight;
     // 面板重建期可能短暂挂了两个滚动视图（同一 controller）→ 不取位置。
     if (_scrollController.positions.length != 1) return viewportHeight;
-    final offset = _scrollController.offset;
-    _pages.viewport = viewportHeight;
-    // ① 页终点（行边界/插图边界）：页尾留白不足一行，页界不切字。
-    final next = _pages.peekNextPageStart(offset);
-    if (next != null) return (next - offset).clamp(0.0, viewportHeight);
-    // ② 候选未知（该区域尚未测到）：保守——裁到视口内最后一条安全边界。
-    final safe = _pages.largestSafeWithin(
-      offset + 0.5,
-      offset + viewportHeight,
-    );
-    if (safe != null) return (safe - offset).clamp(0.0, viewportHeight);
-    // ③ 内容到此为止（文档末尾）：整段露出，不切任何字。
-    final end = _pages.contentEnd;
-    if (end != null && end > offset) {
-      return (end - offset).clamp(0.0, viewportHeight);
-    }
-    // ④ 连安全边界都没有：留白。宁可空白，也不露出被切断的半行/半图。
-    return 0;
+    return pageContentHeightAt(_scrollController.offset, viewportHeight);
   }
 
   /// 按全书比例跳转（[ReaderPercentJump] 契约；进度滑块用）：
@@ -1710,9 +1703,6 @@ class _EpubContentPaneState extends State<_EpubContentPane>
   /// 推入页的页起点（文档坐标）；null = 当前没有推入页。
   double? _incomingStart;
 
-  /// 推入页的正文高度（窗口裁剪高；≤ 一屏）。
-  double _incomingHeight = 0;
-
   /// 动画起止值（缓动施加在 [_onTurnTick]）。
   double _animFrom = 0;
   double _animTo = 0;
@@ -1797,7 +1787,6 @@ class _EpubContentPaneState extends State<_EpubContentPane>
     setState(() {
       _s = 0;
       _incomingStart = null;
-      _incomingHeight = 0;
       _animTo = 0;
     });
   }
@@ -1821,9 +1810,7 @@ class _EpubContentPaneState extends State<_EpubContentPane>
   /// 起翻：准备推入页窗口 → 播放推移动画。
   void _startTurn(int delta, double target) {
     if (!mounted) return;
-    final r = widget.renderer;
     _incomingStart = target;
-    _incomingHeight = r.pageHeightAt(target, _viewportHeight);
     _animFrom = 0;
     _animTo = delta > 0 ? 1 : -1;
     _turning = true;
@@ -1844,7 +1831,6 @@ class _EpubContentPaneState extends State<_EpubContentPane>
     setState(() {
       _s = 0;
       _incomingStart = null;
-      _incomingHeight = 0;
     });
   }
 
@@ -1902,7 +1888,6 @@ class _EpubContentPaneState extends State<_EpubContentPane>
     final target = widget.renderer.pageTurnTargetFor(delta);
     if (target == null) return;
     _incomingStart = target;
-    _incomingHeight = widget.renderer.pageHeightAt(target, _viewportHeight);
   }
 
   /// 推入页窗口（目标页的**复制渲染**）。
@@ -1911,21 +1896,30 @@ class _EpubContentPaneState extends State<_EpubContentPane>
   /// 与目标页**同时可见**（横向推移的交接），只能把目标页覆盖的块复制一
   /// 份渲染。复制件用独立 key（主副本的 GlobalKey 仍只归测量用），因此
   /// 行盒测量、页停候选、插图独占页等既有成果全部不受影响。
+  ///
+  /// 窗口高度 = **一整屏**，页界由 [_EpubIncomingViewport] 在**绘制阶段**
+  /// 现算（与主视口同一口径、同一保守兜底）——见该类注释。
   Widget _buildIncomingWindow(double horizontal) {
     final r = widget.renderer;
     final start = _incomingStart;
     if (start == null) return const SizedBox.shrink();
-    final range = r.pageWindowBlocks(start, start + _incomingHeight);
+    // 目标页覆盖的块区间（按保守口径的页高取；绘制阶段还会现算一次裁剪线）。
+    final pageHeight = r.pageContentHeightAt(start, _viewportHeight);
+    if (pageHeight <= 0) return const SizedBox.shrink();
+    final range = r.pageWindowBlocks(start, start + pageHeight);
     if (range == null) return const SizedBox.shrink();
     final (first, last, firstTop) = range;
     return Listener(
       // 推入页盖在正文之上：滚轮仍要被吞掉（分页模式滚轮既不翻页也不滚动）。
       onPointerSignal: _swallowWheel,
       behavior: HitTestBehavior.opaque,
-      child: SizedBox(
-        height: _incomingHeight,
-        width: double.infinity,
-        child: ClipRect(
+      child: _EpubIncomingViewport(
+        renderer: r,
+        start: start,
+        background: r.themeColors.background,
+        child: SizedBox(
+          height: _viewportHeight,
+          width: double.infinity,
           child: Padding(
             padding: EdgeInsets.symmetric(horizontal: horizontal),
             child: Stack(
@@ -1985,10 +1979,16 @@ class _EpubContentPaneState extends State<_EpubContentPane>
           physics: isPage
               ? EpubPageScrollPhysics(renderer: r)
               : const ReaderScrollPhysics(),
-          // page 模式要多预建一屏：下一行边界页停落在「当前落点 + 一屏」
-          // 附近，落在惰性窗口之外就量不到。
+          // page 模式要多**预建两屏**（用户诉求「提前渲染前后 2-3 页」）：
+          // ① 下一行边界页停落在「当前落点 + 一屏」附近，落在惰性窗口之外就
+          //    量不到；② 翻页时**推入页**要复制渲染目标页的块——目标页落在
+          //    「当前落点 + 一屏 ~ 两屏」之间，只预建一屏时它恰好卡在惰性
+          //    窗口的边界上，末尾几行常常还没构建 → 推入页要么空白、要么按
+          //    满一屏裁（露出被拦腰截断的半行）。
+          // 预建两屏后，目标页的块与行落点**总是**已就绪：推入页有内容，
+          // 页界候选也已知（页尾留白而不是切字）。
           scrollCacheExtent: isPage
-              ? ScrollCacheExtent.pixels(constraints.maxHeight)
+              ? ScrollCacheExtent.pixels(constraints.maxHeight * 2)
               : null,
           padding: EdgeInsets.symmetric(
             horizontal: horizontal,
@@ -2179,6 +2179,107 @@ class _RenderEpubPageViewport extends RenderProxyBox {
   @override
   bool hitTest(BoxHitTestResult result, {required Offset position}) =>
       super.hitTest(result, position: position);
+}
+
+/// 推入页视口：在**绘制阶段**现算页界，按页终点裁掉页尾的半行/半图。
+///
+/// 与主视口 [_EpubPageViewport] 同口径、同兜底（页终点 → 安全边界 → 内容
+/// 末尾 → 留白），区别只在于「起点」是**推入页的页起点**而非当前滚动位置。
+///
+/// 旧实现是「固定高度的窗口 + ClipRect」：高度在起翻瞬间算一次就**冻住**，
+/// 且候选未知时直接给满**一屏** → ① 切线落在任意 y 上，页尾露出被拦腰截断
+/// 的一行（用户实测「左右翻页渲染时还是会有 1 瞬间被截断的行出现」）；② 高度
+/// 与最终落点的页界不一致，收尾时页面会跳一下。
+///
+/// 这里把裁剪高度改成**每帧现算**（与主视口同一套保守兜底），从根上消掉
+/// 「被截断的行」；同时在裁剪线以下铺阅读底色，避免正在退场的旧页从推入页
+/// 下方透出来（横向推移时两页并排，看着像多了一行没裁掉的字）。
+class _EpubIncomingViewport extends SingleChildRenderObjectWidget {
+  const _EpubIncomingViewport({
+    required this.renderer,
+    required this.start,
+    required this.background,
+    required super.child,
+  });
+
+  final EpubRenderer renderer;
+
+  /// 推入页的页起点（文档坐标）。
+  final double start;
+
+  /// 阅读底色（裁剪线以下铺它，遮住退场的旧页）。
+  final Color background;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderEpubIncomingViewport(renderer, start, background);
+
+  @override
+  void updateRenderObject(BuildContext context, RenderObject renderObject) {
+    final ro = renderObject as _RenderEpubIncomingViewport;
+    ro.renderer = renderer;
+    ro.start = start;
+    ro.background = background;
+  }
+}
+
+class _RenderEpubIncomingViewport extends RenderProxyBox {
+  _RenderEpubIncomingViewport(this._renderer, this._start, this._background);
+
+  EpubRenderer _renderer;
+  double _start;
+  Color _background;
+
+  set renderer(EpubRenderer value) {
+    if (identical(_renderer, value)) return;
+    _renderer = value;
+    markNeedsPaint();
+  }
+
+  set start(double value) {
+    if (_start == value) return;
+    _start = value;
+    markNeedsPaint();
+  }
+
+  set background(Color value) {
+    if (_background == value) return;
+    _background = value;
+    markNeedsPaint();
+  }
+
+  /// 当帧的裁剪高度（推入页起点 → 该页终点）。
+  double _clipHeight = 0;
+
+  /// 底色画笔（裁剪线以下铺底色用；复用，避免每帧新建）。
+  final Paint _backgroundPaint = Paint();
+
+  @override
+  void performLayout() {
+    child!.layout(constraints, parentUsesSize: true);
+    size = constraints.constrain(child!.size);
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    if (child == null) return;
+    // 裁剪高度在**绘制阶段**现算（数据来自帧末实测的页停候选）：旧实现把
+    // 高度冻在起翻瞬间，候选未知时还是满一屏 → 页尾的半行露出来又消失。
+    _clipHeight = _renderer.pageContentHeightAt(_start, size.height);
+    // 裁剪线以下先铺阅读底色：否则正在退场的旧页会从推入页下方透出来
+    // （横向推移时两页并排，看着像「多了一行没被裁掉的字」）。
+    _backgroundPaint.color = _background;
+    context.canvas.drawRect(offset & size, _backgroundPaint);
+    final rect = Rect.fromLTWH(0, 0, size.width, _clipHeight);
+    layer = context.pushClipRect(
+      needsCompositing,
+      offset,
+      rect,
+      super.paint,
+      clipBehavior: Clip.hardEdge,
+      oldLayer: layer as ClipRectLayer?,
+    );
+  }
 }
 
 /// page 模式物理：**不接受用户滚动**（翻页由键盘与左右滑动驱动）。
