@@ -4,15 +4,6 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 原则，版本号遵循[语义化版本（SemVer）](https://semver.org/lang/zh-CN/)。条目使用中文，新增条目写在文件顶部。
 
-## Unreleased
-
-### Changed
-
-- **应用图标换新**：统一换成「蜂蜜黄渐变圆角方块 + 白色 R 标（书 + 放大镜 + 镜心加载环）」
-  - Android legacy / adaptive（渐变背景 + 独立前景字形）/ Windows ICO / 应用内品牌标全部同源
-  - 应用内品牌标（首启页、桌面侧栏）改用同一张 `assets/brand/app_icon.png`
-  - 生成脚本改为从 `scripts/icon_source/*.svg` 用 headless Chrome/Edge 渲染母版，移除旧的 Flutter golden 路径
-
 ## 1.0.0 - 2026-11-19
 
 首个公开发布版本。
@@ -62,6 +53,10 @@
 
 ### Changed
 
+- **应用图标换新**：统一换成「蜂蜜黄渐变圆角方块 + 白色 R 标（书 + 放大镜 + 镜心加载环）」
+  - Android legacy / adaptive（渐变背景 + 独立前景字形）/ Windows ICO / 应用内品牌标全部同源
+  - 应用内品牌标（首启页、桌面侧栏）改用同一张 `assets/brand/app_icon.png`
+  - 生成脚本改为从 `scripts/icon_source/*.svg` 用 headless Chrome/Edge 渲染母版，移除旧的 Flutter golden 路径
 - **电脑端阅读页的两个右侧抽屉加宽并统一宽度**（用户实测反馈）
   - 此前目录抽屉 420、Aa 阅读设置抽屉 336 —— 同一屏右侧两个面板宽度不一致，视觉上像两种控件
   - 两者统一到 **460**（目录 +40、设置 +124），并抽为单一事实源 `AppLayout.readerDrawerWidth`（`core/design_tokens.dart`），两处都引同一常量，不再各写各的
