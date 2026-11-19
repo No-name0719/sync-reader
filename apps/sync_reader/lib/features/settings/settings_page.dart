@@ -17,6 +17,7 @@
 library;
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -26,6 +27,8 @@ import '../../app/providers.dart';
 import '../../core/design_tokens.dart';
 import '../../core/version.dart';
 import '../../shared/format_utils.dart';
+import '../../shared/icon_alignment.dart';
+import '../../shared/segment_row.dart';
 import '../reader/contract/reader_settings.dart';
 import 'storage_usage.dart';
 
@@ -139,12 +142,49 @@ final class _SettingsPageState extends ConsumerState<SettingsPage> {
       children: [
         Text('主题风格', style: _groupLabelStyle(context)),
         const SizedBox(height: AppSpacing.s2),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        _buildAccentOptions(context, accent),
+        const SizedBox(height: AppSpacing.s4),
+        Text('外观模式', style: _groupLabelStyle(context)),
+        const SizedBox(height: AppSpacing.s2),
+        AppSegmentRow<ThemeMode>(
+          key: const ValueKey('app-settings-theme-mode'),
+          options: const [
+            (ThemeMode.light, '浅色'),
+            (ThemeMode.dark, '深色'),
+            (ThemeMode.system, '跟随系统'),
+          ],
+          selected: themeMode,
+          onChanged: (value) =>
+              ref.read(appThemeModeProvider.notifier).setThemeMode(value),
+        ),
+      ],
+    );
+  }
+
+  /// 主题风格三选卡：按原型 `.accent-opts` 的 `auto-fit minmax(140px, 1fr)`
+  /// 排布——**放不下就换行成两列**，而不是把三列硬挤在一行里。
+  ///
+  /// 此前用 `Row` + `Expanded` 硬分三列：360px 宽的手机上每列只剩 ~98px，
+  /// 描述「纸墨暖调 · 默认」放不下 → 被迫折成两行（「纸墨暖调 · 默 / 认」，
+  /// 用户实测「移动端分行，很难看」）。原型在同样宽度下是**两列**。
+  Widget _buildAccentOptions(BuildContext context, AppAccent accent) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // 原型：minmax(140px, 1fr) → 每列至少 140px，放不下就少放一列。
+        const minCardWidth = 140.0;
+        const gap = AppSpacing.s3;
+        final fits = ((constraints.maxWidth + gap) / (minCardWidth + gap))
+            .floor();
+        final columns = math.max(1, math.min(AppAccent.values.length, fits));
+        final cardWidth =
+            (constraints.maxWidth - gap * (columns - 1)) / columns;
+        return Wrap(
+          spacing: gap,
+          runSpacing: gap,
           children: [
-            for (final (index, option) in AppAccent.values.indexed) ...[
-              if (index > 0) const SizedBox(width: AppSpacing.s3),
-              Expanded(
+            for (final option in AppAccent.values)
+              SizedBox(
+                width: cardWidth,
                 child: _AccentOption(
                   accent: option,
                   selected: option == accent,
@@ -152,25 +192,9 @@ final class _SettingsPageState extends ConsumerState<SettingsPage> {
                       ref.read(appAccentProvider.notifier).setAccent(option),
                 ),
               ),
-            ],
           ],
-        ),
-        const SizedBox(height: AppSpacing.s4),
-        Text('外观模式', style: _groupLabelStyle(context)),
-        const SizedBox(height: AppSpacing.s2),
-        SegmentedButton<ThemeMode>(
-          key: const ValueKey('app-settings-theme-mode'),
-          segments: const [
-            ButtonSegment(value: ThemeMode.light, label: Text('浅色')),
-            ButtonSegment(value: ThemeMode.dark, label: Text('深色')),
-            ButtonSegment(value: ThemeMode.system, label: Text('跟随系统')),
-          ],
-          selected: {themeMode},
-          onSelectionChanged: (selection) => ref
-              .read(appThemeModeProvider.notifier)
-              .setThemeMode(selection.first),
-        ),
-      ],
+        );
+      },
     );
   }
 
@@ -184,21 +208,19 @@ final class _SettingsPageState extends ConsumerState<SettingsPage> {
         _SettingRow(
           title: '默认字体',
           description: '阅读器内可随时再改',
-          bottom: SegmentedButton<String>(
+          bottom: AppSegmentRow<String>(
             key: const ValueKey('app-settings-reader-font'),
-            segments: const [
-              ButtonSegment(value: _fontDefault, label: Text('跟随系统')),
-              ButtonSegment(value: _fontSerif, label: Text('衬线')),
-              ButtonSegment(value: _fontSans, label: Text('黑体')),
-              ButtonSegment(value: _fontKai, label: Text('楷体')),
+            options: const [
+              (_fontDefault, '跟随系统'),
+              (_fontSerif, '衬线'),
+              (_fontSans, '黑体'),
+              (_fontKai, '楷体'),
             ],
-            selected: {_fontKeyOf(_reader.fontFamily)},
-            onSelectionChanged: (selection) => _updateReader(
+            selected: _fontKeyOf(_reader.fontFamily),
+            onChanged: (value) => _updateReader(
               _reader.copyWith(
-                clearFontFamily: selection.first == _fontDefault,
-                fontFamily: selection.first == _fontDefault
-                    ? null
-                    : selection.first,
+                clearFontFamily: value == _fontDefault,
+                fontFamily: value == _fontDefault ? null : value,
               ),
             ),
           ),
@@ -258,16 +280,16 @@ final class _SettingsPageState extends ConsumerState<SettingsPage> {
         const Divider(height: AppSpacing.s6),
         _SettingRow(
           title: '默认翻页方式',
-          bottom: SegmentedButton<ReaderPageMode>(
+          bottom: AppSegmentRow<ReaderPageMode>(
             key: const ValueKey('app-settings-reader-page-mode'),
-            segments: const [
-              ButtonSegment(value: ReaderPageMode.page, label: Text('分页')),
-              ButtonSegment(value: ReaderPageMode.scroll, label: Text('滚动')),
+            options: const [
+              (ReaderPageMode.page, '分页'),
+              (ReaderPageMode.scroll, '滚动'),
             ],
-            selected: {_reader.pageMode},
-            onSelectionChanged: (selection) => _updateReader(
+            selected: _reader.pageMode,
+            onChanged: (value) => _updateReader(
               _reader.copyWith(
-                pageMode: selection.first,
+                pageMode: value,
                 // 分页方向固定「左右」（上下滑动翻页选项已下线）。
                 pageTurnAxis: ReaderPageTurnAxis.horizontal,
               ),
@@ -524,39 +546,54 @@ class _SettingRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.appTokens;
-    return Row(
+    final titleStyle = t.body.copyWith(fontWeight: FontWeight.w600);
+    // 说明/底部控件相对**标题**左对齐（图标在标题行内 → 补同样的缩进）。
+    final gutter = icon != null ? 18 + AppSpacing.s3 : 0.0;
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (icon != null) ...[
-          Icon(icon, size: 18, color: t.text3),
-          const SizedBox(width: AppSpacing.s3),
-        ],
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: t.body.copyWith(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                  if (trailing != null) ...[trailing!],
-                ],
+        Row(
+          // 图标与标题**在同一个 Row**里 → 天然对齐。图标按**标题行盒**
+          // （body 14×22 = 22）居中：此前图标盒只有 18 高且顶对齐 → 图标
+          // 中心比文字中心高 2px，看着「图标和字没对齐」（用户实测：存储区
+          // 四行最明显；「清理缓存」行还因尾部按钮把标题压低，整体差 13px）。
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            if (icon != null) ...[
+              IconLineSlot(
+                lineHeight: textLineHeight(titleStyle),
+                child: Icon(icon, size: 18, color: t.text3),
               ),
-              if (description != null) ...[
-                const SizedBox(height: 2),
-                Text(description!, style: t.caption.copyWith(color: t.text2)),
-              ],
-              if (bottom != null) ...[
-                const SizedBox(height: AppSpacing.s2),
-                bottom!,
-              ],
+              const SizedBox(width: AppSpacing.s3),
             ],
-          ),
+            Expanded(
+              child: Text(
+                title,
+                style: titleStyle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            if (trailing != null) ...[trailing!],
+          ],
         ),
+        if (description != null) ...[
+          const SizedBox(height: 2),
+          Padding(
+            padding: EdgeInsets.only(left: gutter),
+            child: Text(
+              description!,
+              style: t.caption.copyWith(color: t.text2),
+            ),
+          ),
+        ],
+        if (bottom != null) ...[
+          const SizedBox(height: AppSpacing.s2),
+          Padding(
+            padding: EdgeInsets.only(left: gutter),
+            child: bottom!,
+          ),
+        ],
       ],
     );
   }
@@ -633,11 +670,17 @@ class _AccentOption extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               accent.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: t.sm.copyWith(fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 1),
             Text(
               description,
+              // 描述单行（放不下就截断，不折行）——卡片高度因此恒定，
+              // 三张卡的预览条/名称/描述始终齐平。
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: t.micro.copyWith(fontWeight: FontWeight.w400),
             ),
           ],

@@ -24,6 +24,7 @@ import 'package:sync_reader/features/reader/contract/reader_settings.dart';
 import 'package:sync_reader/features/reader/contract/reader_settings_repository.dart';
 import 'package:sync_reader/features/settings/settings_page.dart';
 import 'package:sync_reader/features/settings/storage_usage.dart';
+import 'package:sync_reader/shared/segment_row.dart';
 
 /// 主题探针：跟随 accent / 外观模式 provider 的 MaterialApp（复现 app.dart
 /// 的装配；设置页直接作 home，测试从页面元素读当前主题令牌）。
@@ -290,12 +291,12 @@ void main() {
         find.byKey(const ValueKey('app-settings-reader-page-mode')),
       );
       await tester.pumpAndSettle();
-      final selected = tester.widget<SegmentedButton<ReaderPageMode>>(
+      final selected = tester.widget<AppSegmentRow<ReaderPageMode>>(
         find.byKey(const ValueKey('app-settings-reader-page-mode')),
       );
       expect(
         selected.selected,
-        {ReaderPageMode.scroll},
+        ReaderPageMode.scroll,
         reason: '重开设置页应显示改后的翻页方式',
       );
     });
@@ -316,6 +317,110 @@ void main() {
       scrollable: find.byType(Scrollable).first,
     );
     expect(find.text('关于'), findsOneWidget);
+  });
+
+  group('v1.4.6：窄屏不分行 + 图标与文字对齐', () {
+    /// 设置页内容宽（360px 屏）：屏宽 - 页内边距(s5×2) - 卡片内边距(s4×2)。
+    const narrowContent = 360.0 - 20 * 2 - 16 * 2;
+
+    testWidgets('360px 窄屏：主题风格描述与分段控件文案都单行', (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await pumpSettings(tester);
+      addTearDown(() => shutdown(tester));
+
+      // 主题风格描述「纸墨暖调 · 默认」此前被挤成两行（「纸墨暖调 · 默 / 认」）。
+      final descSize = tester.getSize(find.text('纸墨暖调 · 默认'));
+      expect(
+        descSize.height,
+        lessThanOrEqualTo(18),
+        reason: '主题风格描述必须单行（实测高 ${descSize.height}）',
+      );
+      expect(
+        descSize.width,
+        lessThanOrEqualTo(narrowContent),
+        reason: '描述不得溢出卡片',
+      );
+
+      // 字体分段控件的「跟随系统」此前被挤成两行（「跟随 / 系统」）。
+      final fontLabel = tester.getSize(
+        find.descendant(
+          of: find.byKey(const ValueKey('app-settings-reader-font')),
+          matching: find.text('跟随系统'),
+        ),
+      );
+      expect(
+        fontLabel.height,
+        lessThanOrEqualTo(18),
+        reason: '分段控件标签必须单行（实测高 ${fontLabel.height}）',
+      );
+
+      // 外观模式的「跟随系统」同理。
+      final modeLabel = tester.getSize(
+        find.descendant(
+          of: find.byKey(const ValueKey('app-settings-theme-mode')),
+          matching: find.text('跟随系统'),
+        ),
+      );
+      expect(modeLabel.height, lessThanOrEqualTo(18));
+    });
+
+    testWidgets('主题风格卡按原型 auto-fit 排布：窄屏竖排、宽屏三列', (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await pumpSettings(tester);
+      addTearDown(() => shutdown(tester));
+
+      // 窄屏放不下两列（每列至少 140px）→ 每行一张。
+      final y1 = tester.getTopLeft(find.text('赭石')).dy;
+      final y2 = tester.getTopLeft(find.text('青瓷')).dy;
+      final y3 = tester.getTopLeft(find.text('墨绿')).dy;
+      expect(y2, greaterThan(y1), reason: '窄屏下第二张卡应换行');
+      expect(y3, greaterThan(y2), reason: '窄屏下第三张卡应换行');
+    });
+
+    testWidgets('宽屏：主题风格卡三列并排', (tester) async {
+      tester.view.physicalSize = const Size(1200, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await pumpSettings(tester);
+      addTearDown(() => shutdown(tester));
+
+      final y1 = tester.getTopLeft(find.text('赭石')).dy;
+      final y2 = tester.getTopLeft(find.text('青瓷')).dy;
+      final y3 = tester.getTopLeft(find.text('墨绿')).dy;
+      expect(y2, closeTo(y1, 1.0), reason: '宽屏下三张卡并排');
+      expect(y3, closeTo(y1, 1.0), reason: '宽屏下三张卡并排');
+    });
+
+    testWidgets('存储区：图标中心与标题首行行盒中心重合', (tester) async {
+      await pumpSettings(tester);
+      addTearDown(() => shutdown(tester));
+
+      // 图标盒 18 高 vs 标题行盒 22 高 → 顶对齐时图标中心高出 2px。
+      final iconRect = tester.getRect(find.byIcon(Icons.description_outlined));
+      final titleRect = tester.getRect(find.text('正文'));
+      expect(
+        (iconRect.center.dy - titleRect.center.dy).abs(),
+        lessThan(0.01),
+        reason: '「正文」行的图标中心必须与标题行盒中心重合',
+      );
+
+      final clearIcon = tester.getRect(
+        find.byIcon(Icons.cleaning_services_outlined),
+      );
+      final clearTitle = tester.getRect(find.text('清理缓存').first);
+      expect(
+        (clearIcon.center.dy - clearTitle.center.dy).abs(),
+        lessThan(0.01),
+        reason: '「清理缓存」行的图标中心必须与标题行盒中心重合',
+      );
+    });
   });
 
   testWidgets('清理缓存：确认弹窗后调用清理动作并提示', (tester) async {
