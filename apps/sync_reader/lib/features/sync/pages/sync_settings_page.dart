@@ -31,6 +31,7 @@ import '../../../core/design_tokens.dart';
 import '../../../core/log_exporter.dart';
 import '../../../shared/copy.dart';
 import '../../../shared/format_utils.dart';
+import '../../../shared/icon_alignment.dart';
 import '../../library/orphan/orphan_book_file.dart';
 import '../../library/orphan/orphan_panel_controller.dart';
 import '../connection_test.dart';
@@ -388,12 +389,22 @@ class _SettingsRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.appTokens;
+    final titleStyle = t.sm.copyWith(
+      fontWeight: FontWeight.w600,
+      color: titleColor ?? t.text,
+    );
     final row = Padding(
       padding: const EdgeInsets.symmetric(vertical: AppSpacing.s3),
       child: Row(
+        // 顶对齐 + 图标按**标题行盒**居中：此前默认居中对齐会把图标悬在
+        // 标题与说明两行之间，看着「图标和字没对齐」。
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (leading != null) ...[
-            Icon(leading, size: 18, color: titleColor ?? t.text2),
+            IconLineSlot(
+              lineHeight: textLineHeight(titleStyle),
+              child: Icon(leading, size: 18, color: titleColor ?? t.text2),
+            ),
             const SizedBox(width: AppSpacing.s3),
           ],
           Expanded(
@@ -402,10 +413,7 @@ class _SettingsRow extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: t.sm.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: titleColor ?? t.text,
-                  ),
+                  style: titleStyle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -527,10 +535,14 @@ class _Notice extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            severe ? Icons.error_outline : Icons.warning_amber_rounded,
-            size: 17,
-            color: fg,
+          // 图标按**首行文字的行盒**（sm 13×20）居中 → 与文字同一水平中心。
+          IconLineSlot(
+            lineHeight: textLineHeight(t.sm),
+            child: Icon(
+              severe ? Icons.error_outline : Icons.warning_amber_rounded,
+              size: 17,
+              color: fg,
+            ),
           ),
           const SizedBox(width: AppSpacing.s3),
           Expanded(

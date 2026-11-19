@@ -19,6 +19,7 @@ import 'package:go_router/go_router.dart';
 import '../../app/onboarding.dart';
 import '../../app/providers.dart';
 import '../../core/design_tokens.dart';
+import '../../shared/icon_alignment.dart';
 
 /// 首启引导页。
 class OnboardingPage extends ConsumerWidget {
@@ -130,22 +131,30 @@ class _BrandMark extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.appTokens;
+    final titleStyle = t.sm.copyWith(fontSize: 14, fontWeight: FontWeight.w600);
     return Row(
       children: [
-        Container(
-          width: 30,
-          height: 30,
-          decoration: BoxDecoration(
-            color: t.brand,
-            borderRadius: BorderRadius.circular(AppRadius.sm),
+        // 品牌方块（30）比标题行盒（14×20/13 ≈ 21.5）高 → 块心下移半格，
+        // 看着「图标和字没对齐」。IconLineSlot 把块心提到标题行盒中心。
+        IconLineSlot(
+          lineHeight: textLineHeight(titleStyle),
+          childSize: 30,
+          child: Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: t.brand,
+              borderRadius: BorderRadius.circular(AppRadius.sm),
+            ),
+            child: const Icon(
+              Icons.auto_stories,
+              size: 17,
+              color: Colors.white,
+            ),
           ),
-          child: const Icon(Icons.auto_stories, size: 17, color: Colors.white),
         ),
         const SizedBox(width: AppSpacing.s2),
-        Text(
-          'SyncReader',
-          style: t.sm.copyWith(fontSize: 14, fontWeight: FontWeight.w600),
-        ),
+        Text('SyncReader', style: titleStyle),
         const SizedBox(width: AppSpacing.s2),
         Text('阅读进度同步', style: t.tertiary),
       ],
@@ -265,14 +274,22 @@ class _BenefitRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 26,
-            height: 26,
-            decoration: BoxDecoration(
-              color: t.brandSoft,
-              borderRadius: BorderRadius.circular(AppRadius.sm),
+          // 徽标块（26）比标题行盒（body 14×22 = 22）高 → 块心偏低；
+          // IconLineSlot 把块心提到标题首行中心。
+          IconLineSlot(
+            lineHeight: textLineHeight(
+              t.body.copyWith(fontWeight: FontWeight.w600),
             ),
-            child: Icon(icon, size: 15, color: t.brandText),
+            childSize: 26,
+            child: Container(
+              width: 26,
+              height: 26,
+              decoration: BoxDecoration(
+                color: t.brandSoft,
+                borderRadius: BorderRadius.circular(AppRadius.sm),
+              ),
+              child: Icon(icon, size: 15, color: t.brandText),
+            ),
           ),
           const SizedBox(width: AppSpacing.s3),
           Expanded(

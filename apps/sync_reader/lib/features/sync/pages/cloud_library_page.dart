@@ -20,6 +20,7 @@ import 'package:go_router/go_router.dart';
 import '../../../app/providers.dart';
 import '../../../core/design_tokens.dart';
 import '../../../shared/format_utils.dart';
+import '../../../shared/icon_alignment.dart';
 import '../sync_facade.dart';
 
 /// 云端书目清单（未配置 / 清单失败 → null）。
@@ -459,7 +460,11 @@ class _InfoNotice extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(Icons.info_outline, size: 16, color: t.info),
+          // 图标按**首行文字的行盒**（caption 12×18）居中 → 与文字同一中心。
+          IconLineSlot(
+            lineHeight: textLineHeight(t.caption),
+            child: Icon(Icons.info_outline, size: 16, color: t.info),
+          ),
           const SizedBox(width: AppSpacing.s2),
           Expanded(
             child: Text.rich(text, style: t.caption.copyWith(color: t.info)),

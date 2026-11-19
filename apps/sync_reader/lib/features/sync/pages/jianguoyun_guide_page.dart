@@ -23,6 +23,7 @@ import 'package:sync_core/sync_core.dart';
 import '../../../core/design_tokens.dart';
 import '../../../data/secure/secure_credential_store.dart';
 import '../../../shared/copy.dart';
+import '../../../shared/icon_alignment.dart';
 import '../connection_test.dart';
 import '../connection_test_result_view.dart';
 import '../connection_test_runner.dart';
@@ -803,8 +804,16 @@ class _SavedConfigCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
+            // 顶对齐 + 图标按**标题行盒**居中：此前默认居中对齐让图标悬在
+            // 标题与账号两行之间，看着「图标和字没对齐」。
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(Icons.link, size: 18, color: t.text2),
+              IconLineSlot(
+                lineHeight: textLineHeight(
+                  t.sm.copyWith(fontWeight: FontWeight.w600),
+                ),
+                child: Icon(Icons.link, size: 18, color: t.text2),
+              ),
               const SizedBox(width: AppSpacing.s3),
               Expanded(
                 child: Column(
@@ -936,10 +945,14 @@ class _Notice extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            severe ? Icons.error_outline : Icons.info_outline,
-            size: 17,
-            color: fg,
+          // 图标按**首行文字的行盒**（sm 13×20）居中 → 与文字同一水平中心。
+          IconLineSlot(
+            lineHeight: textLineHeight(t.sm),
+            child: Icon(
+              severe ? Icons.error_outline : Icons.info_outline,
+              size: 17,
+              color: fg,
+            ),
           ),
           const SizedBox(width: AppSpacing.s3),
           Expanded(

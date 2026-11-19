@@ -15,6 +15,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../../core/design_tokens.dart';
+import '../../shared/icon_alignment.dart';
 import 'connection_test.dart';
 
 /// 连接测试结果卡（成功 / 失败两态）。
@@ -112,10 +113,14 @@ class ConnectionTestResultView extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(
-                  step.ok ? Icons.check_circle : Icons.cancel,
-                  size: 14,
-                  color: step.ok ? t.text3 : t.danger,
+                // 图标按**首行文字的行盒**（caption 12×18）居中 → 与文字同中心。
+                IconLineSlot(
+                  lineHeight: textLineHeight(t.caption),
+                  child: Icon(
+                    step.ok ? Icons.check_circle : Icons.cancel,
+                    size: 14,
+                    color: step.ok ? t.text3 : t.danger,
+                  ),
                 ),
                 const SizedBox(width: 6),
                 Expanded(
