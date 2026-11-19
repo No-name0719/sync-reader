@@ -181,6 +181,8 @@ cd packages/sync_core && dart run tool/rclone_probe.dart
 6. **新增阅读格式**：实现 `BookFormatHandler` → 在 `formatRegistryProvider` 注册 → locator 的 `type` 前缀与 `formatId` 一致；同步层无需改动。
 7. **凭据与书名等敏感字段不入日志**；新日志统一走 `AppLogger` 的脱敏钩子。
 8. **UI 走设计令牌**：颜色、间距、圆角、字号取自 `core/design_tokens.dart`（`Theme.of(context).extension<AppDesignTokens>()`），不写死数值；阅读主题与应用主题分离。
+8b. **分段控件用 `shared/segment_row.dart`（自绘），不要用 Material 的 `SegmentedButton`**：M3 分段按钮按各段平分宽度、选中段还要塞 18px 的 ✓ 图标，中文标签在 360px 宽的手机上必然被挤成两行；自绘形态与原型 `.seg` 一致、标签固定单行。
+8c. **图标与文字对齐用 `shared/icon_alignment.dart` 的 `IconLineSlot`**：Flutter 的 `Text` 占位的是行盒（字号 × 行高倍数），`Icon(size: n)` 占的是 n×n 方盒——直接顶对齐会让图标中心比文字中心高出半格，看起来「没对齐」。
 9. **注释与文档用中文**：每个模块头部写明"职责 + 对应 docs 章节"，接口注释写成可直接开码的规格。
 10. **版本号单点维护**：`apps/sync_reader/pubspec.yaml` 的 `version:`（语义化版本，产物名只取 semver 部分）。发布签名材料不入库（`android/key.properties`、`android/key/`）；release 签名凭据优先级为环境变量 > `key.properties` > debug 回退。
 11. **质量门本地承担**：提交前 `dart format` + `flutter analyze` 零告警 + `flutter test` / `dart test` 全绿 + drift 生成检查。
