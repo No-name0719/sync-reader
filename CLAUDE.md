@@ -1,97 +1,186 @@
-# CLAUDE.md — SyncReader 项目上下文
+# SyncReader — 项目上下文（AI 编码会话入口）
 
-> 面向后续 AI 编码会话的项目说明。**当前阶段：v1.1 界面重设计（docs/10，A1–A22）开发完成并已分批提交（2026-10-29），待逐屏验收；M4 真机验收与 v1.0.0 发布收口并行待办；M5 服务端已后置（07-A18）。** 开工前请先通读本文与 `docs/` 设计基线。
+## 1. 定位
 
-## 1. 项目一句话
+SyncReader 是一个**跨平台电子书进度同步阅读客户端**：用户在 Android（手机/平板）与 Windows 桌面端使用同一份书库，阅读进度实时一致；同步完全由用户自己的存储（WebDAV 网盘，坚果云为第一目标）承载，软件零云服务、零收费。
 
-跨平台电子书进度同步阅读应用（工作名 **SyncReader**）：免费、无容量限制；多端（Android 手机/平板、Windows；P1：iPad/macOS/Linux）共享同一书库与阅读进度；同步通道由用户自己的坚果云（WebDAV）或自建服务器（REST）承载，软件本身不提供云服务。
+## 2. 技术栈（以 pubspec 为准）
 
-## 2. 技术栈（已定论，勿随意更换；对比依据见 `docs/02-技术选型.md`）
+| 层 | 选型 | 关键依赖与版本 |
+| --- | --- | --- |
+| 客户端框架 | Flutter 3.47.8 / Dart 3.13.7 | `apps/sync_reader/pubspec.yaml`，`sdk: ^3.13.7`，`version: 1.0.0+1` |
+| 状态管理 / 路由 | Riverpod + go_router | `flutter_riverpod: ^3.0.0`、`go_router: ^16.0.0` |
+| 本地存储 | drift（SQLite，schemaVersion 5，WAL） | `drift: ^2.35.3`、`drift_flutter: ^0.3.1`、`sqlite3_flutter_libs: ^0.6.0+eol`、`path_provider`、`path` |
+| 同步核心 | 纯 Dart 包 `sync_core`（无 Flutter 依赖） | `packages/sync_core/pubspec.yaml`，`sdk: ^3.9.0`；依赖仅 `meta`、`crypto`、`dio: ^5.0.0`、`xml: ^6.0.0` |
+| 网络 / 安全 | dio（WebDAV 六动词直用）、flutter_secure_storage、connectivity_plus | `dio: ^5.0.0`、`flutter_secure_storage: ^10.0.0`、`connectivity_plus: ^6.1.5` |
+| 阅读渲染 | 自研 txt/md/epub 渲染 + pdfrx（PDF） | `epub_pro: ^5.6.0`、`flutter_widget_from_html: ^0.17.4`、`flutter_markdown_plus: ^1.0.12`、`pdfrx: 1.3.5` |
+| 其它 | crypto、ulid、fast_gbk、intl、file_picker、window_manager | `crypto: ^3.0.8`、`ulid: ^2.2.0`、`fast_gbk: ^1.0.0`、`file_picker: ^13.3.0`、`window_manager: ^0.5.2` |
+| 代码生成 | drift_dev + build_runner | `drift_dev: ^2.35.2`、`build_runner: ^2.17.1` |
+| 收编第三方包 | `packages/third_party/`（dependency_overrides 指向） | `pdfrx` 1.3.5（Dart 3.13 流分析补丁）、`flutter_secure_storage_windows` 4.2.2（ATL→Win32 等价实现） |
 
-| 层 | 选型 |
-| --- | --- |
-| 客户端框架 | Flutter（Dart 3 stable）；P0 = Android 8+ / Windows 10 1809+，P1 = iPad/macOS/Linux（选型已验证可达） |
-| 状态/路由 | Riverpod + go_router |
-| 渲染 | txt：自研（编码检测+章节切分+TextPainter 分页）；md：flutter_markdown_plus；epub：epub_pro 解析 + flutter_widget_from_html + 自研分页；pdf：pdfrx（pdfium）。**禁止引入 WebView 依赖**（兜底方案除外，见 07-R2） |
-| 本地存储 | drift（SQLite，WAL）管元数据/进度/同步状态；正文文件在应用私有目录 |
-| 安全存储 | flutter_secure_storage（Keystore/DPAPI/Keychain），凭据禁止落 SQLite/日志 |
-| 同步核心 | `packages/sync_core`（纯 Dart 包，无 Flutter 依赖）：状态机 + diff + LWW(rev→updatedAt→deviceId) 冲突合并 + tombstone 删除 |
-| 后端抽象 | `BackendAdapter` 统一接口；实现 A：WebDAV（坚果云，dio 自研薄客户端）；实现 B：REST（自建） |
-| 服务端 | Go（chi + modernc.org/sqlite + golang-jwt），单二进制/Docker；**自定义 REST API**（不是 WebDAV 兼容）；不做冲突裁决（仅 CAS） |
+`apps/sync_reader/pubspec.yaml` 的 `dependency_overrides`：`pdfrx` → `packages/third_party/pdfrx`，`flutter_secure_storage_windows` → `packages/third_party/flutter_secure_storage_windows`；`sync_core` 以 path 依赖引入。
 
-## 3. 目录结构（规划；编码时按此创建）
+## 3. 真实目录结构
 
 ```
 sync-reader/
-├── docs/                # 设计基线（8 份，改动需求/设计须同步更新对应文档）
-├── apps/sync_reader/    # Flutter 客户端（lib/ 下 app/core/features/data/shared）
-├── packages/sync_core/  # 纯 Dart 同步核心（engine/diff/conflict/transfer/backend/model）
-├── server/              # Go 服务端（cmd/internal/deploy: Dockerfile、compose、Caddyfile、systemd）
-├── CLAUDE.md            # 本文件
-└── AGENT.md             # 指向本文件
+├── apps/sync_reader/                 # Flutter 客户端（Android + Windows）
+│   ├── lib/
+│   │   ├── app/                      # 入口装配：app.dart / router(go_router) / providers(Riverpod DI)
+│   │   │                              #   / onboarding(首启闸门) / app_preferences / window(桌面窗口)
+│   │   ├── core/                     # 通用层：design_tokens / app_logger / content_hasher / ulid / errors / startup_timer / version / log_exporter
+│   │   ├── data/
+│   │   │   ├── db/                   # drift 表定义 + DAO + 迁移（app_database.dart，schemaVersion 5）
+│   │   │   ├── files/                # 正文与封面文件存取（BookFileStore）
+│   │   │   ├── secure/               # 凭据安全存储（CredentialStore 实现）
+│   │   │   └── sync/                 # sync_core 的 drift 桥接（LocalLibrary / SyncStore 实现）
+│   │   ├── features/
+│   │   │   ├── library/              # 书库页、详情页、分组、批量导入、导入服务、扫描器、封面生成
+│   │   │   │   ├── import/  orphan/  replace/  widgets/
+│   │   │   ├── reader/               # 阅读框架 + contract(冻结 API) + formats/{txt,md,pdf,epub}
+│   │   │   ├── sync/                 # 同步门面、触发器、配额闸门、连接测试、设置页、云端书库页、向导页
+│   │   │   ├── settings/  onboarding/  shell/
+│   │   └── shared/                   # 通用组件：cover_view / copy / format_utils
+│   ├── test/                         # 单元 + 集成 + golden 测试
+│   ├── android/  windows/  assets/jianguoyun/   # 平台壳、Inno Setup 脚本、向导图文截图
+│   └── pubspec.yaml
+├── packages/
+│   ├── sync_core/                    # 纯 Dart 同步核心
+│   │   ├── lib/src/{model,engine,diff,conflict,transfer,store,backend,internal}/
+│   │   ├── lib/sync_core.dart        # 唯一公开出口（export 白名单）
+│   │   ├── test/                     # 单测 + 契约套件（memory / WebDAV 标准 / WebDAV 降级）
+│   │   └── tool/                     # 真实环境联调探针（jianguoyun_probe / rclone_probe）
+│   └── third_party/{pdfrx,flutter_secure_storage_windows}/
+├── scripts/                          # package_release.ps1 / drive_app.ps1 / run_virtual_display.ps1
+│                                     # gen_app_icons.py / check_page_breaks.py
+├── docs/                             # 设计基线文档（docs/local/ 为本地草稿，不入库）
+├── LICENSE (MIT)   README.md
 ```
 
-## 4. 关键设计约定（编码前必读）
+不入库目录（.gitignore）：`dist/`、`testdata/`、`.tools/`、`.secrets/`、`ui_prototype/`、`ui_audit/`、`.shots/`、`docs/local/`。
 
-1. **本地优先**：同步是异步旁路，任何同步失败不得影响本地阅读/导入/删除。
-2. **元数据先行**：日常同步只传 KB 级 meta JSON；正文按需下载（占位书机制）。流量规则与坚果云配额闸门见 `docs/04-同步引擎与冲突解决.md` §8。
-3. **冲突规则**：`(rev, updatedAt, deviceId)` 定序 LWW；rev 由写端持久计数器单调递增；`totalSeconds` 求和特例；删除=tombstone，**永不自动删正文**，本地多出的书保留为游离文件。
-4. **两种后端语义一致**：所有同步逻辑写在 sync_core，适配器只做传输；sync_core 契约测试必须同时跑 WebDAV 与 REST 两个适配器（同一套用例）。
-5. **元数据 schema**：以 `docs/05-元数据Schema与云端目录布局.md` 为唯一权威；`schemaVersion` 演进规则（只增不删、读方容忍未知字段）不得违反；进度 locator 记录逻辑坐标（章节+字符偏移），禁止记录物理页码。
-6. **凭据安全**：WebDAV 账号/应用密码、服务器 token 只进系统安全存储；日志强制脱敏。
-7. **免费开源**：禁止引入任何付费依赖或云服务 SDK。
+## 4. 关键设计约定
 
-## 5. 开发约定
+1. **本地优先**：导入/阅读/删除立即作用于本地；同步是异步旁路，任何同步失败不影响本地操作。`SyncEngine` 的同步入口**永不抛出**，错误一律收进 `SyncReport`（阶段级 `phaseError`/`groupPhaseError`，逐项 `results`/`groupResults`）。
+2. **元数据先行**：全量同步 = 五阶段 `PullListing → Diff → PullMetas → PushMetas → Transfer → 落游标`。正文（MB 级）只在本地缺失或落后时按需传输；元数据走 ETag/If-None-Match 条件请求（304 零流量）。任何阶段失败只记录并回 Idle，下次触发自动重放（幂等可重放）。
+3. **冲突定序 `(rev, updatedAt, deviceId)`**：`rev` 由写端单调递增维护（基线存 `sync_state.baseRev`），实现于 `BookMeta.compareTo`；LWW 胜者框架（书信息/进度/locator 全取胜者），累积型字段特例：`totalSeconds = local + remote − 公共祖先值`（缺祖先退化为直接求和，clamp ≥ 0）、`lastReadAt = max`。
+4. **乐观锁 CAS**：写前 `expectedRev = baseRev`；`RevConflict` → 拉远端 → 合并 → 以远端当前 rev **重试恰一次**，再冲突 → `ConflictUnresolvable`。
+5. **tombstone 删除**：删除 = `deleted=true` 的 meta（同一 `bookId` 文件名）。本端删除 = 删正文/封面文件 + 删 `books` 行（进度级联清除）+ 写 `deleted_books` 墓碑账本；**云端正文永不删除**；其它端收到墓碑 → 移出书库、正文保留为**游离文件**（可重新关联）。墓碑与正常 meta 走同一 `(rev, updatedAt, deviceId)` 定序：墓碑赢则删，正常 meta 赢则"复活"。云端墓碑 GC 90 天，本地账本随之清理。
+6. **仅本地书**：`local_only_books` 表标记的书同步引擎完全看不见（导入时取消"同时上传到云端"，或"从云端移除"后落 diff 第 7b 行）。
+7. **凭据安全存储**：只经 `flutter_secure_storage`（Android Keystore / Windows DPAPI）；**凭据零落 SQLite / 日志 / 崩溃报告**；密钥名见 `SecureKeys`（`webdav.account`/`webdav.password`/`webdav.baseUrl`/`webdav.rootPath`/`device.id`）；日志统一走 `AppLogger` 脱敏钩子。
+8. **排版偏好不同步**：字号/行距/主题/字体等存在 `reader_settings` 表，仅本地（docs/07 A5/Q7）。v1 同步范围仅 **进度 + 阅读时长 + 书籍信息 + 删除**；批注/高亮 schema 占位不同步。
+9. **进度定位用逻辑位置**：locator 记录章节/字符偏移/块坐标，**不记物理页码或像素**，天然免疫各端排版差异；`tocFingerprint` 不一致时进度降级为 `percent`。
+10. **格式扩展点**：新格式 = 实现 `BookFormatHandler`（冻结 API）并注册进 `FormatRegistry`；同步层只消费 `formatId` 字符串，与格式无关。已注册 txt / md / pdf / epub（`app/providers.dart` 的 `formatRegistryProvider`）。
+11. **云端目录布局**：`{root}/library.json`、`meta/{bookId}.json`、`groups/{groupId}.json`、`books/{bookId}.{ext}`、`tmp/{bookId}.{ext}.part`。`groups/` 与 `meta/` **平级**（`meta/` 的 Depth:1 PROPFIND 用于枚举书籍，混入分组会污染清单）；`ensureLayout()` 幂等创建，老云端目录缺 `groups/` 不报错。
+12. **分组同步**：分组是独立文件类型（独立 rev / CAS / 墓碑）；**同名分组按名称级去重**（规范 id = 簇内字典序最小者）；同步顺序恒为**分组先于书籍**（拉取与推送都是），避免悬空 `groupId` 外键。
+13. **schemaVersion 只增不删**：meta JSON 与 drift 表迁移都遵守；读方容忍未知字段，写回保留原 `schemaVersion`。
+14. **sync_core 禁 Flutter 依赖**：只允许纯 Dart 包；公共 API 只经 `lib/sync_core.dart` 导出。
+15. **适配器只做传输**：diff / 合并 / 墓碑 / 重试策略全在 sync_core；`BackendAdapter` 只负责 HTTP 语义与能力探测。仓库内现役实现为 `WebDavAdapter`（仅 PROPFIND/GET/PUT/MOVE/MKCOL/DELETE 六动词）与 `InMemoryAdapter`（参考实现，契约套件用）；`BackendKind` 枚举另保留 `server` 取值但无对应实现。
+16. **契约套件**：`packages/sync_core/test/contract/` 的同一套用例必须同时跑通 memory 参考实现、WebDAV 标准形态、WebDAV 降级形态。
+17. **WebDAV 特性适配**：两级清单（PROPFIND 拿 etag/size/mtime → 实例内 `etag→rev` 缓存，未命中逐本补拉一次 GET），保证 `stub.rev` 权威；能力探测 MOVE/ETag/Range，缺失时按 `size+mtime` 合成 etag、以 Content-Length 校验替代 MOVE。
 
-- 语言：文档、注释、提交信息用**中文**；代码标识符用英文。
-- Dart：`flutter analyze` 零告警；`dart format`；lint 用 `flutter_lints` 起步。
-- Go：`gofmt` + `go vet`；错误必须显式处理。
-- 测试：sync_core 单元测试覆盖 diff/冲突/重试全部规则表（04 §5.1、§6、§8.4 每行一个用例）；服务端 API 有集成测试。
-- 提交：Conventional Commits（`feat/fix/docs/refactor/test/chore`）；分支 `main` + 特性分支。
-- 每完成一个里程碑：更新本文 §7 的"当前进度"，并核对 `docs/00-总览.md` §4 路线图。
+## 5. 常用命令
 
-## 6. 禁止事项
+质量门由本机承担（仓库无 CI 流水线，`.github/` 不存在）。
 
-- 不要初始化/操作 git 远端、不要引入付费服务、不要在客户端内置任何账号体系或遥测。
-- 不要绕过 sync_core 直接在 UI 层发同步请求。
-- 不要在未更新 `docs/07-风险与待确认问题.md` 的情况下引入新的隐含假设。
+```bash
+# 格式化（提交前）
+dart format apps/sync_reader packages/sync_core
 
-## 7. 当前进度
+# 静态分析（要求零告警）
+cd apps/sync_reader && flutter analyze
+cd packages/sync_core && dart analyze
 
-| 阶段 | 状态 |
+# 测试
+cd apps/sync_reader && flutter test
+cd packages/sync_core && dart test
+
+# drift 代码生成（改表后必跑；生成物 .g.dart 必须提交）
+cd apps/sync_reader && dart run build_runner build --delete-conflicting-outputs
+cd apps/sync_reader && git diff --exit-code   # 校验生成物未漂移
+
+# 构建
+cd apps/sync_reader && flutter build apk --release --split-per-abi    # Android，按 ABI 拆分
+cd apps/sync_reader && flutter build windows --release                 # Windows x64
+
+# golden 截图更新（按需）
+cd apps/sync_reader && READER_SHOTS=1 flutter test --update-goldens
+```
+
+```powershell
+# 一键发布打包（Android + Windows + 安装器 + 便携包 → dist/）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package_release.ps1
+# 常用参数：-SkipWindows / -SkipAndroid / -SkipInstaller / -SkipPortable
+#            -IsccPath "<ISCC.exe>" / -OutDir "<目录>" / -Version "<x.y.z>"
+```
+
+```bash
+# 真实环境联调探针（凭据取自 .secrets/ 或环境变量，目录已 gitignore）
+cd packages/sync_core && dart run tool/jianguoyun_probe.dart
+cd packages/sync_core && dart run tool/rclone_probe.dart
+```
+
+## 6. 已实现功能概览
+
+### 书库
+- 网格/列表书库：书卡（封面、状态胶囊、进度条），状态 chip × 分组下拉两层筛选（取交集 + 分面计数），搜索、排序、视图模式切换。
+- 导入：单本导入；批量导入（选文件夹 → 递归扫描 → 清单确认 → 导入，含"同时上传到云端"开关与完成汇总）。
+- 导入流水线：流式哈希 → 去重（库内查重 + 同批内存 Set）→ 生成 ULID → 解析元数据 → 封面落盘 → 复制正文 → upsert。
+- 书籍详情页：Hero + 阅读数据（统计块 + 近 7 天柱状图）+ 文件信息 + 目录预览；操作为打开阅读 / 重新选择文件（内容替换）/ 删除。
+- 分组（本地标签）：新建、改名、排序、删除、书籍归组。
+- 游离文件面板：扫描、挂回书库、彻底删除。
+- 无真封面时生成"纸底墨字"封面；存储占用统计与缓存清理。
+
+### 阅读器（txt / md / epub / pdf）
+- txt：编码自动检测（GBK/UTF-8/UTF-16）、章节切分、首行缩进、滚动与分页双模式。
+- md：markdown 渲染与目录。
+- epub：块化解析 + HTML 渲染（图片、粗斜体、标题、引用、列表、简单表格），目录跳转，复杂表格/浮动布局降级为顺序文本。
+- pdf：pdfrx 渲染、封面、大纲映射。
+- 统一阅读框架：进度锚点与 locator、TOC 抽屉、设置面板（字体/字号/行距/背景/翻页方式）、亮度调节、Android 音量键翻页、页界裁剪与分页稳定性处理。
+- 进度管线：渲染节流 → 3s 防抖落库（dirty 标记）→ 切后台/退出阅读页立即落库；阅读时长每秒累计并按自然日拆分写入 `reading_days`。
+
+### 同步
+- WebDAV 后端（坚果云第一目标）：分步连接测试（列目录/MKCOL/写读删/MOVE，含往返延迟）与能力探测（MOVE/ETag/Range）。
+- 坚果云四步配置向导（应用密码图文指引 → 账号与应用密码 → 自动连接测试 → 能力展示并落凭据）。
+- 六种触发时机：冷启动 +2s、切后台回前台、阅读进度防抖单书推送、网络恢复、前台 15min 定时、手动。
+- 全量同步五阶段 + 冲突合并重试恰一次 + 删除墓碑推送 + 分组同步 + 哈希去重（同名/同 hash 合并）。
+- 占位书正文按需下载（`.part` 续传 + SHA-256 校验）；配额闸门（上行 1GiB / 下行 3GiB，80% 告警、100% 挂起正文传输）。
+- 云端书库管理页（云端全量清单、逐本"从云端移除"）；仅本地书列表（单本/全部上传）；诊断日志导出（二次脱敏）；全局与书级同步状态展示。
+
+### 通用
+- 响应式应用外壳：≥1180px 侧栏 / 861–1179px 图标栏 / ≤860px 底部标签栏；阅读页全屏沉浸（不套外壳）。
+- 设计令牌主题（`core/design_tokens.dart`）：三套主题风格 × 三种外观模式，落 `app_settings` 表；阅读主题独立于应用主题。
+- 首启引导页（可跳过）+ 首启专用全屏四步向导；路由 `redirect` 在首帧前完成闸门判定。
+- 设置页：外观 / 阅读 / 存储 / 关于四区。
+- 启动打点（`core/startup_timer.dart`）、分级日志与导出；离线/飞行模式零报错弹窗。
+
+## 7. 文档地图
+
+| 文档 | 内容 |
 | --- | --- |
-| 规划文档（docs/00-07） | ✅ 完成（2026-10-26） |
-| CLAUDE.md / AGENT.md | ✅ 完成 |
-| 开发环境（Flutter 3.47.8 / Go 1.27.3 / JDK17 / Android SDK 36，全落 D 盘） | ✅ 完成（2026-10-26，见 docs/08） |
-| M0 工程奠基（Flutter 工程 + sync_core + Go 骨架） | ✅ 完成（2026-10-26；analyze/test 全绿，APK 空壳构建通过；Windows 本机构建依赖 VS Build Tools，见 docs/08 §4） |
-| M1 本地阅读闭环（书库 FR-1xx + txt/md/pdf 阅读器 + 本地进度/时长/设置 + TOC 抽屉） | ✅ 完成（2026-10-26；app 293 测试全绿；Windows debug 构建通过并冒烟验证；Android debug APK 构建通过（含四 ABI libpdfium）；epub 渲染器按路线图随 M2/M3 交付；pdfrx 收编副本与机器环境补丁见 docs/07-R15、docs/08 §6.3） |
-| M2 同步上线（sync_core 引擎 + WebDAV 适配器 + App 接入） | ✅ 开发完成（2026-10-27）：sync_core 165 + app 359 测试全绿；契约套件同用例双跑（内存参考实现 + 标准/降级内存 WebDAV 服务器）；rclone 真实 HTTP 联调通过；**坚果云真实环境联调完成**（R3：实测画像 + 缺失目录 409 兼容修复 + 双端收敛 FR-404 真实预演，见 docs/07-R3）；Windows debug 构建通过。**待收口**：两真机 FR-404 验收；flutter_secure_storage_windows 收编见 docs/07-R16 |
-| M3 客户端功能补全（epub 渲染器 + 同步体验 P1；服务端方案后置至 M5，2026-10-27 调整） | ✅ 开发完成（2026-10-28）：sync_core 192 + app 514 测试全绿。**epub 渲染器**（FR-203）：epub_pro 解析 + flutter_widget_from_html 块化渲染、分页（连续排版+视口 snap）/滚动双模式、NCX 目录跳转、locator 与 sync_core EpubLocator 字段级互通、ReaderPage 指纹门（指纹不一致全格式降级 percent）、阅读设置热应用；降级项（复杂表格/浮动布局）登记 07-R2。**同步体验**：游离文件面板（FR-408 UI 半边：orphans 区/分层残留/平铺三形态扫描 + contentHash 挂回 + 彻底删除）；云端孤儿清理工具（docs/04 §7.1 规则 4：逐文件确认、批量可暂停、配额联动）；FR-410 文件替换（sync_core 冻结 replaceBookContent + uploadBook overwrite 语义，接收端自动下载覆盖；详情页"重新选择文件"）。**书库补齐**：批量导入（FR-109 递归扫描+清单确认）、pdf 封面（FR-103 第一页缩略图，pdfrx 可注入）、配额面板 80% 常驻提醒（docs/04 §8.3）。C3（FR-208 阅读时长按天统计）按任务允许后置 |
-| M4 打磨分发（P0 平台可安装分发；性能/离线/补功能） | ✅ 开发完成（2026-10-28）：sync_core 192 + app 595 测试全绿。**发布打包**：release keystore 本地生成不入库（`android/key/` gitignored，环境变量可覆盖，材料缺失回退 debug——storeFile 须以 rootProject 解析，见 docs/08 §8.3 指纹验证教训）；applicationId 正式化为 `com.syncreader.app`；版本 1.0.0+1（pubspec 单点）；Inno Setup 安装器（16.5MB）+ 便携 zip（20.3MB）+ 三 ABI 签名 APK（32-36MB，apksigner 指纹比对通过）经 `scripts/package_release.ps1` 一键产出（NFR-04 体积门全过）；LICENSE（MIT，Q2 拍板）、CHANGELOG、README、docs/09 发布流程。**性能**：NFR-05 启动打点（startup_timer，release 冒烟 firstFrame=136ms）；FR-106 基准 2000 本搜索中位 0.4ms（门 100ms，docs/08 §8）。**离线/健壮性**：FR-601 飞行模式 9 用例固化（零报错弹窗，未发现生产缺陷）；FR-604 导出日志（2000 行环形缓冲 + 二次脱敏 + 同步设置页入口）。**补功能**：C3 FR-208 按天时长（schema v2 只增不删迁移 + 详情页最近 7 天）；FR-107 分组标签（分组栏/拖拽归组/管理，本地不同步）；FR-209 音量键翻页（Android 平台通道拦截 + 四渲染器翻页 API，默认关）。**待收口**：真机验收（M2/M3 遗留 epub 全链路与 FR-404 双端收敛 + M4 启动时长/音量键/离线/安装），清单见 §7 下一步 |
-| v1.1 界面重设计（docs/10，A1–A22） | ✅ 开发完成（2026-10-29，**已分批提交，待真机验收**）：app 775 + sync_core 195 测试全绿，Windows/Android debug 构建通过。**UI 层**：设计令牌 ThemeExtension（三 accent × 深浅，赭石默认）、应用外壳（232px 侧栏/68px 窄栏/移动底栏，导航只留 书库·同步·设置）、书库两层筛选取交集+分面计数、书卡点封面直开+右键/长按菜单+右上角状态胶囊、纸底墨字生成封面、详情页 Hero+7 天柱状图+目录预览、阅读器沉浸态+点击热区+Aa 面板+目录抽屉+正文首行缩进 2em/两端对齐/衬线（txt 引擎级 justify）+阅读主题 4 套（加护眼绿）+默认分页/字号 19、同步设置八分区+「未上传的书」卡片、配置引导四步轨、新增设置页（外观/阅读/存储/关于，accent 即时生效持久化 `app_settings` 表）、批量导入页重做+导入确认弹窗（上传开关默认开）、云端书库管理页（新）；「工具」模块取消（游离文件页/云端孤儿清理页已删）。**数据层**：schema v3（`local_only_books` + `app_settings`，只增不删）；删除语义变更（删正文文件+留元数据+墓碑，落「未下载」区，三处配套：softDelete/listBooks 排除/applyRemoteMeta 幂等）；「仅本地」状态（listBooks 排除+pushBookMeta 跳过+uploadToCloud 清 baseRev 走 7a 行+removeFromCloud=deleteMeta 不写 tombstone）。基线文档已同步：docs/01 FR-408、docs/04 §5.1 排除规则+§7.1.2、docs/05 §5+§6、docs/10 §9 实施记录。**追加**：同步设置页「测试连接」按钮（点一下即测已保存的配置，结果就地显示；移除维护区同名跳转向导的旧入口）、应用图标统一为「赭石圆角方 + 白色打开的书」（Android adaptive + Windows 多尺寸 ico，`scripts/gen_app_icons.py` 可复现）、逐屏比对材料（本地 `ui_audit/v11/`，不入库）。**待收口**：真机/桌面逐屏比对（四档视口×三 accent×深浅色，含 5 条同步语义场景抽查） |
-| v1.2 阅读页重设计（docs/10 §4.4/§9.5，A23–A28） | ✅ 开发完成（2026-11-03，依据 `ui_prototype/reader.html`，**待真机验收**）：app 804 测试全绿（基线 779 → +25），analyze 零告警。**B1 整行分页**：txt 分页内核重写——TextPainter 量行盒边界 + 行首偏移映射回字符坐标下刀，页界只落在行与行之间（消灭半行），页底留白恒定；滑动窗口防超大章；显示层变换扩展段距（整行空行）与缩进开关；尾随分页符不渲染空行盒（`txtPageDisplayText`）。**B2 背景 7 套**：白色/米黄/浅绿/浅灰蓝/深灰/深棕/纯黑（枚举名稳定、label 朴素颜色名）；WCAG 2.1 对比度门测试锁定（正文 ≥7:1、次级 ≥4.5:1）。**B3 夜间亮度**：80%–130% 整屏亮度系数（`ReaderBrightnessFilter`，仅夜间系显示，80% 下限对比度仍 AAA）。**B4 排版面板**：入口 Aa→齿轮，新增段距/首行缩进开关/夜间亮度/翻页动画 + 实时对比度读数；reader_settings JSON schema v3。**B5 翻页动画**：上下滑动（默认）/左右翻页，PageView 轴向原生切换，委托翻页 animateToPage(300ms)。**B6 文字优先**：`ReaderTextProbe` 能力接口（txt 字形盒 O(1) 命中 / epub·md 块盒粒度），中区点击点在正文上不切换控件。**B7/B8** 核查确认 v1.1 已满足（层级目录+立即关闭；标题无分隔线+留白稳定）。**epub/md 如实标注**：epub 保持视口吸附（07-R2）、md 暂按滚动，面板说明文字写明现状；pdf 未动。截图材料 `ui_audit/reader_v12/`（60 张：4 宽×7 背景×2 翻页 + 亮度/中间帧），金测 harness `test/goldens/reader_screens_test.dart`（READER_SHOTS=1 按需产出，常规测试跳过）。原型与实现的差异清单见 docs/10 §9.5.2 |
-| v1.3 阅读页视觉对齐（docs/10 §9.6） | ✅ 开发完成（2026-11-11，依据「原型 ↔ 真实应用」逐项验收的差距清单，**两端 release 已重拍对照**）：app 812 测试全绿，analyze 零告警。**验收方法先修**：对照图先按 dpr 折算回逻辑像素再拼（桌面 1.25×、移动 2.625× 的放大失真已消除），移动端原型视口 390 → 411（对齐模拟器）。**正文默认值**：字号 19 → 16、页边距 16 → 24（行高 1.95 不变；改写 docs/10 §9.5.2 第 5 条）。**控制条骨架**：顶条 54（标题两行 + 34px 图标按钮）、底条 58/54（章节名 + 细轨滑块 + 一行小字）；正文区垂直内缩 = 控制条高 + 系统栏 → **结构性保证正文不被遮挡**（原 A8/E12 只是碰巧没压上）。**排版面板**：头部加「恢复默认」（靶心）、分段控件自绘为原型形态（去 ✓、中性底）、面板尺度降到原型字号、行距 1.2–2.4 / 页边距 8–72、抽屉宽 336；**目录抽屉**：宽 336、改用应用外壳配色、当前章高亮与「当前」徽标按原型用品牌色。**B6-1 首行缩进**：根因是「两端对齐时行首空白被吞」（折行段落首字 x=0）——改用行内不可见盒（宽 2em、高 0、基线对齐），测量侧与渲染侧行首偏移序列实测一致。**章题样式**：章首行按原型用标题样式（1.32em/600/字距 0.02em、行盒仍是一行高），并修掉滚动模式「章题渲染两遍」。**E5-2**：`MaterialApp.scrollBehavior` 追加鼠标拖拽。**移动端交互**：窄视口（≤460）改为「点屏幕任意处唤出/收起控制条，翻页交给滑动」，滑动过程不弹菜单（手机屏没有可点的空白，「点空白才出菜单」不可用；正文可选中未实现，文字优先已无对象可保护）。材料 `ui_audit/v12_compare/`（不入库）、报告 `docs/local/13-阅读体验验收报告.md`（不入库） |
-| v1.3.1 阅读翻页修复（docs/10 §9.7） | ✅ 开发完成（2026-11-16，用户实测反馈驱动）：app **840 测试全绿**（基线 812 → +28），analyze 零告警。**① 按住方向键狂翻页**：阅读页把 `KeyRepeatEvent`（系统自动重复）也当翻页键 → 抽出 `reader_key_action.dart`，重复事件吃掉但不翻页（**按一次 = 翻一页**，松手即停）。**② 插图独占一页**：epub page 模式新增 `epub_page_structure.dart`（纯 Dart，可单测）——页停候选升级为「页起点」，**插图块 = 原子区间 [块顶, 块底]**（块顶与块底都是页起点，页界绝不落进插图内部）；文本页终点 = 一屏内最靠下的行边界，一屏内出现插图则该页终点 = 插图块顶（插图另起一页），本页从插图顶起则终点 = 插图块底。**③ 前后翻页精确往返**：新增「页起点链」（走过的页起点按序记住），弹道物理与视口裁剪改用只读探测（试算不写链）；候选表**整表替换**不跨滚动累积（块排版会随上方内容落定微移，累积旧坐标会让同一张插图出现两个块顶）。真机复核（Windows Release，虚拟屏）：插图独占一页 ✓、插图后不再重复 ✓、按住 ↓ 2.5s 只前进一页 ✓、↑ 精确回原页 ✓。**顺带**：`scripts/drive_app.ps1` 增虚拟屏支持（`-Display secondary` / `MoveToDisplay` 不抢前台 / `HoldKey` 验证自动重复 / `Screen` 只截虚拟屏）+ 新增 `scripts/run_virtual_display.ps1`（构建→启动→搬屏→截图一条龙），验收不再打扰主屏 |
-| v1.3.2 性能优化（docs/10 §9.8，用户实测驱动） | ✅ 开发完成（2026-11-17）：app **850 测试全绿**（基线 840 → +10），sync_core 195 全绿，analyze 零告警。**① epub 页尾闪烁**：实测定位到「裁剪矩形从未生效」——框架 `RenderCustomClip` 会**缓存**裁剪矩形（`_clip ??= clipper.getClip(size)`），自定义 clipper 不通知失效 → 裁剪停在首帧值（整屏）→ 页尾半行/半图一直露着；叠加帧末测量晚一帧 → 翻页先露后收。修法：page 模式视口改自绘 `_EpubPageViewport`（**绘制阶段**每帧现算裁剪）+ `pageContentHeight` 候选未知时取**保守值**（安全边界 → 内容末尾 → 留白 0，绝不整屏放开）+ 页停候选**代次失效**（epoch + 安全边界）+ 行盒缓存失效条件从「只比尺寸」收紧到「尺寸 + 代次 + 样式指纹」。新增 `epub_page_clip_test.dart`（7 例，含**像素级**断言「页尾无半个字形」）。**② Windows 关闭 10–20s**：实测（`drive_app.ps1` 新增 `Close` 动作 + 应用内打点）Dart 侧仅 17ms，卡在原生窗口——`window_manager` 0.5.2 的 `destroy` 只发 `PostQuitMessage(0)` 不销毁窗口（`windows/window_manager.cpp:232`），叠加 `setPreventClose(true)` 拦下 WM_CLOSE → 窗口挂到引擎收尾才消失（实测 12,014ms）。改为「先落盘 → 解除 preventClose → 原生 `close()`」，落盘失败也照常关窗 + 防重入；实测**窗口 133ms 消失、进程 258ms 退出**。新增 `test/app/window_close_test.dart`（3 例） |
-| v1.3.3 目录跳转与新章节另起一页（docs/10 §9.9，用户实测驱动） | ✅ 开发完成（2026-11-17）：app **861 测试全绿**（基线 850 → +11），analyze 零告警。**① 目录跳转后「连续翻页」**：实测定位到两个原因叠加——(a) `jumpTo` 末尾必触发 `goBallistic(0)` → 命中 `EpubPageScrollPhysics` 的「就近页起点」吸附，而定位循环 `_locatePosition` 正用一连串 `jumpTo` 逼近目标 → 弹道把刚跳到的位置又拽回旧页起点 → 定位永不收敛、页面来回滑（实测跳到第二章被拽回第一章的 807.6）；(b) 目录跳转是「位置语义断裂」，旧页起点链未作废（链只在排版几何变化时才清）→ 弹道专挑旧页起点吸、翻页沿旧链跳回旧章。修法：定位期间**不产生弹道仿真**（`createBallisticSimulation` 在 `_locating` 时返回 null）+ 跳转/`jumpToPercent`/`restore` 三条路径**作废旧链**（`invalidateChain`）并把**落点登记为新页起点**（`registerPageStart`）。顺带修掉定位缺陷：粗跳估计由「全书字符比例」改为**按已构建区块序号外推**（插图/长短段落下字符密度与像素密度严重失真 → 粗跳落到目标一屏开外 → 定位不收敛 → **目录跳转落到别的章**）。**② 翻页进入新章节没有另起一页**：页结构不知道章节边界 → 章边界只是普通内容，章题与上一章末行同页。修法：章边界（spine 首块顶）进页结构（`chapterStarts`），页终点不得越过章边界、章起点即合法页起点、上一页也不得跨章（`_successor`/`_predecessor` 加章约束）；既有契约不破（插图独占一页、页界不切字）。txt 本就逐章分页、md 按滚动、pdf 用文档自带页 → 无需改动。新增 `epub_toc_jump_test.dart`（6 例）+ `epub_page_structure_test.dart` 增 5 例 + 夹具 `density_skew_epub.dart`；逐项「改坏 → 变红」已实测（见 docs/10 §9.9） |
-| v1.3.4 移动端书架密度（docs/10 §9.10，用户实测反馈驱动） | ✅ 开发完成（2026-11-17）：app **876 测试全绿**（基线 861 → +15），analyze 零告警。**根因**：网格的「列数」被算了两遍——页面按 `ceil(内容宽/176)` 算宽高比、`SliverGridDelegateWithMaxCrossAxisExtent` 内部按 `ceil(内容宽/(176+16))` 真正排布；390 宽时前者 3 列、后者**实得 2 列** → 手机一屏只剩「1 行 2 本 + 半行」（用户反馈「2 * 1.5」），且宽高比按假卡宽算导致每卡多出约 37px 幽灵留白。**修法**：新增 `library_grid_metrics.dart`（纯 Dart 可单测）作**唯一度量来源**（列数/卡宽/卡高/一屏几行），页面改用 `FixedCrossAxisCount` 并按真实卡宽反推宽高比（消除隐性契约漂移）；按断点分两档——宽屏（>520）沿用 v1.1 观感（1440→7 列、860→5 列、1180→6 列，封面 2:3 + 文字区 84px，桌面不退化），窄屏（≤520）走**紧凑卡**：固定 3 列 + 内边距/间距 12 + **书名叠加封面底部**（渐变遮罩 + 白色单行，省掉整行文字区；纸底封面同步关掉自己的文字块避免书名重复）+ 封面高宽比在 [1:1, 2:3] 间按「一屏至少 3 行完整可见」自适应（优先保 2:3 书籍感，360×640 矮屏压扁到 ≈1.06）。**改后实测**（同口径：网格视口含顶栏 56 + 搜索 60 + 筛选 84 + 底栏 58）：360×640 / 390×844 / 412×915 / 430×932 一律 **3 列 × 3 行 = 9 本完整可见**（原为 1 行 2 本），书名始终在首屏内，无渲染溢出；860 → 5 列 10 本、1440 → 7 列 14 本不变。**取舍**：一屏 4 行（12 本）在 2:3 封面下几何不可能（390 宽可视区仅 562px，4 行 2:3 需 720px，要 12 本必须压到 ≈1.15 近正方），本轮取「保 2:3 封面 + 3 行 9 本」，若用户要 12 本只需调 `libraryGridCompactMinRows=4`（度量与测试已参数化）。新增 `library_grid_metrics_test.dart`（7 例）+ `library_grid_layout_test.dart`（8 例）；逐项「改坏 → 变红」已实测（见 docs/10 §9.10）；截图材料 `ui_audit/shelf_v134/`（不入库） |
-| v1.4 分组云端同步（FR-107，用户需求变更驱动） | ✅ 开发完成（2026-11-17）：app **893 测试全绿**（基线 876 → +17），sync_core **246 全绿**（基线 195 → +51），analyze 零告警。**需求**：用户要求"书本分组需要通过云端同步，避免多端反复分组操作"→ 分组从"纯本地"升级为"参与云端同步"。**方案 A**（分组作为独立云端对象集合，与书籍 meta 同构）：云端新增 `groups/{groupId}.json`（与 `meta/` 平级——`meta/` 的 Depth:1 PROPFIND 用于枚举书籍，混入会污染清单与去重）；每组自带 rev/CAS/LWW（改 A 组名与改 B 组名互不冲突）；书籍 meta 增**可选** `groupId` 字段（云端 `schemaVersion` 保持 1，只增不删，旧客户端读到忽略）。**引擎**：五阶段并行跑分组维度（列 → 同名合并 → 拉 → 推 → 墓碑/GC），**分组先于书籍**（书籍 `groupId` 不写悬空外键）；`SyncReport` 增分组维度（`groupResults`/`groupDecisions`/`groupPhaseError`，失败隔离不牵连书籍）。**同名合并**（B 端已有同名「小说」的场景）：按名称聚类 → 规范 id = 簇内**字典序最小者**（对两端对称，避免乒乓）→ 本地书籍外键迁移 + 云端冗余条目清理。**app**：schema v4（`group_sync_state` 新表 + `book_groups.deleted/deleted_at` 软删列，只增不删）；建组/改名/删组即时推云端、拖书归组推书籍 meta；删除分组 = 软删 + 组内书回未分组（**不丢书**），离线补推墓碑。**文档**：docs/05 §2.1/§2.1.1/§2.2/§5/§6、docs/04 §4/§5.1.1/§6.3.1/§7.1.1、docs/01 FR-107、docs/03 §4.3、docs/07 A20/R17、docs/10 §9.11。**「改坏→变红」已实测 5 项**（见 docs/10 §9.11.4） |
-| v1.4.1 删除语义回归（docs/10 §9.19，用户实测反馈驱动） | ✅ 开发完成（2026-11-18）：app **930 测试全绿**（基线 923 → +7），sync_core **246 全绿**，analyze 零告警。**现象**：用户实测「从云端和本地都删除的书籍还是会在书库中出现」——书库页仍有两条「未下载」卡片。**根因**：v1.1 删除语义是「删正文、**留元数据**」（`softDelete` 只把 `local_path` 置 NULL、`books` 行保留 → 落进「未下载」桶**永久显示**），而「从云端移除」（`removeCloudCopy` → `deleteMeta`）只删云端 meta、**完全不动本地行** → 两边都删完，本地那行成了永久残影；且**同一语义两端不一致**（别的设备删的书在本机消失，本机删的在本机留着），文档里写的「90 天 GC 后消失」也从未发生（GC 只清账本，没人删那行）。**修法**：**删除即移出书库**——`BooksDao.softDelete()` → `deleteBook()`：删 `books` 行（进度/按天阅读时长随之级联清除）+ 删正文/封面文件 + 写墓碑账本 + 清「仅本地」标记（书没了标记也失效，否则「未上传的书」计数虚高）；**schema v5（纯数据迁移，DDL 不变）**清掉存量残影——旧版已写进用户库的「有墓碑的 `books` 行」（就是用户截图里那两条卡片）+ 其 progress/reading_days/local_only_books 子行（迁移在事务内跑、`PRAGMA foreign_keys` 未生效 → 级联不触发，显式先删），墓碑账本保留（驱动云端 tombstone 推送与 90 天 GC）；`applyRemoteMeta(tombstone)` **两种来源都删 `books` 行**——本端自己删的是幂等兜底，真正兜住的是「墓碑没推上去、书被别端改活」的复活残影；墓碑账本**记账不被覆盖**（`pushed=false` 是待推记账）；`listBooks()` 的墓碑排除保留为**兜底**；删除确认弹窗文案改为「本书会从书库移除（阅读进度一并清除）」。**墓碑推送不受影响**：本地行已删时引擎从 `sync_state` 的公共祖先取墓碑内容照常上云。**已知取舍**：误删无一键恢复（云端正文仍在但 meta 已变墓碑，本端不再展示，无「点下载正文」入口），重新导入同一文件不恢复阅读位置（v1.1 文档里那条「可恢复位置」本就未实现——导入去重命中 contentHash 直接跳过）。**测试**：新增 `local_only_semantics_test` 场景 6（2 例）+ 场景 5 复活残影例（1 例）、新增 `migration_v5_test.dart`（3 例），改动 6 处既有用例（dao/reading_days/library_page/book_detail_page/flight_mode/迁移断言）。**文档**：docs/10 §4.7b+Q21+§9.19、docs/04 §7.1+TL;DR、docs/01 FR-408、docs/05 §5+§6、docs/07 A21 |
-| v1.3.5 翻页滚动条跳变（docs/10 §9.12，用户实测反馈驱动） | ✅ 开发完成（2026-11-17）：app **896 测试全绿**（基线 893 → +3），analyze 零告警。**根因**：框架桌面滚动条（`MaterialScrollBehavior.buildScrollbar` 给纵向滚动视图自动挂 `Scrollbar`）的**滑块长度与位置**来自 `maxScrollExtent`——而 epub 正文是**惰性列表**（`ListView.builder` + 变量高的块）：未构建的块按原型估高、离开惰性窗口被回收的块退回估高，epub 块高差异又极大（整页插图 ≈500px vs 段落 ≈50px）→ **每翻一页总高估计跳变数百像素**（实测 3795 → 3612 → 3450 → 3464 → 3038），滑块于是「一边变长一边跳位」＝用户说的「上下挑动」；像素级复测滑块高度在 81/88/98/40px 间跳、位置逐页跳 31–120px（内容本身是平滑下移的，翻页是瞬时跳转，故只有滚动条在抖）。**修法**：**分页视图不挂框架自动滚动条**（`ScrollConfiguration.copyWith(scrollbars: false)`）——分页视图里像素级滚动条本就没有意义（翻页离散、拖不出"第几页"），阅读位置由底部进度轨承载；与既有分工一致（txt 分页 `PageView` 本就无滚动条、md 滚动 `ListView` 有滚动条），**滚动视图保留滚动条**不误伤。注意 `copyWith` 的 `scrollbars` 缺省值是 `true`，必须显式传 `false`；且它只包一层 delegate（`_WrappedScrollBehavior`），**桌面鼠标拖拽（v1.3 E5-2）不受影响**。新增 `epub_scrollbar_test.dart`（3 例：page 无滚动条 / scroll 有滚动条 / 鼠标拖拽不受影响），「改坏 → 变红」实测（去掉包裹 → 报 `Found 1 widget with type "Scrollbar"`） |
-| v1.3.6 移动端三条实测反馈（docs/10 §9.13，用户实测反馈驱动） | ✅ 开发完成（2026-11-17）：app **915 测试全绿**（基线 896 → +19），analyze 零告警。**① 与③同源（阅读设置读写链路）**：仓库 `load()` 把**首次载入的 future** 记下并一直返回那个快照，`save()` 只更新内存缓存 → 改过设置后，设置页/Aa 面板**重开显示默认配置**，且**换一本书**渲染器按旧快照创建（字号/主题/**翻页模式**全部回退出厂默认 → 「移动端无法切换滚动和分页模式」）。修法：`load()` 返回**当前生效值**（首次载入完成后一律返回 `_cached`），载入途中发生 save 以保存值为准（`_saveSeq` 竞态守卫）；Aa 面板与设置页订阅仓库 `changes` 流实时跟随；**设置页新增「默认翻页模式」入口**（移动端 Aa 面板是底部弹层，该项埋在面板下半部分不易发现）。**② 分两处**：epub 分页模式的弹道落点原以「**松手时的偏移**」为基准，而页结构的 `_successor` 假定基准是**页起点** → 传入页中间偏移会**多挪一屏**（实测一次 260px 甩动位移 1100px ≈ 1.3 屏且落点非页起点，且随滑动幅度漂移）→ 改以「**滑动起点所在页**」为基准（一次滑动 = 一页）；落点**首次算出即缓存**（弹道飞行途中内容尺寸变化会让框架重启弹道、重启时速度可能为 0 → 重算落点会突变，实测页面被拽到别处再弹回文档头）；拖拽越过目标页界时弹簧速度取 0（否则带着甩动速度反向冲）。滚动模式新增 `ReaderScrollPhysics`：**甩动位移封顶**（不换仿真模型，只封甩动速度；上限 1.2 屏，按 Android 甩动模型反解）——实测 8000px/s 重甩：平台默认 7306px ≈ 12 屏 → 封顶后 744px ≈ 1.2 屏。新增 `epub_swipe_test.dart`(4) + `reader_scroll_physics_test.dart`(6) 等共 19 例；逐项「改坏 → 变红」已实测（见 docs/10 §9.13.3） |
-| v1.3.7 翻页设置合并为一个选项（docs/10 §9.14，用户实测反馈驱动） | ✅ 开发完成（2026-11-17）：app **918 测试全绿**（基线 896 → +22），analyze 零告警。**问题**：Aa 面板把「翻页模式（分页/滚动）」与「翻页动画（上下滑动/左右翻页）」拆成两个控件——对读者是同一个选择被拆成两问，且第二个控件**只对 txt 有效**（epub 分页是纵向按屏吸附、md 始终滚动、pdf 用文件自带页）。**修法**：合并为一个「翻页方式」，只有 **滚动** / **分页** 两个选项（Aa 面板 + 设置页同步），选项文案不带方向后缀（方向随格式而异，写进文案必对某种格式说谎）。**追问「电脑侧还有必要区分上下/左右吗」→ 没必要**（实测：电脑翻页有三条与方向无关的路——点正文左右两侧热区、滚轮一格（渲染器接管滚轮、横纵轴都吃纵向分量）、方向键；方向只影响「鼠标按住拖拽」这一个次要手势）→ 翻页方向从「用户选项」降级为「**按设备形态自动选**」：手机（窄 ≤460）横轴（翻书手感）、电脑纵轴（与滚轮/鼠标拖拽同向，手感不回退）；持久化的 `pageTurnAxis` **不再被采纳**（键仍在 JSON 里，只增不删；读回归一为 horizontal 以免旧值残留）。阅读页首次提示不再写方向（统一「滑动翻页」）。**副作用**：手机端 txt 的分页手势由上下滑动变为左右滑动（进度按字符坐标记录，位置恢复不受影响）；电脑端保持上下滑动。改 13 处用例 + 新增 2 例；「改坏 → 变红」已实测（见 docs/10 §9.14.4） |
-| v1.3.7 分页模式滚轮乱翻（docs/10 §9.15，用户实测反馈驱动） | ✅ 开发完成（2026-11-17）：app **920 测试全绿**（基线 896 → +24），analyze 零告警。**现象**：分页模式下用滚轮会「乱翻」，尤其从滚动模式切回来时。**根因（实测定位，两条叠加）**：① 翻页目标（页起点）超出**惰性列表已构建内容**的末尾时，`jumpTo` 被**静默 clamp** 到末尾（非页起点）→ 页界失效；且页起点链用会写链的 `nextPageStart` → 链被写进**够不到的**落点 → 之后每格都瞄着不可达目标（实测卡在原地）。② `jumpTo` 末尾必触发 `goBallistic(0)`，弹道按「就近页起点」吸附；链里若没有刚落点这一页 → **弹道把页面拽回上一页**（实测落点 807.6 → 被拽回 29.84，倒退一整页、两页间来回跳）。**修法**：落点**先登记进页起点链再跳**（弹道吸附到刚落点这一页）；翻页目标改用**只读探测**（`peekNextPageStart`，够不到的落点不再污染链）；目标**必须可达**——超出末尾时先滚到末尾逼出更多内容（惰性构建 → 末尾变长），**下一帧**再翻（最多 4 次），仍不可达就不翻（宁可不动也不落页中间）；刻意**不 await 帧**（翻页是同步手势，等帧会挂住调用方——实测 `epub_page_break_test` 直接挂死）。新增 `epub_wheel_turn_test.dart`(2 例)；「改坏 → 变红」已实测（落点登记放回跳之后 → 报 `Expected: >= 250 / Actual: 29.84`） |
-| v1.3.7 分页模式移除滚轮（docs/10 §9.16，用户决策） | ✅ 开发完成（2026-11-17）：app **922 测试全绿**（基线 896 → +26），analyze 零告警。**决策**：「删除分页模式滚轮相关的代码，分页模式仅允许键盘控制」——分页模式的翻页只由**键盘**（↑/↓/PageUp/PageDown/空格）与**触摸滑动**控制；滚轮在分页模式下**既不翻页也不滚动正文**（正文被滚轮自由滚动正是「乱翻」的观感来源）；**滚动模式不受影响**（滚轮照常滚动）。**改动**：txt/epub 两个渲染器删掉「滚轮累积 + 过阈值翻页」的逻辑（`_onPointerSignal`/`_onWheel` + `_wheelAccum`），改为只**吞掉**滚轮事件（`_swallowWheel`：`PointerSignalResolver` 抢先注册 + `respond`，Scrollable 不再收到滚轮）——**必须留这层监听**：滚轮只有最深回调生效，不抢先注册的话桌面端竖轴 PageView 会被滚轮推动、epub 分页正文会被滚轮自由滚动；而 `ScrollPhysics.shouldAcceptUserOffset` 无法只关滚轮（它同时管拖拽与 `setCanDrag`，会把触摸滑动一起关掉）。Aa 面板说明文字补上键盘路径。**保留**：热区点击翻页与鼠标拖拽（与手机端触摸滑动共用代码路径，删了手机就没法滑动翻页）；滚动模式的滚轮。`epub_wheel_turn_test.dart` 改写为 3 例（分页滚轮无效 / 键盘照常翻页 / 滚动模式滚轮照常滚）+ txt +1 例；「改坏 → 变红」已实测（见 docs/10 §9.16.3） |
-| v1.3.7 分页禁用鼠标拖动 + 目录抽屉加宽（docs/10 §9.17，用户反馈驱动） | ✅ 开发完成（2026-11-17）：app **919 测试全绿**（我的改动范围内；仓库另有并发会话的在途改动，见下），analyze 零告警。**① 分页模式禁用鼠标拖动翻页**（接 §9.16 移除滚轮）：分页视图包一层 `ScrollConfiguration`，`dragDevices` 换成「仅触摸」集合（新增 `kReaderTouchOnlyDragDevices`）——Flutter 的 `Scrollable` 用 `dragDevices` 作拖拽识别器的 `supportedDevices`，去掉 mouse 即鼠标拖动失效，**触摸滑动照常**（手机端主交互不受影响）；**滚动模式不变**（桌面仍可拖动滚动正文）。不能用 `ScrollPhysics.shouldAcceptUserOffset` 关：它同时管拖拽与 `setCanDrag`，置 false 会把触摸滑动一起关掉。**② 电脑端目录抽屉 336 → 420**（原型 `.rd-drawer{width:336px}` 的 336 在电脑端章名过长时大量截断；Aa 排版面板仍 336）。新增/改动 4 例（epub+txt 各 1 例鼠标拖动不翻页且触摸仍可；scrollbar 用例改钉「分页不含 mouse / 滚动含 mouse」；目录抽屉宽度断言）；「改坏 → 变红」已实测 |
-| v1.3.7 移动端分页改为左右滑动（docs/10 §9.18，用户反馈驱动） | ✅ 开发完成（2026-11-17）：app **923 测试全绿**，analyze 零告警。**背景**：txt 的分页本就是横轴 PageView（左右 ✓），但 epub 的分页沿用 07-R2 的「连续排版 + 按屏吸附」——正文是**纵向**连续列表，页界靠纵向偏移切。**本轮做法（手势层对齐）**：epub 分页模式新增**横向拖拽识别器**（仅触摸）——左滑下一页 / 右滑上一页；同时 `EpubPageScrollPhysics.shouldAcceptUserOffset` 置 false → 分页模式**不接受用户滚动**（触摸纵向滑动也不带动正文；程序化 jumpTo/animateTo 不受影响）→ 纵向滑动在分页模式下完全无效（正文不会被拖到页中间 → 页界始终成立）。**随之清理死代码**：纵向滑动消失后，「滑动起点基准 + 落点缓存 + 弹道吸附分支」整套约 100 行不再有输入来源，一并删除（分页模式的弹道只剩程序化跳转，平台默认物理直接返回 null）。**取舍**：epub 正文仍是纵向连续排版（按页裁剪），左右滑动后是「纵向跳页」而非 txt 的横向翻书动画——后者需把正文重新分页成整页内容（页结构层面的重构，不在本轮范围）。`epub_swipe_test.dart` 改写为 3 例（左滑前进/落点为页起点、右滑精确往返、纵向滑动无效）；「改坏 → 变红」已实测 |
-| v1.4.2 UI 字体栈分平台解析（docs/10 §9.20，用户实测反馈驱动） | ✅ 开发完成（2026-11-18）：app **938 测试全绿**（基线 930 → +8），analyze 零告警。**现象**：用户实测「当前项目系统用的什么字体，好奇怪，得换常见字体」——书库列表页书名渲染成一支**细体几何黑体**，与拉丁字母像两种字体，标题字重也不生效。**根因**：`AppFonts.ui` 硬写 `'Roboto'`，而 Roboto 是 **Android 原生字体**、Windows 上并未安装（本机 `C:\Windows\Fonts` 无任何 `roboto*.ttf`）→ 引擎把拉丁落到平台默认字体（Segoe UI）、把汉字落到 **DirectWrite 系统回退链**（本机命中一支细体几何黑体），两者**不同源**；那支字体也没有与标题 `w600` 对应的字面 → 字重被抹平。**文档 §3.2 本就写的是「按平台」（Win=Segoe UI / And=Roboto）**，是实现漏了分平台。**修法**：`AppFonts.ui` 改为按 `defaultTargetPlatform` 解析（Win `Segoe UI` / And `Roboto` / macOS+iOS `Helvetica Neue` / 其余 `Noto Sans`），新增 `AppFonts.uiFallback` **CJK 显式回退栈**（Win 微软雅黑 / And·Linux 思源黑体 / macOS 苹方）——不再交给「各机器结果不同」的系统回退；字阶 `_style()` 与 `ThemeData` **都**带 `fontFamily`+`fontFamilyFallback`（只给字阶加，`ThemeData` 自拼的字仍会落回 typography 的 'Roboto'）。**阅读正文三档不动**（本来就是显式栈且可自选）。**验证**：Windows release 真机 A/B（改前/改后同页同书库截图）——书名从细体几何黑体变为微软雅黑，同一区块暗像素占比 **6.20% → 7.99%**（+29%）；**仍不打包任何字体文件**（Q4/NFR-04 体积门不变）。**测试**：新增 `test/core/app_fonts_test.dart`（8 例：四平台取值、非 Android 平台不许解析成 Roboto、每平台 CJK 回退栈非空、字阶与 ThemeData 都带族与回退）。**文档**：docs/10 §3.2+§9.20、CHANGELOG |
-| v1.4.3 首次启动引导页（docs/10 §4.9，用户需求驱动） | ✅ 开发完成（2026-11-18）：app **944 测试全绿**（基线 938 → +6），analyze 零告警。**背景**：需求是「第一次使用的用户在登陆时给坚果云配置初始化页（可跳过）」——但本应用**没有登陆/账号体系**（CLAUDE.md §6 明令禁止内置账号，认证只存在于同步后端），故落为**首次启动引导页**：新用户第一次打开先看到一页坚果云初始化入口，可跳过，跳过后不再打扰。**版式按用户确认稿**：品牌标 → 坚果云卡（图标块 + 三条好处）→ 「配置坚果云同步」/「暂不配置，先用本地」；用户明确要求**删掉大标题、副标题、免责说明框与页脚脚注**（AI 味重、字多），只留卡片与两条按钮——延续 CHANGELOG「界面文案精简」口径。**实现**：① `lib/app/onboarding.dart` 首启闸门（`app_settings` 的 `app.onboarding.done` 标志 + 三态 unknown/pending/completed，全局单例，与全局 router 同风格）；② `lib/features/onboarding/onboarding_page.dart` 首启页（**在应用外壳之外**：首屏还没有导航可言）；③ 路由新增 `/onboarding` 与 `/onboarding/guide`（后者复用四步向导同一控件，只是不套外壳，首启全程全屏不冒侧栏）；④ `main.dart` 在 `runApp` **之前**读标志——路由 redirect 第一次求值即终态，**首启页与书库之间不闪一帧**（否则新用户先看到书库再被弹走）；⑤ 向导保存成功后 `pop(true)`，首启页据此判定完成（同步设置页的入口忽略返回值，行为不变）。**失败一律放开**：读表失败按「已完成」处理（首启页绝不阻断启动）、落库失败则内存态照常切「已完成」（下次启动再问一次）；判定未出结果（测试环境）一律不拦路。**跳过后的同步保持未配置**，沿用既有三处软提示（外壳角标 / 同步页 / 书库横幅），不做二次打扰。**副作用（需真机复测）**：数据库建连移到首帧之前，NFR-05 的 `firstFrame` 打点口径随之包含建连时间（原来首帧是纯渲染），待 M4 真机冷启动实测时一并核验。**测试**：新增 `test/features/onboarding/onboarding_page_test.dart`（6 例：标志读写、读失败放开、落点被改写、跳过落库+回落书库、进向导、已完成直接进书库）；踩坑记录：drift 关库要等 watch 订阅断干净，**必须先 dispose 容器再关库**（否则测试级联挂起），且书库加载态是无限转圈动画，**不能用 pumpAndSettle**（永不收敛，改用定时 pump）。**文档**：docs/10 §4.9、CHANGELOG |
-| v1.4.4 统一左右翻页动画（docs/10 §9.21，实施提示词 docs/local/14） | ✅ 开发完成（2026-11-18）：app **965 测试全绿**（基线 938 → +27），analyze 零告警。**背景**：用户诉求「统一各类文件的阅读体感，上下滚动和左右翻页」——换一本书不该像换了个阅读器。复核现状：txt 是横轴 `PageView`（300ms 动画、轴向按设备形态选）、**epub 完全没有动画**（`nextPage()` 直接 `jumpTo` 瞬移，左右滑动只做 60px 阈值判定）、md 只有滚动、pdf 用库自带 200ms 矩阵动画 → 四种手感。**① 公共规格**（新增 `lib/features/reader/reader_page_turn.dart`）：`ReaderPageTurnSpec` 定时长 **280ms** / 缓动 **easeOutCubic** / 过阈值（视口宽 25%，夹 56–120px）/ 越界阻尼 0.4 / 回弹 24px；`ReaderPageTurnDrag` 纯逻辑跟手模型；`ReaderBoundaryBounce` 边界回弹控件。**② 宿主统一边界反馈**：翻页被首/末页挡住时（`nextPage()` 返回 false）播一次原地回弹——一处实现四格式通用（滚动模式不回弹）；键盘/左右热区/音量键统一走新增的 `_turnPage(bool)`。**③ txt**：轴向改**恒定横向**（推翻 §9.14 的「按设备形态自动选」——其理由「与滚轮/鼠标拖拽同向」已随 §9.16/§9.17 移除而不成立；提示词 §3.1/§6.2 要求四格式翻页中帧看不出差别），时长/曲线用公共常量。**④ epub（本轮重点，走提示词 §4.2 B 路线）**：分页视图由「单槽 + 瞬移」改为**双窗口横向交接**——槽 A = 当前页（连续列表 + 页尾裁剪，v1.3.2 修复原样保留），槽 B = **推入页**（epub 的「页」不是独立内容而是连续排版上的偏移区间，两页同时可见只能复制一份块渲染；复制件用独立 key，主副本 GlobalKey 仍只归测量用 → 行盒测量/页停候选/插图独占页/章边界/locator 全部不受影响）；手势改**跟手**（位移 1:1，过阈值补完、不过阈值弹回、越界有阻尼），键盘/热区走同一套动画；落点仍在**动画收尾时**提交（先登记页起点链再跳转，§9.15 顺序保留）。**⑤ pdf**：`goToPage/goToArea` 传公共时长（缓动仍由库固定 easeInOut、方向仍纵向 → 如实登记为遗留风险）。**⑥ md**：保持滚动，Aa 面板/设置页改为「txt/epub 左右翻；md 暂按滚动；pdf 按文件自带页」（不假装支持）。**测试**：新增 `reader_page_turn_test.dart`(12 例) + `reader_boundary_bounce_test.dart`(4 例)；改写 `epub_swipe_test.dart`(3→6 例)、`txt_renderer_widget_test.dart`(3 例)、pdf(+1)、面板(+1)；epub 四个既有测试文件的落点断言改 `pumpAndSettle`（翻页落点改为动画收尾时提交），**契约一条未放松**。**「改坏 → 变红」已实测 5 项**（见 docs/10 §9.21.3）。**对照材料** `ui_audit/turn_v14/`（不入库）：四格式 × {390×844, 1440×900} 静止帧与翻页中帧；pdf 进不了金测 harness（pdfrx 需 pdfium 原生库）。 |
-| v1.4.5 窗口最小化矩形导致「打开软件没显示」（docs/10 §9.22，用户实测反馈驱动） | ✅ 开发完成（2026-11-18）：app **972 测试全绿**（基线 965 → +7），analyze 零告警。**现象**：用户「打开软件为什么没显示」——进程在、窗口标题在，屏幕上什么都没有。**根因**：`%APPDATA%\com.example\SyncReader\window_state.json` 存的是 `{"width":159.2,"height":37.6,"left":-25600,"top":-25600}`——Windows 的**「最小化矩形」**（窗口最小化时系统报的 bounds 就是屏幕外的小框）。`lib/app/window.dart` 的 `_save()` 在**关闭时**用 `getBounds()` 落盘 → 窗口当时最小化 → 存下最小化矩形 → 下次启动 `setPosition(-25600,-25600)` + 159×37 的尺寸 → **窗口在屏幕外，界面看不见**；且「关一次 → 再也打不开」自我循环。**修法（两侧都堵）**：① 存时 `shouldPersistWindowState(state, isMinimized:)`——最小化就**跳过保存**（保留上一次的好状态），尺寸异常也不存；② 读时 `WindowState.isUsable`——尺寸小于 `kWindowMinimumSize`(420×420) 一律作废 → 用默认尺寸**居中**显示（否则坏文件让应用永远打不开）；③ **位置不作废据**（多屏里窗口合法落在负坐标，判据只看尺寸）。**测试**：`test/app/window_close_test.dart`（3 → 8 例：最小化不持久化/最小化矩形不可用/正常窗口可持久化/**负坐标合法窗口仍可用**/从 JSON 读回最小化矩形判为不可用）；「改坏 → 变红」已实测。**真机实测**（Windows release 重建）：修前 rect=(-32000,-32000) 199×47 看不见 → 修后 (530,220) 1500×1000 可见（首帧 159ms）；关闭后状态文件写回好值 `{1200,800 @ 424,176}` |
-| M5 服务端扩展（Go + REST 适配器） | ⬜ 见 `docs/00-总览.md` §4 |
+| `docs/00-总览.md` | 定位、文档地图、关键决策、能力总览、当前状态 |
+| `docs/01-需求规格说明.md` | FR/NFR 逐条编号、平台优先级、用户流程 |
+| `docs/02-技术选型.md` | 决策 D1 UI 框架 / D2 渲染 / D3 本地存储 / D4 元数据格式与云端目录布局 / D5 冲突策略 / D6 工程配套 |
+| `docs/03-系统架构设计.md` | 总体架构、模块划分、核心接口、数据流、平台适配 |
+| `docs/04-同步引擎与冲突解决.md` | 同步触发、状态机、diff 矩阵、冲突合并、删除语义、流量优化 |
+| `docs/05-元数据Schema与云端目录布局.md` | 云端目录、meta JSON 字段级 schema、locator、SQLite DDL、迁移 |
+| `docs/07-风险与待确认问题.md` | 默认假设、待确认问题、风险登记 |
+| `docs/08-开发环境搭建.md` | Windows/Android 构建环境 |
+| `docs/09-发布与分发.md` | 版本号、签名、打包、发布流程、第三方声明 |
+| `docs/10-界面重设计方案.md` | 界面设计规范（色彩/字体/间距/页面方案），不含实施流水 |
 
-下一步：**v1.1 逐屏验收 + v1.3 视觉对齐后的真机复核**（需用户配合）——① 阅读器真机手感：整行分页（任意页无半行、页底留白恒定）、上下滑动/左右翻页动画、夜间亮度、排版面板（齿轮入口/段距/缩进/对比度读数）、目录抽屉、点正文不误触控件（材料：`ui_audit/reader_v12/` 60 张金测截图）；② 桌面/真机按 docs/10 §8 逐屏比对（四档视口 × 三 accent × 深浅色：书库/详情/阅读器/同步/设置/批量导入/云端书库/引导）；③ 5 条同步语义场景抽查（本地删除落「未下载」不回推、导入不上传→手动上架、云端移除→本地保留可读、仅本地进度不上云、双端删除收敛）；④ 之后回到 **M4 真机验收收口**（① 签名 APK 真机安装冒烟（新包名 `com.syncreader.app`，与旧 debug 包不互替）；② 常规小说 epub（含图片/粗斜体/标题/引用）Windows+Android 导入→阅读→换端恢复进度全链路（M2/M3 遗留）；③ FR-404 两真机离线收敛（坚果云真实环境，M2 遗留）；④ NFR-05 真机冷启动实测（Android 中端机 ≤2.5s，打点随「导出诊断日志」带走）；⑤ FR-209 音量键翻页（开关/退出恢复/旋转重建/边界）；⑥ 飞行模式真机抽查；⑦ Windows 安装器+便携包安装冒烟；⑧ **keystore 与 key.properties 离线备份**（丢失将无法同签名覆盖升级）——注意 ②③⑤⑥ 需在 v1.1/v1.2 新界面上重跑）。**M5 服务端已后置**（07-A18，设计基线 docs/06 不变，随时可重启）。
+源码注释普遍带 `docs/XX §Y` 引用——**改动行为时同步更新对应文档章节**，这是本仓库的既有约定。
 
-## 8. 文档索引
+## 8. 修改代码时的注意事项
 
-`docs/00-总览.md`（地图+路线图）｜ `docs/01-需求规格说明.md`（FR/NFR 基线）｜ `docs/02-技术选型.md`（六大决策对比）｜ `docs/03-系统架构设计.md`（架构+接口）｜ `docs/04-同步引擎与冲突解决.md`（同步规格）｜ `docs/05-元数据Schema与云端目录布局.md`（schema 权威）｜ `docs/06-自建服务端设计与部署.md`（API+部署）｜ `docs/07-风险与待确认问题.md`（假设/风险登记）｜ `docs/08-开发环境搭建.md`（本机环境：安装位置/环境变量/镜像源/性能实测）｜ `docs/09-发布与分发.md`（版本/签名/打包/Releases 流程/第三方声明）
+1. **drift 生成物必须提交**：`lib/data/db/app_database.g.dart` 与各 DAO 的 `.g.dart` 随表结构变更一起入库；改表后跑 build_runner 并用 `git diff --exit-code` 校验无漂移。迁移遵守"只增不删"，`schemaVersion` 单调递增。
+2. **收编第三方包的补丁约定**：`packages/third_party/` 下每一处改动必须带 `// SyncReader patch (日期): 原因` 注释块（现有两处：`pdfrx/lib/src/pdfium/pdf_file_cache.dart`、`flutter_secure_storage_windows/windows/flutter_secure_storage_windows_plugin.cpp`）；与上游差异保持最小；升级上游版本时先确认补丁是否仍需要。
+3. **sync_core 保持纯 Dart**：禁止 import Flutter；新增能力放进对应子目录并补 `lib/sync_core.dart` 的 export。app 侧只 import 该出口，不引包内私有路径。
+4. **改 BackendAdapter 语义要同步契约用例**：同一套契约必须同时跑通 memory / WebDAV 标准 / WebDAV 降级三形态。
+5. **改同步行为要成组修改**：`sync_core`（diff / 冲突 / 墓碑）+ app 侧 `data/sync/drift_local_library.dart` + 相关测试 + `docs/04`（§5–§7）与 `docs/05`。
+6. **新增阅读格式**：实现 `BookFormatHandler` → 在 `formatRegistryProvider` 注册 → locator 的 `type` 前缀与 `formatId` 一致；同步层无需改动。
+7. **凭据与书名等敏感字段不入日志**；新日志统一走 `AppLogger` 的脱敏钩子。
+8. **UI 走设计令牌**：颜色、间距、圆角、字号取自 `core/design_tokens.dart`（`Theme.of(context).extension<AppDesignTokens>()`），不写死数值；阅读主题与应用主题分离。
+9. **注释与文档用中文**：每个模块头部写明"职责 + 对应 docs 章节"，接口注释写成可直接开码的规格。
+10. **版本号单点维护**：`apps/sync_reader/pubspec.yaml` 的 `version:`（语义化版本，产物名只取 semver 部分）。发布签名材料不入库（`android/key.properties`、`android/key/`）；release 签名凭据优先级为环境变量 > `key.properties` > debug 回退。
+11. **质量门本地承担**：提交前 `dart format` + `flutter analyze` 零告警 + `flutter test` / `dart test` 全绿 + drift 生成检查。

@@ -1,13 +1,13 @@
 # 05 - 元数据 Schema 与云端目录布局
 
-> **TL;DR**：云端布局对 WebDAV 与自建服务器**完全一致**：`library.json`（库常量）+ `meta/{bookId}.json`（每书一份元数据）+ `books/{bookId}.{ext}`（正文）+ `tmp/`（上传暂存）。meta JSON 顶层带 `schemaVersion`，演进遵循"只增不删、读方容忍未知字段"。本文给出**字段级定义**（类型/必填/语义）、四种格式的 `locator` 子 schema（跨设备恢复进度的关键）、bookId 生成与哈希去重规则、本地 SQLite 表结构（drift DDL 级别）与云端字段的映射关系。同步行为见 [04](./04-同步引擎与冲突解决.md)，接口层见 [03 §4](./03-系统架构设计.md)。
+> **TL;DR**：云端布局（坚果云与通用 WebDAV **完全一致**）：`library.json`（库常量）+ `meta/{bookId}.json`（每书一份元数据）+ `books/{bookId}.{ext}`（正文）+ `tmp/`（上传暂存）。meta JSON 顶层带 `schemaVersion`，演进遵循"只增不删、读方容忍未知字段"。本文给出**字段级定义**（类型/必填/语义）、四种格式的 `locator` 子 schema（跨设备恢复进度的关键）、bookId 生成与哈希去重规则、本地 SQLite 表结构（drift DDL 级别）与云端字段的映射关系。同步行为见 [04](./04-同步引擎与冲突解决.md)，接口层见 [03 §4](./03-系统架构设计.md)。
 
 ---
 
 ## 1. 云端目录布局
 
 ```
-{同步根}/                            # 坚果云模式默认 /我的坚果云/Apps/SyncReader（可自选）；自建模式为 /{user}/
+{同步根}/                            # 坚果云默认 /我的坚果云/Apps/SyncReader（可自选）；通用 WebDAV 由用户填写同步根 URL
 ├── library.json                     # 库级常量，几乎不变
 ├── meta/
 │   ├── {bookId}.json                # 每书一份元数据（含 tombstone 形态）
@@ -30,9 +30,9 @@
 
 | 项 | 约定 |
 | --- | --- |
-| 同步根选择 | 坚果云模式：默认 `/Apps/SyncReader`（坚果云为第三方应用预留的目录，配置向导自动创建，也允许用户改到任意子目录）；自建模式：服务端每用户独立根，客户端无感 |
+| 同步根选择 | 坚果云：默认 `/Apps/SyncReader`（坚果云为第三方应用预留的目录，配置向导自动创建，也允许用户改到任意子目录）；通用 WebDAV 则由用户填写同步根 URL |
 | 为什么正文用 bookId 命名 | 原文件名可能含非法字符/重名/改名引发同步抖动；原文件名存于 `meta.book.fileName` 供恢复导出 |
-| 原子性 | WebDAV 无原子 rename 保证的网盘（少数）：上传后用 `GET Content-Length` 校验代替 MOVE 语义；坚果云与自建服务器均支持 MOVE |
+| 原子性 | WebDAV 无原子 rename 保证的网盘（少数）：上传后用 `GET Content-Length` 校验代替 MOVE 语义；坚果云支持 MOVE |
 | 权限要求 | 读写 + 列目录 + MOVE；配置向导的"连接测试"显式验证这四项（FR-505） |
 | 分组目录 | `groups/` 与 `books/` 平级；`ensureLayout()` 幂等创建（老云端目录首次同步自动补建） |
 
@@ -87,7 +87,7 @@
 
 **tombstone 形态**：同一文件名，`"deleted": true`、`"deletedAt": "<时间>"`、`progress` 可保留、`book` 保留（供游离文件重关联时比对 hash）。
 
-## 2.1 分组元数据 `groups/{groupId}.json`（FR-107，v1.4 起参与同步）
+## 2.1 分组元数据 `groups/{groupId}.json`（FR-107，参与同步）
 
 分组是**独立文件类型**：每个分组自带 `rev`，因此「改 A 组名」与「改 B 组名」
 互不冲突；改名 / 排序 / 删除都走与书籍一致的 `(rev, updatedAt, deviceId)`
@@ -195,7 +195,7 @@ LWW + CAS 乐观锁（docs/04 §6.2）。
 | `reading` | object | ✅ | 阅读统计 |
 | `annotations` | array | ✅ | v1 恒为空数组（批注同步 v2 预留，字段已占位避免未来大迁移） |
 | `extra` | object | ✅ | 向前兼容扩展区，读方必须容忍未知键 |
-| `groupId` | string? | 否 | 所属分组 id（FR-107，v1.4 新增，**可选**）；null = 未分组。详见 §2.2 |
+| `groupId` | string? | 否 | 所属分组 id（FR-107，**可选**）；null = 未分组。详见 §2.2 |
 
 ### 3.2 `book` 对象
 
@@ -296,7 +296,7 @@ CREATE TABLE progress (
   dirty       INTEGER NOT NULL DEFAULT 0     -- 1 = 待上传
 );
 
--- 同步状态（每本书每后端一份；backend_key = 'webdav' | 'server:{libraryId}'）
+-- 同步状态（每本书每后端一份；backend_key = 'webdav'）
 CREATE TABLE sync_state (
   book_id       TEXT NOT NULL,
   backend_key   TEXT NOT NULL,
@@ -320,7 +320,6 @@ CREATE TABLE deleted_books (
 -- 同步游标与全局状态（每后端一行）
 CREATE TABLE sync_cursor (
   backend_key    TEXT PRIMARY KEY,
-  changes_cursor TEXT,                         -- REST 模式服务端游标
   meta_listing_etag TEXT,                      -- WebDAV PROPFIND 响应 ETag（无则全量列）
   last_full_sync_at INTEGER,
   quota_up_bytes   INTEGER NOT NULL DEFAULT 0, -- 本自然月对坚果云上行累计（04 §8.3）
@@ -340,7 +339,7 @@ CREATE TABLE sync_queue (
   attempts INTEGER NOT NULL DEFAULT 0
 );
 
--- 阅读时长按天统计（FR-208，M4 补做；仅本地表，不参与云端同步；schemaVersion 2 新增）
+-- 阅读时长按天统计（FR-208；仅本地表，不参与云端同步；schemaVersion 2 新增）
 CREATE TABLE reading_days (
   book_id TEXT NOT NULL REFERENCES books(book_id) ON DELETE CASCADE,
   day     TEXT NOT NULL,                       -- 本地自然日 'YYYY-MM-DD'（设备时区）
@@ -348,17 +347,17 @@ CREATE TABLE reading_days (
   PRIMARY KEY (book_id, day)
 );
 
--- 书籍分组（FR-107；schemaVersion 2 新增；v1.4 起参与云端同步，docs/05 §2.1）
+-- 书籍分组（FR-107；schemaVersion 2 新增；参与云端同步，docs/05 §2.1）
 CREATE TABLE book_groups (
   group_id   TEXT PRIMARY KEY,                 -- ULID
   name       TEXT NOT NULL,                    -- 重名校验在 DAO/UI 层做
   sort_order INTEGER NOT NULL DEFAULT 0,       -- 排序权重（按创建顺序递增）
   created_at INTEGER NOT NULL,                 -- epoch ms
-  deleted    INTEGER NOT NULL DEFAULT 0,       -- 软删标记（v1.4 新增）：1 = 已删除、待推墓碑
+  deleted    INTEGER NOT NULL DEFAULT 0,       -- 软删标记：1 = 已删除、待推墓碑
   deleted_at INTEGER                          -- 软删时间（epoch ms，墓碑 deletedAt 来源）
 );
 
--- 分组同步状态（每分组每后端一行；v1.4 新增，docs/05 §5）
+-- 分组同步状态（每分组每后端一行，docs/05 §5）
 CREATE TABLE group_sync_state (
   group_id       TEXT NOT NULL,
   backend_key    TEXT NOT NULL,
@@ -387,7 +386,7 @@ CREATE TABLE app_settings (
 > `app_settings`（通用设置）、`group_sync_state`（分组同步状态）都是这样
 > 演进的先例。
 >
-> **`book_groups` 的软删语义**（v1.4）：本地删除分组 = 置 `deleted=1` +
+> **`book_groups` 的软删语义**：本地删除分组 = 置 `deleted=1` +
 > 组内书籍 `group_id` 置 NULL（回到未分组），**行保留**——离线删除时分组
 > 墓碑仍可补推上云（docs/04 §7.1 分组同款语义）；墓碑上云成功后该行被
 > 同步层硬删。UI 侧只展示活分组（`deleted=0`）。
@@ -418,11 +417,11 @@ CREATE TABLE app_settings (
 | 版本 | 变更类型 | 规则 |
 | --- | --- | --- |
 | 1 | 初版 | — |
-| 2（2026-10-28，M4） | 本地库新增 `reading_days` / `book_groups` 表与 `books.group_id` 列 | drift `schemaVersion` 1→2，**只增不删**；三者均为本地列/表，不入云端 meta JSON，v1 不参与同步 |
-| 3（2026-10-28，v1.1 重设计批 1） | 本地库新增 `local_only_books` / `app_settings` 表 | drift `schemaVersion` 2→3，**只增不删**（两张新表均为纯本地表，不入云端 meta JSON，不参与同步）；`local_only_books` 承载「仅本地 / 未上传」状态（docs/10 §4.7c），`app_settings` 承载应用级本地设置（如 accent 持久化） |
-| 4（2026-11-17，v1.4 分组云端同步） | 本地库新增 `group_sync_state` 表；`book_groups` 增 `deleted` / `deleted_at` 两列 | drift `schemaVersion` 3→4，**只增不删**（新增一张表 + 两列；`books` 表未动）；分组本体从"纯本地"升级为"参与云端同步"（FR-107，docs/05 §2.1）：分组对象以 `groups/{groupId}.json` 上云，书籍 meta 增**可选**字段 `groupId`（§2.2）。**云端 meta 的 `schemaVersion` 保持 1 不变**——新增的是可选字段，不改变既有字段的语义与类型，属"只增不删"的兼容演进（旧读方忽略未知键即可） |
-| 5（当前，2026-11-18，v1.4.1 删除语义变更） | **纯数据迁移，DDL 不变**：清理旧版「删正文、留元数据」语义留下的残影行 | drift `schemaVersion` 4→5，**DDL 完全不变**（只增不删不变式不受影响）；迁移删掉 `deleted_books` 有墓碑的 `books` 行（旧版软删除保留行、只置空 `local_path` → 落进书库「未下载」区永久显示）+ 其 `progress` / `reading_days` / `local_only_books` 子行（迁移在事务内跑、`PRAGMA foreign_keys` 尚未生效，级联不会自动触发 → 显式先删）。**墓碑账本保留**——它才是"已删除"的留痕（驱动云端 tombstone 推送与 90 天 GC）。删除语义见 docs/10 §4.7b / 04 §7.1 |
-| 次版本演进（云端 meta 的 1 → 2） | **只允许**：新增可选字段、新增 `extra` 键、locator 新增 `type` | 旧客户端读到新版本：按已知字段使用 + `percent` 兜底，**不得报错**；写回时保留原 `schemaVersion` 不变，避免降级破坏。**实例**：v1.4 的 `groupId`（§2.2）即属此类——只加可选字段，`schemaVersion` 仍为 1 |
+| 2 | 本地库新增 `reading_days` / `book_groups` 表与 `books.group_id` 列 | drift `schemaVersion` 1→2，**只增不删**；三者均为本地列/表，不入云端 meta JSON，v1 不参与同步 |
+| 3 | 本地库新增 `local_only_books` / `app_settings` 表 | drift `schemaVersion` 2→3，**只增不删**（两张新表均为纯本地表，不入云端 meta JSON，不参与同步）；`local_only_books` 承载「仅本地 / 未上传」状态（docs/10 §4.7c），`app_settings` 承载应用级本地设置（如 accent 持久化） |
+| 4 | 本地库新增 `group_sync_state` 表；`book_groups` 增 `deleted` / `deleted_at` 两列 | drift `schemaVersion` 3→4，**只增不删**（新增一张表 + 两列；`books` 表未动）；分组本体从"纯本地"升级为"参与云端同步"（FR-107，docs/05 §2.1）：分组对象以 `groups/{groupId}.json` 上云，书籍 meta 增**可选**字段 `groupId`（§2.2）。**云端 meta 的 `schemaVersion` 保持 1 不变**——新增的是可选字段，不改变既有字段的语义与类型，属"只增不删"的兼容演进（旧读方忽略未知键即可） |
+| 5（当前） | **纯数据迁移，DDL 不变**：清理旧版「删正文、留元数据」语义留下的残影行 | drift `schemaVersion` 4→5，**DDL 完全不变**（只增不删不变式不受影响）；迁移删掉 `deleted_books` 有墓碑的 `books` 行（旧版软删除保留行、只置空 `local_path` → 落进书库「未下载」区永久显示）+ 其 `progress` / `reading_days` / `local_only_books` 子行（迁移在事务内跑、`PRAGMA foreign_keys` 尚未生效，级联不会自动触发 → 显式先删）。**墓碑账本保留**——它才是"已删除"的留痕（驱动云端 tombstone 推送与 90 天 GC）。删除语义见 docs/10 §4.7b / 04 §7.1 |
+| 次版本演进（云端 meta 的 1 → 2） | **只允许**：新增可选字段、新增 `extra` 键、locator 新增 `type` | 旧客户端读到新版本：按已知字段使用 + `percent` 兜底，**不得报错**；写回时保留原 `schemaVersion` 不变，避免降级破坏。**实例**：`groupId`（§2.2）即属此类——只加可选字段，`schemaVersion` 仍为 1 |
 | 分组 meta（`groups/*.json`）的演进 | 与书籍 meta 同规则（只增不删、读方容忍未知字段） | 分组是独立文件类型：老客户端根本不读 `groups/` 目录 → 分组同步对旧客户端零风险；旧客户端**写回**的书籍 meta 不含 `groupId` → 该书的分组归属降级为"未分组"（已知取舍，docs/07 登记） |
 | 破坏性演进（大版本） | 字段改名/类型变更/语义变更 | 客户端内置迁移器：读到旧版本 → 迁移到当前版本再写回并升 `schemaVersion`；迁移矩阵与用例纳入 `sync_core` 单元测试 |
 | 校验 | — | `sync_core` 中 `BookMeta.fromJson` 执行严格校验（必填/类型/枚举），失败 → 该书标记 `Corruption` 并跳过，不阻塞全库同步 |
@@ -438,5 +437,4 @@ CREATE TABLE app_settings (
 
 - 同步时序与冲突规则：[04-同步引擎与冲突解决](./04-同步引擎与冲突解决.md)
 - 模型类与接口：[03-系统架构设计](./03-系统架构设计.md) §4 ｜ 存储选型：[02-技术选型](./02-技术选型.md) §D3
-- 服务端如何存取这些文件：[06-自建服务端设计与部署](./06-自建服务端设计与部署.md)
 - schema 相关风险：[07-风险与待确认问题](./07-风险与待确认问题.md)
