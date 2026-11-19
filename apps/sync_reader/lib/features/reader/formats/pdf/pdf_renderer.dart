@@ -461,7 +461,7 @@ class _PdfReaderViewState extends State<PdfReaderView> {
     return ValueListenableBuilder<ReaderSettings>(
       valueListenable: widget.controller.settingsListenable,
       builder: (context, settings, _) {
-        final params = pdfrx.PdfViewerParams(
+        final params = buildPdfViewerParams(
           backgroundColor: pdfViewerBackgroundColor(settings.theme),
           onPageChanged: widget.controller.handleViewerPageChanged,
           onViewerReady: (_, _) => widget.controller.handleViewerReady(),
@@ -492,3 +492,46 @@ class _PdfReaderViewState extends State<PdfReaderView> {
     );
   }
 }
+
+/// pdf 查看器参数（**可单测**：构造参数对象不需要 pdfium 原生库）。
+///
+/// ① **初始缩放 = 整页适配**（fit），不是 pdfrx 默认的「铺满」（cover）：
+/// 默认行为下页面按宽度撑满视口 → 页面比视口**高** → 一屏只看得到页面的
+/// 一部分，要手动缩到很窄才看得见整页（用户实测：「全屏时 pdf 只会展示一页
+/// 的一部分，需要缩放宽度后才能展示一页」）。适配缩放让整页进屏、**两侧
+/// 留白**（用户明确接受）。pdfrx 的 `useAlternativeFitScaleAsMinScale`
+/// 默认开着 → 用户也缩不到比适配更小，不会再出现「页面大到看不全」。
+///
+/// ② **滚轮步长 = 1.0**（约 100px/格）：pdfrx 默认 `scrollByMouseWheel = 0.2`
+/// → 每格只滚滚轮增量的 20%（约 20px），读起来「每次只移动一点」（用户实测）。
+/// 改成 1.0 后与 txt/epub 滚动模式的滚轮手感一致。
+pdfrx.PdfViewerParams buildPdfViewerParams({
+  required Color backgroundColor,
+  required pdfrx.PdfPageChangedCallback onPageChanged,
+  required pdfrx.PdfViewerReadyCallback onViewerReady,
+}) {
+  return pdfrx.PdfViewerParams(
+    backgroundColor: backgroundColor,
+    onPageChanged: onPageChanged,
+    onViewerReady: onViewerReady,
+    // 初始缩放取「整页适配」：[selectInitialPdfZoom] 把这条决策单独拆出来，
+    // 便于单测钉死（pdfrx 的原生库在测试环境不可用，只能测参数与决策）。
+    calculateInitialZoom:
+        (document, controller, fitZoom, coverZoom) =>
+            selectInitialPdfZoom(fitZoom: fitZoom, coverZoom: coverZoom),
+    scrollByMouseWheel: 1.0,
+  );
+}
+
+/// pdf 的初始缩放：**整页适配**（fit scale）。
+///
+/// - [fitZoom]：min(视口宽比, 视口高比) → 整页进屏，两侧留白；
+/// - [coverZoom]：max(视口宽比, 视口高比) → 页面铺满视口，**比视口高**，
+///   一屏只看得到页面的一部分。
+///
+/// 取 fit（用户明确要求「每次展示一页，可以接受两侧有空白」）。
+double? selectInitialPdfZoom({
+  required double fitZoom,
+  required double coverZoom,
+}) =>
+    fitZoom;
