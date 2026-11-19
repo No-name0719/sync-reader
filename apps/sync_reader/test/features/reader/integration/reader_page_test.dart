@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sync_reader/app/providers.dart';
+import 'package:sync_reader/core/design_tokens.dart';
 import 'package:sync_reader/data/db/app_database.dart';
 import 'package:sync_reader/features/reader/contract/format_registry.dart';
 import 'package:sync_reader/features/reader/contract/reader_settings.dart';
@@ -349,7 +350,7 @@ void main() {
     expect(find.text('第一章 起点'), findsNothing);
   });
 
-  testWidgets('目录抽屉：应用外壳配色 + 420 宽 + 品牌色当前项', (
+  testWidgets('目录抽屉：应用外壳配色 + 统一抽屉宽度 + 品牌色当前项', (
     tester,
   ) async {
     final renderer = await pumpReady(
@@ -372,8 +373,11 @@ void main() {
       tester.element(find.descendant(of: find.byType(Drawer), matching: find.byType(Column)).first),
     ).colorScheme;
 
-    // 宽度 420（v1.3.7 由原型的 336 调宽：电脑端章名长，336 下大量截断）。
-    expect(tester.widget<Drawer>(find.byType(Drawer)).width, 420);
+    // 宽度 = 桌面端阅读页右侧抽屉的统一宽度（目录与阅读设置共用）。
+    expect(
+      tester.widget<Drawer>(find.byType(Drawer)).width,
+      AppLayout.readerDrawerWidth,
+    );
 
     // 抽屉底色 = 应用外壳 surface（不是阅读主题底色）：由 Drawer 的
     // Material 承载（内层不铺底色，条目 hover 的 `--surface-3` 才能透出）。
@@ -444,6 +448,19 @@ void main() {
     expect(find.byKey(const ValueKey('reader-aa-drawer')), findsOneWidget);
     expect(find.byKey(const ValueKey('reader-aa-sheet')), findsNothing);
     expect(find.text('阅读设置'), findsOneWidget);
+    // 阅读设置抽屉与目录抽屉同宽（两个右侧面板宽度一致）。
+    expect(
+      tester
+          .widgetList<SizedBox>(
+            find.descendant(
+              of: find.byKey(const ValueKey('reader-aa-drawer')),
+              matching: find.byType(SizedBox),
+            ),
+          )
+          .first
+          .width,
+      AppLayout.readerDrawerWidth,
+    );
     await tester.tap(find.byKey(const ValueKey('aa-close')));
     await tester.pumpAndSettle();
 

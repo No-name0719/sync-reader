@@ -33,7 +33,7 @@ import 'package:window_manager/window_manager.dart';
 import '../../app/providers.dart';
 import '../../core/app_logger.dart';
 import '../../core/design_tokens.dart'
-    show AppRadius, AppSpacing, ReaderPalette;
+    show AppLayout, AppRadius, AppSpacing, ReaderPalette;
 import '../../data/db/app_database.dart' show Book;
 import '../../data/db/daos/books_dao.dart';
 import '../../data/db/daos/progress_dao.dart';
@@ -1172,8 +1172,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
             key: const ValueKey('reader-aa-drawer'),
             color: Theme.of(context).colorScheme.surface,
             child: SizedBox(
-              // 336 = 原型 `.rd-drawer{width:336px}`（单元 2 对齐）。
-              width: 336,
+              // 与目录抽屉同宽（[AppLayout.readerDrawerWidth]）：两个右侧
+              // 面板宽度一致，视觉上是一套控件。
+              width: AppLayout.readerDrawerWidth,
               height: double.infinity,
               child: const ReaderSettingsPanel(),
             ),
@@ -1215,11 +1216,10 @@ class _ReaderPageState extends ConsumerState<ReaderPage>
     final scheme = Theme.of(context).colorScheme;
     final brand = scheme.primary;
     return Drawer(
-      // 目录抽屉宽度：v1.3.7 由 336（原型的 `.rd-drawer{width:336px}`）
-      // 调宽到 **420** —— 电脑端章名较长，336 下大量截断（用户反馈
-      // 「调宽电脑端右侧栏」）。Aa 排版面板仍为 336（面板内容固定宽，
-      // 无需放宽）。
-      width: 420,
+      // 抽屉宽度：与 Aa 阅读设置抽屉同宽（[AppLayout.readerDrawerWidth]）。
+      // 历程：原型 `.rd-drawer{width:336px}` → v1.3.7 目录调宽到 420（电脑端
+      // 章名长，336 下大量截断）→ v1.4.5 两个右侧抽屉统一加宽到 460。
+      width: AppLayout.readerDrawerWidth,
       // 底色 = 应用外壳 surface（原型 `--surface`）：抽屉 Material 自身也要
       // 用外壳色，否则 M3 默认 surfaceContainerLow 会在边缘露出来。
       backgroundColor: scheme.surface,

@@ -110,6 +110,14 @@ abstract final class AppLayout {
   /// 阅读正文列宽。
   static const double readerMaxWidth = 720;
 
+  /// 桌面端阅读页**右侧抽屉宽度**（目录抽屉 + 阅读设置抽屉）。
+  ///
+  /// 两个抽屉**共用同一宽度**（v1.4.5）：此前目录抽屉 420、阅读设置抽屉
+  /// 336，一左一右两个右侧面板宽度不一致，视觉上像两种控件。用户要求
+  /// 「都加宽一些并保持一致」→ 统一到 460（较目录抽屉 +40、较设置抽屉
+  /// +124）。单一事实源：两处都引本常量，不再各写各的。
+  static const double readerDrawerWidth = 460;
+
   /// 书库网格卡宽下限（Q6：154px 起，7 列 @1440）。
   static const double cardMinWidth = 154;
 
