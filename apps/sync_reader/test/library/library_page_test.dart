@@ -12,6 +12,7 @@ import 'dart:io';
 
 import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -24,6 +25,8 @@ import 'package:sync_reader/data/secure/secure_credential_store.dart';
 import 'package:sync_reader/features/library/import/batch_import_controller.dart';
 import 'package:sync_reader/features/library/import/book_import_service.dart';
 import 'package:sync_reader/features/library/library_page.dart';
+import 'package:sync_reader/features/shell/app_shell.dart';
+import 'package:sync_reader/shared/cover_view.dart';
 import 'package:sync_reader/features/library/library_providers.dart';
 import 'package:sync_reader/features/library/widgets/book_cards.dart';
 import 'package:sync_reader/features/reader/contract/format_registry.dart';
@@ -187,6 +190,7 @@ void main() {
     );
     await tester.pumpAndSettle();
   }
+
 
   testWidgets('空书库显示空态', (tester) async {
     await bootstrapSafely(tester);
@@ -634,6 +638,116 @@ void main() {
   });
 
   // ---- 导入（A13：分裂按钮 + 确认弹窗 + 常驻进度）----
+
+  testWidgets('分裂按钮：背景色块高度贴着内容（不再被 48px 箭头按钮撑高）', (tester) async {
+    await bootstrapSafely(tester);
+    await pumpLibrary(tester);
+
+    // 品牌色底的那颗按钮（分裂按钮的根 Material）。
+    final button = find
+        .ancestor(
+          of: find.byKey(const Key('library-import-main')),
+          matching: find.byType(Material),
+        )
+        .first;
+    final height = tester.getSize(button).height;
+    expect(
+      height,
+      lessThanOrEqualTo(34),
+      reason:
+          '导入按钮高度应贴着内容（实测 $height）——此前箭头那半边的 '
+          'IconButton 默认 48×48，把整颗按钮的背景色块撑到 48 高，'
+          '看着「背景框高度太大」',
+    );
+
+    // 主区文字与按钮居中对齐（「＋」图标与文字同一水平中心）。
+    final main = tester.getRect(find.byKey(const Key('library-import-main')));
+    final label = tester.getRect(find.text('导入'));
+    final plus = tester.getRect(find.byIcon(Icons.add));
+    expect(
+      label.center.dy,
+      closeTo(main.center.dy, 1.0),
+      reason: '「导入」文字应与按钮主区居中对齐',
+    );
+    expect(
+      (plus.center.dy - label.center.dy).abs(),
+      lessThan(0.5),
+      reason: '「＋」图标应与「导入」文字光学对齐',
+    );
+
+    await shutdown(tester);
+  });
+
+  testWidgets('导入按钮：品牌色底上的浮层是半透明淡染（不洗成灰白）', (
+    tester,
+  ) async {
+    await bootstrapSafely(tester);
+    await pumpLibrary(tester);
+
+    final context = tester.element(
+      find.byKey(const Key('library-import-main')),
+    );
+    final themeHover = Theme.of(context).hoverColor;
+    expect(
+      themeHover.a,
+      equals(1.0),
+      reason: '主题的 hoverColor 是不透明的表面色——铺在品牌色底上会把按钮'
+          '整块洗成灰白（用户实测「鼠标放在发布按钮会有一层灰色」）',
+    );
+
+    // 主区（InkWell）：必须显式指定浮层色，且是**半透明**淡染。
+    final inkWell = tester.widget<InkWell>(
+      find.byKey(const Key('library-import-main')),
+    );
+    final overlay = inkWell.overlayColor;
+    expect(
+      overlay,
+      isNotNull,
+      reason: '品牌色底上的浮层必须显式指定，否则回落到主题那块不透明的浅灰',
+    );
+    final hovered = overlay!.resolve({WidgetState.hovered});
+    expect(hovered, isNotNull);
+    expect(
+      hovered!.a,
+      lessThan(1.0),
+      reason: '浮层应是半透明淡染（色相不变），不能是不透明的表面色',
+    );
+    expect(hovered, isNot(themeHover));
+
+    // 浮层叠到品牌色上的**实际结果**：修复前是不透明浅灰 → 按钮变灰白；
+    // 修复后是半透明白 → 仍是赭石（红显著高于绿）。
+    final layered = Color.lerp(
+      Theme.of(context).extension<AppDesignTokens>()!.brand,
+      hovered,
+      hovered.a,
+    )!;
+    expect(
+      layered.r - layered.g,
+      greaterThan(0.19),
+      reason: '叠上浮层后按钮仍应是品牌色（赭石），实测 $layered',
+    );
+
+    // 箭头半边（PopupMenuButton 内部的 IconButton）：同样要求半透明淡染。
+    final popup = tester.widget<PopupMenuButton<String>>(
+      find
+          .ancestor(
+            of: find.byTooltip('更多导入方式'),
+            matching: find.byType(PopupMenuButton<String>),
+          )
+          .first,
+    );
+    final style = popup.style;
+    expect(style, isNotNull, reason: '箭头半边也必须指定浮层色');
+    final arrowHovered = style!.overlayColor!.resolve({WidgetState.hovered});
+    expect(arrowHovered, isNotNull);
+    expect(
+      arrowHovered!.a,
+      lessThan(1.0),
+      reason: '箭头半边的浮层同样不能是不透明的表面色',
+    );
+
+    await shutdown(tester);
+  });
 
   testWidgets('分裂按钮下拉提供「导入文件… / 批量导入（文件夹）」入口；点批量导入落 /tools/batch-import', (
     tester,

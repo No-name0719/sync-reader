@@ -1041,6 +1041,27 @@ extension AppDesignTokensContext on BuildContext {
   AppDesignTokens get appTokens => Theme.of(this).extension<AppDesignTokens>()!;
 }
 
+/// **品牌色底上的浮层色**（悬停 / 按下）：用**前景色**的低透明淡染。
+///
+/// 主题默认的 `hoverColor` 是**不透明**的浅中性色（`surface3`，#EFEEE9）——
+/// 它铺在**品牌色底**上（导入按钮的赭石块、选中态的导航项与状态胶囊）会把
+/// 整块按钮洗成灰白（用户实测：「鼠标放在发布按钮会有一层灰色」）。
+///
+/// 改成前景色的淡染后：品牌色底上只是微微提亮，**色相不变**；普通表面仍
+/// 沿用主题的表面色差（不受影响）。
+///
+/// 用法：`InkWell(overlayColor: brandOverlay(t.brandText))`。
+WidgetStateProperty<Color?>? brandOverlay(Color foreground) =>
+    WidgetStateProperty.resolveWith((states) {
+      if (states.contains(WidgetState.pressed)) {
+        return foreground.withValues(alpha: 0.20);
+      }
+      if (states.contains(WidgetState.hovered)) {
+        return foreground.withValues(alpha: 0.10);
+      }
+      return null;
+    });
+
 // ===========================================================================
 // 六、主题构建
 // ===========================================================================

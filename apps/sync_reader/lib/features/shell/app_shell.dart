@@ -253,6 +253,8 @@ class _RailItem extends StatelessWidget {
       borderRadius: BorderRadius.circular(AppRadius.md),
       child: InkWell(
         borderRadius: BorderRadius.circular(AppRadius.md),
+        // 选中态底色是品牌浅色 → 浮层用品牌色淡染（见 [brandOverlay]）。
+        overlayColor: brandOverlay(selected ? t.brandText : t.text2),
         onTap: () => context.go(destination.route),
         child: Container(
           height: narrow ? 38 : 37,

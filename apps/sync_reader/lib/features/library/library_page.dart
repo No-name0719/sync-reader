@@ -20,6 +20,7 @@ import '../../data/db/daos/books_dao.dart' show BookSort;
 import '../../shared/copy.dart';
 import '../../shared/cover_view.dart';
 import '../../shared/format_utils.dart';
+import '../../shared/icon_alignment.dart';
 import '../sync/placeholder_download.dart';
 import '../sync/quota_gate.dart';
 import '../sync/sync_facade.dart';
@@ -749,6 +750,8 @@ class _StatusChip extends StatelessWidget {
       ),
       child: InkWell(
         customBorder: const StadiumBorder(),
+        // 选中态底色是品牌浅色 → 浮层同样用品牌色淡染（见 [brandOverlay]）。
+        overlayColor: brandOverlay(selected ? t.brandText : t.text2),
         onTap: onTap,
         child: Container(
           height: 30,
@@ -871,11 +874,18 @@ class _SyncNoticeBar extends ConsumerWidget {
         borderRadius: BorderRadius.circular(AppRadius.md),
       ),
       child: Row(
+        // 顶对齐：图标按**首行文字的行盒**居中（caption 12×18 = 18）。
+        // 此前关闭按钮是默认 48×48 的 IconButton → 整行被撑到 48 高，图标与
+        // 文字悬在中间，看着「图标和字没对齐」。
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            failed ? Icons.cloud_off : Icons.warning_amber_outlined,
-            size: 18,
-            color: color,
+          IconLineSlot(
+            lineHeight: textLineHeight(t.caption),
+            child: Icon(
+              failed ? Icons.cloud_off : Icons.warning_amber_outlined,
+              size: 18,
+              color: color,
+            ),
           ),
           const SizedBox(width: AppSpacing.s2),
           Expanded(
@@ -891,6 +901,12 @@ class _SyncNoticeBar extends ConsumerWidget {
           ),
           IconButton(
             tooltip: '关闭',
+            // 收紧点击区：48×48 的默认尺寸会把整行撑高（见上）。
+            style: IconButton.styleFrom(
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              minimumSize: const Size(32, 32),
+              padding: EdgeInsets.zero,
+            ),
             icon: Icon(Icons.close, size: 16, color: color),
             onPressed: () => onDismiss(text),
           ),
@@ -956,6 +972,17 @@ class _ImportSplitButton extends StatelessWidget {
 
   final VoidCallback onPickFiles;
 
+  /// 按钮高度：**贴着内容**（与顶栏其它控件同一量级）。
+  ///
+  /// 此前箭头那半边是 Material 的 [PopupMenuButton]——内部 IconButton 的默认
+  /// 最小尺寸是 48×48 → 整颗按钮的背景色块被撑到 48 高，而「＋ 导入」只有
+  /// ~34 高 → 色块比内容高出一大截（用户实测「导入的背景框高度太高，看起来
+  /// 过大」）。这里把两个半边都收进 [_height]。
+  static const double _height = 32;
+
+  /// 箭头半边的宽度（只够放一个 ▾）。
+  static const double _menuWidth = 30;
+
   @override
   Widget build(BuildContext context) {
     final t = context.appTokens;
@@ -972,48 +999,67 @@ class _ImportSplitButton extends StatelessWidget {
         PopupMenuItem(value: 'pick', child: Text('导入文件…')),
         PopupMenuItem(value: 'batch', child: Text(kBatchImportFolderTitle)),
       ],
-      icon: Icon(Icons.arrow_drop_down, color: onBrand),
+      icon: Icon(Icons.arrow_drop_down, size: 18, color: onBrand),
+      iconSize: 18,
+      padding: EdgeInsets.zero,
+      // 收紧点击区：默认 48×48 会把整颗按钮撑高（见 [_height] 注释）。
+      // 直接给 [ButtonStyle]：浮层色要**按状态解析**（[brandOverlay] 返回的是
+      // WidgetStateProperty），而 `IconButton.styleFrom` 只收具体颜色。
+      style: ButtonStyle(
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        minimumSize: const WidgetStatePropertyAll(Size(_menuWidth, _height)),
+        padding: const WidgetStatePropertyAll(EdgeInsets.zero),
+        // 品牌色底上的浮层用前景色淡染，不用主题那块不透明的浅灰（见
+        // [brandOverlay]）——否则悬停时按钮整块被洗成灰白。
+        overlayColor: brandOverlay(onBrand),
+      ),
     );
     return Material(
       color: disabled ? t.surface3 : t.brand,
       borderRadius: BorderRadius.circular(AppRadius.md),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          InkWell(
-            key: const Key('library-import-main'),
-            borderRadius: const BorderRadius.horizontal(
-              left: Radius.circular(AppRadius.md),
-            ),
-            onTap: disabled ? null : onPickFiles,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppSpacing.s3,
-                vertical: 7,
+      child: SizedBox(
+        height: _height,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            InkWell(
+              key: const Key('library-import-main'),
+              borderRadius: const BorderRadius.horizontal(
+                left: Radius.circular(AppRadius.md),
               ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.add, size: 16, color: onBrand),
-                  const SizedBox(width: 4),
-                  Text(
-                    '导入',
-                    style: t.sm.copyWith(
-                      color: onBrand,
-                      fontWeight: FontWeight.w600,
+              // 品牌色底上的浮层用前景色淡染（见 [brandOverlay]）。
+              overlayColor: brandOverlay(onBrand),
+              onTap: disabled ? null : onPickFiles,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s3),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // 图标与「导入」首行光学对齐（sm 13×20 = 20 行盒 / 图标 16）。
+                    IconLineSlot(
+                      lineHeight: textLineHeight(t.sm),
+                      child: Icon(Icons.add, size: 16, color: onBrand),
                     ),
-                  ),
-                ],
+                    const SizedBox(width: 4),
+                    Text(
+                      '导入',
+                      style: t.sm.copyWith(
+                        color: onBrand,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
-          ),
-          Container(
-            width: 1,
-            height: 20,
-            color: onBrand.withValues(alpha: 0.35),
-          ),
-          menuPart,
-        ],
+            Container(
+              width: 1,
+              height: 20,
+              color: onBrand.withValues(alpha: 0.35),
+            ),
+            menuPart,
+          ],
+        ),
       ),
     );
   }
