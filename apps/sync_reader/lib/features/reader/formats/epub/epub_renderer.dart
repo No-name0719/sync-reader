@@ -66,6 +66,17 @@ const Duration epubProgressThrottle = Duration(seconds: 3);
 /// 不改 plainText/locator 坐标）。
 const String epubParagraphIndent = kReaderParagraphIndent;
 
+/// 正文滚动视图的**偏移存储槽**（[PageStorageKey]）。
+///
+/// 框架只在滚动视图挂了 [PageStorageKey] 时才保存/恢复滚动偏移
+/// （见 `ScrollPosition.restoreScrollOffset`）：翻页方式切换会重建正文视图
+/// （分页视图的包装结构与滚动视图不同），没有这个 key 的话新视图从 0 起
+/// ——画面先闪回第一页/封面，之后渲染器再按逻辑位置把位置找回来（中间那
+/// 几帧正文还没建出来 = 加载不全，翻一次页才恢复）。
+///
+/// key 固定 → 重建前后是同一个存储槽 → 偏移被原样接回。
+const Key _epubBodyStorageKey = PageStorageKey<String>('epub-body');
+
 /// spine 条目（解析产物：href + 该文件的块序列）。
 class _SpineItem {
   const _SpineItem({required this.href, required this.blocks});
@@ -1660,6 +1671,10 @@ class _EpubViewHost extends StatelessWidget {
           key: renderer.viewportKey,
           color: colors.background,
           child: KeyedSubtree(
+            // key 变了 → 内容面板**整体重建**（翻页方式切换 / 排版几何变化
+            // 都要换一套视图结构）。重建会连带把滚动视图也换掉 → 滚动偏移
+            // 必须由正文列表自己挂 [PageStorageKey] 保留（见
+            // [_epubBodyStorageKey]），否则新视图从 0 起（画面闪回封面）。
             key: ValueKey('epub-${mode.name}-${renderer._layoutEpoch}'),
             child: renderer.blockCount == 0
                 ? Center(
@@ -1974,6 +1989,16 @@ class _EpubContentPaneState extends State<_EpubContentPane>
         );
         final list = ListView.builder(
           controller: r.scrollController,
+          // **滚动偏移跨视图重建保留**（见 [_EpubViewHost] 的 KeyedSubtree
+          // 注释）：翻页方式切换会重建整个正文视图（分页视图的包装结构与
+          // 滚动视图不同），若偏移不随视图保留，新视图从 0 起——画面先闪回
+          // 第一页/封面，之后渲染器再按逻辑位置把位置找回来（中间那几帧正文
+          // 还没建出来 = 加载不全，翻一次页才恢复）。
+          //
+          // 框架只在滚动视图挂了 [PageStorageKey] 时才保存/恢复偏移（见
+          // ScrollPosition.restoreScrollOffset）；key 固定 → 重建前后是同一个
+          // 存储槽 → 偏移被原样接回，切换那一帧就已在阅读位置。
+          key: _epubBodyStorageKey,
           // scroll 模式：甩动位移封顶（阅读要可控，见 reader_scroll_physics）。
           // page 模式：按页起点吸附（一次滑动 = 一页）。
           physics: isPage

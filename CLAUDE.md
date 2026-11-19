@@ -137,6 +137,7 @@ cd packages/sync_core && dart run tool/rclone_probe.dart
 - epub：块化解析 + HTML 渲染（图片、粗斜体、标题、引用、列表、简单表格），目录跳转，复杂表格/浮动布局降级为顺序文本。
 - pdf：pdfrx 渲染、封面、大纲映射。
 - 统一阅读框架：进度锚点与 locator、TOC 抽屉、设置面板（字体/字号/行距/背景/翻页方式）、亮度调节、Android 音量键翻页、页界裁剪与分页稳定性处理。
+- **滚动视图重建时必须挂 `PageStorageKey`**：框架只在滚动视图挂了 `PageStorageKey` 时才保存/恢复滚动偏移（`ScrollPosition.restoreScrollOffset`）。翻页方式切换会重建正文视图（分页视图的包装结构与滚动视图不同），不挂 key → 新视图从 0 起 → 画面先闪回第一页/封面，之后渲染器再按逻辑位置找回（中间几帧正文未构建 = 加载不全）。epub 用固定 key `epub-body`（`epub_renderer.dart`）。
 - 进度管线：渲染节流 → 3s 防抖落库（dirty 标记）→ 切后台/退出阅读页立即落库；阅读时长每秒累计并按自然日拆分写入 `reading_days`。
 
 ### 同步
