@@ -65,6 +65,7 @@ flutter:
   # 01=下载页 02=客户端设置齿轮 03=第三方应用管理 04=添加应用密码。
   assets:
     - assets/jianguoyun/
+    - assets/brand/
 
 # 收编副本（packages/third_party/，dependency_overrides 指向）：
 # - pdfrx：含 Dart 3.13 兼容补丁，详见上方注释与 docs/07；

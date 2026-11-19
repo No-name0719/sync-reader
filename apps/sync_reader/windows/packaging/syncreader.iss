@@ -40,7 +40,7 @@ AppVerName={#AppName} {#AppVersion}
 ; 控制面板“卸载程序”列表中的显示名
 UninstallDisplayName={#AppName}
 UninstallDisplayIcon={app}\sync_reader.exe
-; 安装器自身的图标：与应用图标、桌面快捷方式一致（赭石圆角方 + 白色打开的书）。
+; 安装器自身的图标：与应用图标、桌面快捷方式一致（蜂蜜黄圆角方 + 白色 R 标）。
 ; 路径相对本 .iss 文件；未设置时 Inno Setup 用自带默认图标（黑方块）。
 SetupIconFile=..\runner\resources\app_icon.ico
 ; 默认安装目录：{autopf}\SyncReader

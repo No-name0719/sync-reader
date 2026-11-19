@@ -124,7 +124,7 @@ class OnboardingPage extends ConsumerWidget {
   }
 }
 
-/// 品牌标：赭石圆角方块 + 白色打开的书（与应用图标、外壳品牌区一致）。
+/// 品牌标：蜂蜜黄圆角方块 + 白色 R 标（与应用图标、外壳品牌区同一张 PNG）。
 class _BrandMark extends StatelessWidget {
   const _BrandMark();
 
@@ -139,18 +139,12 @@ class _BrandMark extends StatelessWidget {
         IconLineSlot(
           lineHeight: textLineHeight(titleStyle),
           childSize: 30,
-          child: Container(
+          child: Image.asset(
+            'assets/brand/app_icon.png',
             width: 30,
             height: 30,
-            decoration: BoxDecoration(
-              color: t.brand,
-              borderRadius: BorderRadius.circular(AppRadius.sm),
-            ),
-            child: const Icon(
-              Icons.auto_stories,
-              size: 17,
-              color: Colors.white,
-            ),
+            fit: BoxFit.contain,
+            filterQuality: FilterQuality.high,
           ),
         ),
         const SizedBox(width: AppSpacing.s2),

@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- SyncReader 应用图标源文件：蜂蜜黄底 + 白色「书 + 放大镜」R 标 -->
+  <defs>
+    <linearGradient id="g8" x1="0" y1="0" x2="0.65" y2="1">
+      <stop offset="0" stop-color="#E3B45A"/>
+      <stop offset="1" stop-color="#BE8C2C"/>
+    </linearGradient>
+    <filter id="sh8" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="20" stdDeviation="24" flood-color="#6B4A12" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#g8)"/>
+
+  <g filter="url(#sh8)">
+    <!-- 放大镜：镜圈 + 手柄（先画，书后画，让书成为镜圈的左壁） -->
+    <circle cx="514.5" cy="452" r="132" fill="none" stroke="#FFFFFF" stroke-width="112"/>
+    <path d="M578.5 590 L644.5 784 H745.5 L668.5 550 Z" fill="#FFFFFF"/>
+
+    <!-- ── 书：竖笔；右边缘 = 镜心左边缘 ─────────────────────── -->
+    <rect x="278.5" y="240" width="160" height="544" rx="24" fill="#FFFFFF"/>
+
+    <!-- 底部页码块 -->
+    <path d="M316.5 744 H438.5 V760 Q438.5 784 414.5 784 H316.5 Z" fill="#EDE6D6"/>
+    <g fill="none" stroke="#D3CABB" stroke-width="8" stroke-linecap="round">
+      <path d="M328.5 756 H426.5"/>
+      <path d="M328.5 770 H426.5"/>
+    </g>
+
+    <!-- 书脊：包边 + 三道竹节 -->
+    <path d="M278.5 264 Q278.5 240 302.5 240 H316.5 V784 H302.5 Q278.5 784 278.5 760 Z" fill="#E6DFD2"/>
+    <g fill="none" stroke="#C9BFAF" stroke-width="10" stroke-linecap="round">
+      <path d="M288.5 344 H310.5"/>
+      <path d="M288.5 424 H310.5"/>
+      <path d="M288.5 504 H310.5"/>
+    </g>
+    <path d="M316.5 262 V762" fill="none" stroke="#B25430" stroke-width="6" opacity="0.26"/>
+
+    <!-- 封面下缘的赭石小印 -->
+    <rect x="334.5" y="704" width="68" height="10" rx="5" fill="#B25430" opacity="0.75"/>
+  </g>
+
+  <!-- 镜心：加载 / 同步环 -->
+  <g fill="none" stroke="#8FD8C7" stroke-width="15" stroke-linecap="round">
+    <path d="M533.5 419.1 A38 38 0 0 1 552.5 452 A38 38 0 0 1 514.5 490 A38 38 0 0 1 476.5 452 A38 38 0 0 1 495.5 419.1"/>
+  </g>
+  <g transform="translate(495.5 419.1) rotate(-30)">
+    <path d="M-8 -15 L17 0 L-8 15 Q-3 0 -8 -15 Z" fill="#8FD8C7"/>
+  </g>
+</svg>

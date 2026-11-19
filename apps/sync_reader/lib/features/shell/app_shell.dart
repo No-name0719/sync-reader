@@ -161,17 +161,19 @@ class _RailBrand extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = context.appTokens;
-    // 品牌标底色用**纯色** t.brand（不再用渐变）：与 Android 启动器图标 /
-    // Windows 应用图标（赭石圆角方块 + 白色打开的书）严格一致。
-    // 图标资源的生成脚本见 scripts/gen_app_icons.py。
-    final mark = Container(
+    // 品牌标直接用应用图标 PNG：与 Android 启动器 / Windows 应用图标
+    // 是同一张资源（蜂蜜黄圆角方块 + 白色 R 标），生成脚本见
+    // scripts/gen_app_icons.py。
+    final mark = SizedBox(
       width: 36,
       height: 36,
-      decoration: BoxDecoration(
-        color: t.brand,
-        borderRadius: BorderRadius.circular(AppRadius.md),
+      child: Image.asset(
+        'assets/brand/app_icon.png',
+        width: 36,
+        height: 36,
+        fit: BoxFit.contain,
+        filterQuality: FilterQuality.high,
       ),
-      child: const Icon(Icons.auto_stories, size: 20, color: Colors.white),
     );
     return Padding(
       padding: const EdgeInsets.fromLTRB(
