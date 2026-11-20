@@ -8,6 +8,8 @@
 
 首个公开发布版本。
 
+> 已发布：<https://github.com/No-name0719/sync-reader/releases/tag/v1.0.0>
+
 ### Added
 
 - **首次启动引导页**：新用户第一次打开应用时，先看到一页「坚果云同步」的初始化入口（**可跳过**）
